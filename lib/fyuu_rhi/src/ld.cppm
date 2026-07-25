@@ -5,7 +5,9 @@ module;
 #include <concepts>
 #include <vector>
 #include <cstdint>
+#include <functional>
 #include <span>
+#include <stdexcept>
 #endif // !defined(__cpp_lib_modules)
 
 export module fyuu_rhi:logical_device;
@@ -19,6 +21,8 @@ import :sampler_types;
 import :sampler;
 import :scheduler_types;
 import :scheduler;
+import :command_graph;
+import :command_graph_validation;
 import :pipeline_types;
 import :pipeline;
 import :native_pipeline_binding;
@@ -99,6 +103,80 @@ namespace fyuu_rhi {
 			);
 		}
 
+		execution::ExecutableGraph<Backend> CompileCommandGraph(
+			execution::CommandGraph<Backend> const& graph
+		) {
+			auto impl = CompileCommandGraph(graph.GetImplementation());
+			return execution::ExecutableGraph<Backend>(impl);
+		}
+
+		execution::CommandGraph<Backend> CreateCommandGraph(
+			execution::CommandGraphDescriptor const& descriptor,
+			execution::CommandGraphBindings<Backend> const& bindings
+		) {
+			execution::ValidateCommandGraphDescriptor(descriptor);
+			if (bindings.Resources().size() != descriptor.resource_count ||
+				bindings.Pipelines().size() != descriptor.pipeline_count ||
+				bindings.Views().size() != descriptor.view_count ||
+				bindings.ResourceGroups().size() != descriptor.resource_group_count ||
+				bindings.PresentationTargets().size() != descriptor.presentation_target_count) {
+				throw std::invalid_argument(
+					"CreateCommandGraph(): binding counts do not match the graph descriptor"
+				);
+			}
+			execution::NativeCommandGraphBindings<Backend> native_bindings;
+			native_bindings.resources.reserve(bindings.Resources().size());
+			for (auto resource : bindings.Resources()) {
+				if (!resource) {
+					throw std::invalid_argument("CreateCommandGraph(): graph resource is not bound");
+				}
+				native_bindings.resources.emplace_back(
+					resource->GetLogicalDevicePassKey().GetImplementation()
+				);
+			}
+
+			native_bindings.pipelines.reserve(bindings.Pipelines().size());
+			for (auto pipeline : bindings.Pipelines()) {
+				if (!pipeline) {
+					throw std::invalid_argument("CreateCommandGraph(): graph pipeline is not bound");
+				}
+				native_bindings.pipelines.emplace_back(
+					pipeline->GetPassKey().GetImplementation()
+				);
+			}
+
+			native_bindings.views.reserve(bindings.Views().size());
+			for (auto view : bindings.Views()) {
+				if (!view) {
+					throw std::invalid_argument("CreateCommandGraph(): graph view is not bound");
+				}
+				native_bindings.views.emplace_back(
+					view->GetPassKey().GetImplementation()
+				);
+			}
+
+			native_bindings.resource_groups.reserve(bindings.ResourceGroups().size());
+			for (auto resource_group : bindings.ResourceGroups()) {
+				if (!resource_group) {
+					throw std::invalid_argument("CreateCommandGraph(): graph resource group is not bound");
+				}
+				native_bindings.resource_groups.emplace_back(
+					resource_group->GetPassKey().GetImplementation()
+				);
+			}
+
+			native_bindings.presentation_targets.reserve(bindings.PresentationTargets().size());
+			for (auto const& presentation_target : bindings.PresentationTargets()) {
+				if (!presentation_target) {
+					throw std::invalid_argument("CreateCommandGraph(): presentation target is not bound");
+				}
+				native_bindings.presentation_targets.emplace_back(*presentation_target);
+			}
+
+			auto impl = Backend::CreateCommandGraph(descriptor, native_bindings);
+			return execution::CommandGraph<Backend>(impl);
+		}
+
 		pipeline::Pipeline<Backend> CreateGraphicsPipeline(
 			pipeline::GraphicsPipelineDescriptor const& descriptor
 		) {
@@ -110,6 +188,17 @@ namespace fyuu_rhi {
 			return Backend::CreateGraphicsPipeline(m_impl, descriptor);
 		}
 
+		pipeline::Pipeline<Backend> CreateComputePipeline(
+			pipeline::ComputePipelineDescriptor const& descriptor
+		) {
+			using Ret = decltype(Backend::CreateComputePipeline(m_impl, descriptor));
+			static_assert(
+				std::constructible_from<pipeline::Pipeline<Backend>, Ret>,
+				"Pipeline<Backend> must be constructible from pipeline returned by CreateComputePipeline()"
+			);
+			return Backend::CreateComputePipeline(m_impl, descriptor);
+		}
+
 		pipeline::PipelineResourceGroup<Backend> CreatePipelineResourceGroup(
 			pipeline::Pipeline<Backend> const& pipeline_obj,
 			std::uint32_t space,
@@ -117,39 +206,39 @@ namespace fyuu_rhi {
 		) {
 			std::vector<pipeline::NativePipelineResourceBinding<Backend>> native_bindings;
 			native_bindings.reserve(bindings.size());
-			for (auto const& binding : bindings) {
-				auto const& value = binding.value;
+			for (auto const& entry : bindings) {
+				auto const& value = entry.value;
 				auto buffer = value.Buffer();
 				auto view = value.BoundView();
 				auto sampler = value.BoundSampler();
 				pipeline::NativePipelineBindingValue<Backend> native_value;
 				if (buffer) {
 					native_value = pipeline::NativePipelineBufferBinding<Backend>{
-						.buffer = buffer->GetLogicalDevicePassKey().GetImplementation(),
+						.impl = std::cref(buffer->GetLogicalDevicePassKey().GetImplementation()),
 						.offset = value.Offset(),
 						.size = value.Size()
 					};
 				}
 				else if (view && sampler) {
 					native_value = pipeline::NativePipelineCombinedBinding<Backend>{
-						.view = view->GetPassKey().GetImplementation(),
-						.sampler = sampler->GetPassKey().GetImplementation()
+						.view = std::cref(view->GetPassKey().GetImplementation()),
+						.sampler = std::cref(sampler->GetPassKey().GetImplementation())
 					};
 				}
 				else if (view) {
 					native_value = pipeline::NativePipelineViewBinding<Backend>{
-						.view = view->GetPassKey().GetImplementation()
+						.impl = std::cref(view->GetPassKey().GetImplementation())
 					};
 				}
 				else if (sampler) {
 					native_value = pipeline::NativePipelineSamplerBinding<Backend>{
-						.sampler = sampler->GetPassKey().GetImplementation()
+						.impl = std::cref(sampler->GetPassKey().GetImplementation())
 					};
 				}
 				native_bindings.push_back(
 					{
-						.binding = binding.binding,
-						.array_element = binding.array_element,
+						.slot = entry.slot,
+						.array_element = entry.array_element,
 						.value = std::move(native_value)
 					}
 				);

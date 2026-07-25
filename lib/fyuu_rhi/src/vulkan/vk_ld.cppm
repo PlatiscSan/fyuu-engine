@@ -65,11 +65,19 @@ namespace {
 	using namespace fyuu_rhi::pipeline;
 	using namespace fyuu_rhi::vulkan;
 
-	std::pmr::synchronized_pool_resource s_pool{};
+	QueuePriority GetSchedulerQueuePriority(float priority) noexcept {
+		if (priority >= 0.75f) {
+			return QueuePriority::High;
+		}
+		if (priority >= 0.25f) {
+			return QueuePriority::Medium;
+		}
+		return QueuePriority::Low;
+	}
 
 	struct GetTextureHandle {
-		vk::Image operator()(std::shared_ptr<Backend::Resource::Texture> const& resource) const {
-			return resource->vk_handle;
+		vk::Image operator()(Backend::Resource::Texture const& resource) const {
+			return resource.vk_handle;
 		}
 		template <class T>
 		vk::Image operator()(T const&) const {
@@ -78,8 +86,8 @@ namespace {
 	};
 
 	struct GetBufferHandle {
-		vk::Buffer operator()(std::shared_ptr<Backend::Resource::Buffer> const& resource) const {
-			return resource->vk_handle;
+		vk::Buffer operator()(Backend::Resource::Buffer const& resource) const {
+			return resource.vk_handle;
 		}
 		template <class T>
 		vk::Buffer operator()(T const&) const {
@@ -649,20 +657,21 @@ namespace {
 		if (visibility & (1u << static_cast<std::uint32_t>(PipelineStage::Geometry))) result |= vk::ShaderStageFlagBits::eGeometry;
 		if (visibility & (1u << static_cast<std::uint32_t>(PipelineStage::Task))) result |= vk::ShaderStageFlagBits::eTaskEXT;
 		if (visibility & (1u << static_cast<std::uint32_t>(PipelineStage::Mesh))) result |= vk::ShaderStageFlagBits::eMeshEXT;
+		if (visibility & (1u << static_cast<std::uint32_t>(PipelineStage::Compute))) result |= vk::ShaderStageFlagBits::eCompute;
 		return result;
 	}
 
-	vk::DescriptorType MapPipelineDescriptorType(SlangPipelineBinding const& binding) {
-		if (binding.flags.Test(ResourceFlagBits::SamplerBinding)) {
-			return binding.flags.Test(ResourceFlagBits::TextureBinding)
+	vk::DescriptorType MapPipelineDescriptorType(ResourceFlags const& flags) {
+		if (flags.Test(ResourceFlagBits::SamplerBinding)) {
+			return flags.Test(ResourceFlagBits::TextureBinding)
 				? vk::DescriptorType::eCombinedImageSampler
 				: vk::DescriptorType::eSampler;
 		}
-		if (binding.flags.Test(ResourceFlagBits::UniformBuffer)) return vk::DescriptorType::eUniformBuffer;
-		if (binding.flags.Test(ResourceFlagBits::StorageBuffer)) return vk::DescriptorType::eStorageBuffer;
-		if (binding.flags.Test(ResourceFlagBits::StorageBinding)) return vk::DescriptorType::eStorageImage;
-		if (binding.flags.Test(ResourceFlagBits::TextureBinding)) return vk::DescriptorType::eSampledImage;
-		throw std::invalid_argument(std::format("Unsupported Vulkan pipeline binding '{}'", binding.name));
+		if (flags.Test(ResourceFlagBits::UniformBuffer)) return vk::DescriptorType::eUniformBuffer;
+		if (flags.Test(ResourceFlagBits::StorageBuffer)) return vk::DescriptorType::eStorageBuffer;
+		if (flags.Test(ResourceFlagBits::StorageBinding)) return vk::DescriptorType::eStorageImage;
+		if (flags.Test(ResourceFlagBits::TextureBinding)) return vk::DescriptorType::eSampledImage;
+		throw std::invalid_argument("Unsupported Vulkan pipeline binding flags");
 	}
 
 	vk::ShaderStageFlagBits MapPipelineStage(PipelineStage stage) {
@@ -676,6 +685,49 @@ namespace {
 		case PipelineStage::Mesh: return vk::ShaderStageFlagBits::eMeshEXT;
 		default: throw std::invalid_argument("Compute stage cannot be used in a Vulkan graphics pipeline");
 		}
+	}
+
+	Backend::Pipeline CreateVulkanPipelineInterface(
+		Backend::LogicalDevice const& ld,
+		shader::SlangProgram const& program,
+		vk::PipelineBindPoint bind_point
+	) {
+		Backend::Pipeline pipeline;
+		pipeline.bind_point = bind_point;
+		pipeline.bindings = MakePipelineBindingMetadata(program.Interface());
+		std::uint32_t max_space = 0u;
+		for (auto const& entry : program.Interface().bindings) {
+			max_space = std::max(max_space, entry.space);
+		}
+		std::vector<std::vector<vk::DescriptorSetLayoutBinding>> set_bindings(
+			program.Interface().bindings.empty() ? 0u : max_space + 1u
+		);
+		for (auto const& entry : program.Interface().bindings) {
+			set_bindings[entry.space].emplace_back(
+				entry.slot,
+				MapPipelineDescriptorType(entry.flags),
+				entry.count,
+				MapPipelineStageFlags(entry.visibility)
+			);
+		}
+		std::vector<vk::DescriptorSetLayout> raw_set_layouts;
+		for (auto& bindings : set_bindings) {
+			std::ranges::sort(bindings, {}, &vk::DescriptorSetLayoutBinding::binding);
+			vk::DescriptorSetLayoutCreateInfo info({}, bindings);
+			auto raw = ld.impl->createDescriptorSetLayout(info, nullptr, *ld.dispatcher);
+			pipeline.descriptor_set_layouts.push_back(
+				vk::SharedDescriptorSetLayout(raw, ld.impl, { nullptr, *ld.dispatcher })
+			);
+			raw_set_layouts.push_back(raw);
+		}
+		std::vector<vk::PushConstantRange> push_constants;
+		for (auto const& range : program.Interface().push_constants) {
+			push_constants.emplace_back(MapPipelineStageFlags(range.visibility), range.offset, range.size);
+		}
+		vk::PipelineLayoutCreateInfo layout_info({}, raw_set_layouts, push_constants);
+		auto raw_layout = ld.impl->createPipelineLayout(layout_info, nullptr, *ld.dispatcher);
+		pipeline.layout = vk::SharedPipelineLayout(raw_layout, ld.impl, { nullptr, *ld.dispatcher });
+		return pipeline;
 	}
 
 	vk::CompareOp MapPipelineCompareOperation(CompareOperation operation) {
@@ -730,40 +782,53 @@ namespace {
 		}
 	}
 
-	bool IsDynamicRenderingEnabled(Backend::LogicalDevice const& ld) {
-		using Key = VkDevice;
-		struct KeyHash {
-			std::size_t operator()(Key key) const noexcept {
-				return std::hash<void*>{}(reinterpret_cast<void*>(key));
-			}
-		};
-		using List = plastic::ds::StaticList<std::pair<Key const, bool>, 64u>;
-		static plastic::ds::LRUCache<
-			plastic::ds::StaticHashTable<Key, typename List::iterator, 64u, KeyHash>,
-			List,
-			64u
-		> cache;
-		static std::mutex mutex;
+	using VulkanSchedulerSynchronization = std::variant<
+		Backend::VulkanScheduler::TimelineSynchronization,
+		std::shared_ptr<Backend::VulkanScheduler::BinarySynchronizationPool>
+	>;
 
-		Key key = static_cast<VkDevice>(*ld.impl);
-		if (std::unique_lock<std::mutex> lock(mutex); cache.Contains(key)) {
-			return cache.Get(key);
+	VulkanSchedulerSynchronization CreateSchedulerSynchronization(Backend::LogicalDevice const& ld) {
+		if (ld.enabled_features.contains(
+			vk::StructureType::ePhysicalDeviceTimelineSemaphoreFeatures
+		)) {
+			vk::SemaphoreTypeCreateInfo type_info(vk::SemaphoreType::eTimeline, 0u);
+			vk::SemaphoreCreateInfo semaphore_info({}, &type_info);
+			auto semaphore = ld.impl->createSemaphore(semaphore_info, nullptr, *ld.dispatcher);
+			return VulkanSchedulerSynchronization(
+				std::in_place_type<Backend::VulkanScheduler::TimelineSynchronization>,
+				vk::SharedSemaphore(semaphore, ld.impl, { nullptr, *ld.dispatcher })
+			);
 		}
 
-		auto properties = ld.phys_dev.impl->getProperties(*ld.dispatcher);
-		bool extension = std::ranges::contains(
-			ld.enabled_extensions,
-			std::string_view(vk::KHRDynamicRenderingExtensionName)
+		return VulkanSchedulerSynchronization(
+			std::in_place_type<std::shared_ptr<Backend::VulkanScheduler::BinarySynchronizationPool>>,
+			std::make_shared<Backend::VulkanScheduler::BinarySynchronizationPool>(
+				ld.impl,
+				ld.dispatcher
+			)
 		);
-		vk::PhysicalDeviceDynamicRenderingFeatures dynamic_rendering_features;
-		vk::PhysicalDeviceFeatures2 features({}, &dynamic_rendering_features);
-		ld.phys_dev.impl->getFeatures2(&features, *ld.dispatcher);
-		bool enabled = extension && dynamic_rendering_features.dynamicRendering;
-		{
-			std::unique_lock<std::mutex> lock(mutex);
-			cache.Put(key, enabled);
-		}
-		return enabled;
+	}
+
+	std::shared_ptr<Backend::VulkanScheduler::QueueState> CreateSchedulerQueue(
+		Backend::LogicalDevice& ld,
+		CommandQueueType capability,
+		QueuePriority priority
+	) {
+		auto allocation = ld.queue_alloc.Allocate(capability, priority);
+		auto info = allocation.GetInfo();
+		auto queue = ld.impl->getQueue(info.family, info.index, *ld.dispatcher);
+		auto synchronization = CreateSchedulerSynchronization(ld);
+		return std::make_shared<Backend::VulkanScheduler::QueueState>(
+			ld.impl,
+			ld.dispatcher,
+			std::move(allocation),
+			vk::SharedQueue(queue, ld.impl),
+			std::move(synchronization),
+			std::make_shared<Backend::VulkanScheduler::CommandPool>(),
+			capability,
+			info.family,
+			info.index
+		);
 	}
 
 
@@ -811,9 +876,7 @@ namespace fyuu_rhi::vulkan {
 			throw std::runtime_error(std::format("Calling vmaCreateBuffer() failed, VMA reported: {}", vk::to_string(result)));
 		}
 
-		std::pmr::polymorphic_allocator<Backend::Resource::Buffer> pmr_alloc(&s_pool);
-
-		return { std::allocate_shared<Backend::Resource::Buffer>(pmr_alloc, ld.mem_alloc, buf_info, buf, alloc, alloc_info) };
+		return { Backend::Resource::Buffer(ld.mem_alloc, buf_info, buf, alloc, alloc_info) };
 
 	}
 
@@ -864,10 +927,17 @@ namespace fyuu_rhi::vulkan {
 			throw std::runtime_error(std::format("Calling vmaCreateImage() failed, VMA reported: {}", vk::to_string(result)));
 		}
 
-		static std::pmr::synchronized_pool_resource pool(&s_pool);
-		std::pmr::polymorphic_allocator<Backend::Resource::Texture> pmr_alloc(&pool);
-
-		return { std::allocate_shared<Backend::Resource::Texture>(pmr_alloc, ld.mem_alloc, tex_info, tex, alloc, alloc_info, vk::ImageLayout::eUndefined, vk::ImageLayout::eUndefined) };
+		return {
+			Backend::Resource::Texture(
+				ld.mem_alloc,
+				tex_info,
+				tex,
+				alloc,
+				alloc_info,
+				vk::ImageLayout::eUndefined,
+				vk::ImageLayout::eUndefined
+			)
+		};
 
 	}
 
@@ -963,41 +1033,8 @@ namespace fyuu_rhi::vulkan {
 			spirv_profile
 		);
 		shader::SlangProgram program(target, descriptor.program, cache_tag);
-		auto binding_metadata = MakePipelineBindingMetadata(program.Interface());
-
-		std::uint32_t max_space = 0;
-		for (auto const& binding : program.Interface().bindings) max_space = std::max(max_space, binding.space);
-		std::vector<std::vector<vk::DescriptorSetLayoutBinding>> set_bindings(
-			program.Interface().bindings.empty() ? 0 : max_space + 1
-		);
-		for (auto const& binding : program.Interface().bindings) {
-			set_bindings[binding.space].emplace_back(
-				binding.binding,
-				MapPipelineDescriptorType(binding),
-				binding.count,
-				MapPipelineStageFlags(binding.visibility)
-			);
-		}
-
-		Backend::Pipeline pipeline;
-		pipeline.bindings = std::move(binding_metadata);
-		std::vector<vk::DescriptorSetLayout> raw_set_layouts;
-		for (auto& bindings : set_bindings) {
-			std::ranges::sort(bindings, {}, &vk::DescriptorSetLayoutBinding::binding);
-			vk::DescriptorSetLayoutCreateInfo info({}, bindings);
-			auto raw = ld.impl->createDescriptorSetLayout(info, nullptr, *ld.dispatcher);
-			pipeline.descriptor_set_layouts.push_back(
-				vk::SharedDescriptorSetLayout(raw, ld.impl, { nullptr, *ld.dispatcher })
-			);
-			raw_set_layouts.push_back(raw);
-		}
-		std::vector<vk::PushConstantRange> push_constants;
-		for (auto const& range : program.Interface().push_constants) {
-			push_constants.emplace_back(MapPipelineStageFlags(range.visibility), range.offset, range.size);
-		}
-		vk::PipelineLayoutCreateInfo layout_info({}, raw_set_layouts, push_constants);
-		auto raw_layout = ld.impl->createPipelineLayout(layout_info, nullptr, *ld.dispatcher);
-		pipeline.layout = vk::SharedPipelineLayout(raw_layout, ld.impl, { nullptr, *ld.dispatcher });
+		auto pipeline = CreateVulkanPipelineInterface(ld, program, vk::PipelineBindPoint::eGraphics);
+		auto raw_layout = *pipeline.layout;
 
 		std::vector<vk::SharedShaderModule> modules;
 		std::vector<vk::PipelineShaderStageCreateInfo> stages;
@@ -1094,7 +1131,9 @@ namespace fyuu_rhi::vulkan {
 			: vk::Format::eUndefined;
 		vk::PipelineRenderingCreateInfo rendering({}, color_formats, depth_format, stencil_format);
 		vk::RenderPass compatible_render_pass;
-		auto dynamic_rendering_enabled = IsDynamicRenderingEnabled(ld);
+		auto dynamic_rendering_enabled = ld.enabled_features.contains(
+			vk::StructureType::ePhysicalDeviceDynamicRenderingFeatures
+		);
 		if (!dynamic_rendering_enabled) {
 			auto samples = ExtractSampleCount(ResourceFlags(descriptor.multisample.sample_count));
 			std::vector<vk::AttachmentDescription> attachments;
@@ -1158,62 +1197,96 @@ namespace fyuu_rhi::vulkan {
 		);
 		info.pNext = dynamic_rendering_enabled ? &rendering : nullptr;
 
-		static std::mutex pipeline_cache_mutex;
 		auto cache_path = cache::GetCacheFilePath(std::format(
 			"vulkan-pipeline-{:04x}-{:04x}-{:08x}.bin",
 			properties.vendorID, properties.deviceID, properties.driverVersion
 		));
-		std::vector<std::byte> cache_data;
-		{
-			std::unique_lock<std::mutex> cache_lock(pipeline_cache_mutex);
-			std::ifstream input(cache_path, std::ios::binary | std::ios::ate);
-			if (input) {
-				auto size = input.tellg();
-				if (size > 0) {
-					cache_data.resize(static_cast<std::size_t>(size));
-					input.seekg(0);
-					input.read(reinterpret_cast<char*>(cache_data.data()), size);
-				}
-			}
-		}
+		auto cache_data = cache::ReadFile(cache_path);
 		vk::PipelineCacheCreateInfo cache_info({}, cache_data.size(), cache_data.data());
 		auto raw_cache = ld.impl->createPipelineCache(cache_info, nullptr, *ld.dispatcher);
 		vk::SharedPipelineCache pipeline_cache(raw_cache, ld.impl, { nullptr, *ld.dispatcher });
 		auto creation = ld.impl->createGraphicsPipeline(raw_cache, info, nullptr, *ld.dispatcher);
-		pipeline.state = vk::SharedPipeline(creation.value, ld.impl, { nullptr, *ld.dispatcher });
+		pipeline.impl = vk::SharedPipeline(creation.value, ld.impl, { nullptr, *ld.dispatcher });
 		auto updated_cache = ld.impl->getPipelineCacheData(raw_cache, *ld.dispatcher);
-		{
-			std::unique_lock<std::mutex> cache_lock(pipeline_cache_mutex);
+		cache::WriteFileAtomically(
+			cache_path,
+			std::span<std::byte const>(
+				reinterpret_cast<std::byte const*>(updated_cache.data()),
+				updated_cache.size()
+			)
+		);
+		return pipeline;
+	}
 
-			auto temporary = cache_path;
-			temporary += std::format(
-				".tmp-{:x}",
-				std::hash<std::thread::id>{}(std::this_thread::get_id())
+	Backend::Pipeline Backend::CreateComputePipeline(
+		Backend::LogicalDevice const& ld,
+		ComputePipelineDescriptor const& descriptor
+	) {
+		auto properties = ld.phys_dev.impl->getProperties(*ld.dispatcher);
+		auto spirv_profile = SelectSPIRVProfile(properties.apiVersion);
+		slang::TargetDesc target{ .format = SLANG_SPIRV };
+		target.profile = shader::SlangGlobalSession()->findProfile(spirv_profile.data());
+		auto cache_tag = std::format(
+			"vulkan-compute-{:04x}-{:04x}-{:08x}-api-{:08x}-{}",
+			properties.vendorID,
+			properties.deviceID,
+			properties.driverVersion,
+			properties.apiVersion,
+			spirv_profile
+		);
+		shader::SlangProgram program(target, descriptor.program, cache_tag);
+		auto pipeline = CreateVulkanPipelineInterface(ld, program, vk::PipelineBindPoint::eCompute);
+		vk::SharedShaderModule module;
+		std::optional<vk::PipelineShaderStageCreateInfo> stage;
+		for (auto const& entry : program.EntryPoints()) {
+			if (entry.stage != PipelineStage::Compute) {
+				throw std::invalid_argument("Vulkan compute pipelines accept only a compute entry point");
+			}
+			if (stage) {
+				throw std::invalid_argument("Vulkan compute pipelines require exactly one compute entry point");
+			}
+			if (entry.code.size() % sizeof(std::uint32_t) != 0u) {
+				throw std::runtime_error("Slang returned misaligned SPIR-V bytecode");
+			}
+			vk::ShaderModuleCreateInfo module_info(
+				{},
+				entry.code.size(),
+				reinterpret_cast<std::uint32_t const*>(entry.code.data())
 			);
-
-			{
-				std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
-				output.write(
-					reinterpret_cast<char const*>(updated_cache.data()),
-					static_cast<std::streamsize>(updated_cache.size())
-				);
-
-				if (!output) {
-					std::error_code error;
-					fs::remove(temporary, error);
-					return pipeline;
-				}
-			}
-
-			std::error_code error;
-			fs::remove(cache_path, error);
-
-			error.clear();
-			fs::rename(temporary, cache_path, error);
-			if (error) {
-				fs::remove(temporary, error);
-			}
+			auto raw_module = ld.impl->createShaderModule(module_info, nullptr, *ld.dispatcher);
+			module = vk::SharedShaderModule(raw_module, ld.impl, { nullptr, *ld.dispatcher });
+			stage.emplace(
+				vk::PipelineShaderStageCreateFlags{},
+				vk::ShaderStageFlagBits::eCompute,
+				raw_module,
+				entry.name.c_str()
+			);
 		}
+		if (!stage) {
+			throw std::invalid_argument("Vulkan compute pipelines require one compute entry point");
+		}
+
+		auto cache_path = cache::GetCacheFilePath(std::format(
+			"vulkan-pipeline-{:04x}-{:04x}-{:08x}.bin",
+			properties.vendorID,
+			properties.deviceID,
+			properties.driverVersion
+		));
+		auto cache_data = cache::ReadFile(cache_path);
+		vk::PipelineCacheCreateInfo cache_info({}, cache_data.size(), cache_data.data());
+		auto raw_cache = ld.impl->createPipelineCache(cache_info, nullptr, *ld.dispatcher);
+		vk::SharedPipelineCache pipeline_cache(raw_cache, ld.impl, { nullptr, *ld.dispatcher });
+		vk::ComputePipelineCreateInfo info({}, *stage, *pipeline.layout);
+		auto creation = ld.impl->createComputePipeline(raw_cache, info, nullptr, *ld.dispatcher);
+		pipeline.impl = vk::SharedPipeline(creation.value, ld.impl, { nullptr, *ld.dispatcher });
+		auto updated_cache = ld.impl->getPipelineCacheData(raw_cache, *ld.dispatcher);
+		cache::WriteFileAtomically(
+			cache_path,
+			std::span<std::byte const>(
+				reinterpret_cast<std::byte const*>(updated_cache.data()),
+				updated_cache.size()
+			)
+		);
 		return pipeline;
 	}
 
@@ -1223,8 +1296,147 @@ namespace fyuu_rhi::vulkan {
 		std::uint32_t space,
 		std::span<NativePipelineResourceBinding<Backend> const> bindings
 	) {
-		(void)ld;
-		return MakePipelineResourceGroup<Backend>(pipeline.bindings, space, bindings);
+		if (space >= pipeline.descriptor_set_layouts.size()) {
+			throw std::out_of_range("Vulkan pipeline resource group space is out of range");
+		}
+		auto native = MakePipelineResourceGroup<Backend>(pipeline.bindings, space, bindings);
+		std::vector<vk::DescriptorPoolSize> pool_sizes;
+		for (auto const& binding : native.layout) {
+			auto type = MapPipelineDescriptorType(binding.flags);
+			auto MatchesType = [type](vk::DescriptorPoolSize const& value) {
+				return value.type == type;
+			};
+			auto existing = std::ranges::find_if(pool_sizes, MatchesType);
+			if (existing == pool_sizes.end()) {
+				pool_sizes.emplace_back(type, binding.count);
+			}
+			else {
+				existing->descriptorCount += binding.count;
+			}
+		}
+
+		vk::DescriptorPoolCreateInfo pool_info({}, 1u, pool_sizes);
+		auto raw_pool = ld.impl->createDescriptorPool(pool_info, nullptr, *ld.dispatcher);
+		vk::SharedDescriptorPool descriptor_pool(raw_pool, ld.impl, { nullptr, *ld.dispatcher });
+		auto raw_layout = *pipeline.descriptor_set_layouts[space];
+		vk::DescriptorSetAllocateInfo allocate_info(raw_pool, 1u, &raw_layout);
+		auto descriptor_sets = ld.impl->allocateDescriptorSets(allocate_info, *ld.dispatcher);
+
+		std::vector<vk::DescriptorBufferInfo> buffer_infos;
+		std::vector<vk::DescriptorImageInfo> image_infos;
+		std::vector<vk::WriteDescriptorSet> writes;
+		buffer_infos.reserve(native.bindings.size());
+		image_infos.reserve(native.bindings.size());
+		writes.reserve(native.bindings.size());
+		for (auto const& resource_binding : native.bindings) {
+			auto MatchesBinding = [&resource_binding](PipelineBindingMetadata const& value) {
+				return value.slot == resource_binding.slot;
+			};
+			auto metadata = std::ranges::find_if(native.layout, MatchesBinding);
+			auto type = MapPipelineDescriptorType(metadata->flags);
+			vk::WriteDescriptorSet write;
+			write.dstSet = descriptor_sets.front();
+			write.dstBinding = resource_binding.slot;
+			write.dstArrayElement = resource_binding.array_element;
+			write.descriptorCount = 1u;
+			write.descriptorType = type;
+			if (auto buffer = std::get_if<NativePipelineBufferBinding<Backend>>(&resource_binding.value)) {
+				auto const& resource = std::get<Backend::Resource::Buffer>(buffer->impl.get().impl);
+				auto range = buffer->size == PipelineWholeBuffer ? VK_WHOLE_SIZE : buffer->size;
+				buffer_infos.emplace_back(resource.vk_handle, buffer->offset, range);
+				write.pBufferInfo = &buffer_infos.back();
+			}
+			else if (auto view = std::get_if<NativePipelineViewBinding<Backend>>(&resource_binding.value)) {
+				auto const& texture = std::get<Backend::View::Texture>(view->impl.get().impl);
+				auto layout = type == vk::DescriptorType::eStorageImage
+					? vk::ImageLayout::eGeneral
+					: vk::ImageLayout::eShaderReadOnlyOptimal;
+				image_infos.emplace_back(vk::Sampler{}, *texture.impl, layout);
+				write.pImageInfo = &image_infos.back();
+			}
+			else if (auto sampler = std::get_if<NativePipelineSamplerBinding<Backend>>(&resource_binding.value)) {
+				image_infos.emplace_back(*sampler->impl.get(), vk::ImageView{}, vk::ImageLayout::eUndefined);
+				write.pImageInfo = &image_infos.back();
+			}
+			else if (auto combined = std::get_if<NativePipelineCombinedBinding<Backend>>(&resource_binding.value)) {
+				auto const& texture = std::get<Backend::View::Texture>(combined->view.get().impl);
+				image_infos.emplace_back(
+					*combined->sampler.get(),
+					*texture.impl,
+					vk::ImageLayout::eShaderReadOnlyOptimal
+				);
+				write.pImageInfo = &image_infos.back();
+			}
+			writes.emplace_back(write);
+		}
+		std::array<vk::CopyDescriptorSet, 0u> copies;
+		ld.impl->updateDescriptorSets(writes, copies, *ld.dispatcher);
+		return {
+			.space = space,
+			.pool = descriptor_pool,
+			.set = descriptor_sets.front(),
+			.layout = pipeline.layout
+		};
+	}
+
+	Backend::Scheduler Backend::CreateScheduler(
+		LogicalDevice& ld,
+		SchedulerDescriptor const& descriptor
+	) {
+		using Flag = SchedulerFlagBits;
+		VulkanScheduler::QueueCollection queues;
+		auto priority = GetSchedulerQueuePriority(descriptor.priority);
+		if (descriptor.flags.Test(Flag::Graphics)) {
+			queues.graphics = CreateSchedulerQueue(ld, CommandQueueType::Graphics, priority);
+		}
+		if (descriptor.flags.Test(Flag::Compute)) {
+			queues.compute = CreateSchedulerQueue(ld, CommandQueueType::Compute, priority);
+		}
+		if (descriptor.flags.Test(Flag::Copy)) {
+			queues.copy = CreateSchedulerQueue(ld, CommandQueueType::Copy, priority);
+		}
+		if (!queues.graphics && !queues.compute && !queues.copy) {
+			throw std::invalid_argument("CreateScheduler(): no execution capability was requested");
+		}
+		if (queues.graphics && queues.compute &&
+			queues.graphics->family == queues.compute->family &&
+			queues.graphics->index == queues.compute->index) {
+			queues.compute = queues.graphics;
+		}
+		if (queues.graphics && queues.copy &&
+			queues.graphics->family == queues.copy->family &&
+			queues.graphics->index == queues.copy->index) {
+			queues.copy = queues.graphics;
+		}
+		else if (queues.compute && queues.copy &&
+			queues.compute->family == queues.copy->family &&
+			queues.compute->index == queues.copy->index) {
+			queues.copy = queues.compute;
+		}
+		auto scheduler = std::make_shared<VulkanScheduler>();
+		scheduler->impl = std::make_shared<VulkanScheduler::Implementation>(
+			queues,
+			ld.phys_dev,
+			ld.presentation_cache,
+			std::make_shared<VulkanScheduler::BinarySynchronizationPool>(
+				ld.impl,
+				ld.dispatcher
+			),
+			std::unordered_set<std::string>(
+				ld.enabled_extensions.begin(),
+				ld.enabled_extensions.end()
+			),
+			ld.enabled_features,
+			ld.completion_service
+		);
+		return scheduler;
+	}
+
+	Backend::CommandGraph Backend::CreateCommandGraph(
+		execution::CommandGraphDescriptor const& descriptor,
+		execution::NativeCommandGraphBindings<Backend> const& bindings
+	) {
+		return execution::MakeCommandGraph<Backend>(descriptor, bindings);
 	}
 
 }

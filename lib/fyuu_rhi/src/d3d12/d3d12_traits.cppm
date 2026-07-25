@@ -1,5 +1,6 @@
 /* the d3d12 pattern
 module;
+#include <boost/smart_ptr/intrusive_ptr.hpp>
 #include <version>
 #if !defined(__cpp_lib_modules)
 
@@ -54,6 +55,10 @@ import :sampler_types;
 import :scheduler_types;
 import :pipeline_types;
 import :native_pipeline_binding;
+import :native_command_graph;
+import :presentation_cache;
+import :completion_service;
+import :execution_pool;
 
 namespace fyuu_rhi::d3d12 {
 
@@ -61,11 +66,38 @@ namespace fyuu_rhi::d3d12 {
 	using namespace fyuu_rhi::execution;
 
 	export struct Backend {
+		using PresentationTarget = HWND;
+		struct PresentationTargetHash {
+			std::size_t operator()(PresentationTarget target) const noexcept {
+				return execution::HashNativePointer(target);
+			}
+		};
 
 		using Instance = Microsoft::WRL::ComPtr<IDXGIFactory2>;
 		using PhysicalDevice = Microsoft::WRL::ComPtr<IDXGIAdapter1>;
 
 		struct LogicalDevice {
+			struct PresentationEntry {
+				struct FrameSlot {
+					Microsoft::WRL::ComPtr<ID3D12Resource> back_buffer;
+					std::uint64_t fence_value = 0u;
+				};
+
+				Microsoft::WRL::ComPtr<IDXGISwapChain3> swapchain;
+				Microsoft::WRL::ComPtr<ID3D12CommandQueue> queue;
+				DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+				std::uint32_t width = 0u;
+				std::uint32_t height = 0u;
+				std::vector<FrameSlot> frames;
+				std::shared_ptr<std::mutex> mutex = std::make_shared<std::mutex>();
+			};
+
+			using PresentationCache = execution::PresentationCache<
+				PresentationTarget,
+				PresentationEntry,
+				PresentationTargetHash
+			>;
+
 			Microsoft::WRL::ComPtr<IDXGIAdapter1> phys_dev;
 			Microsoft::WRL::ComPtr<ID3D12Device> impl;
 			DeviceRemovalTracker rm_tracker;
@@ -77,40 +109,160 @@ namespace fyuu_rhi::d3d12 {
 			Microsoft::WRL::ComPtr<ID3D12CommandSignature> multidraw;
 			Microsoft::WRL::ComPtr<ID3D12CommandSignature> multidraw_indexed;
 			Microsoft::WRL::ComPtr<ID3D12CommandSignature> dispatch_indirect;
+			std::shared_ptr<PresentationCache> presentation_cache;
+			boost::intrusive_ptr<execution::CompletionService> completion_service;
 		};
 
 		struct Scheduler {
-			struct Implementation {
-				Microsoft::WRL::ComPtr<ID3D12CommandQueue> queue;
+			struct CommandEntry {
+				Microsoft::WRL::ComPtr<ID3D12CommandAllocator> allocator;
+				Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> impl;
+			};
+
+			using CommandPool = execution::ExecutionPool<CommandEntry>;
+
+			struct QueueState {
+				Microsoft::WRL::ComPtr<ID3D12Device> device;
+				Microsoft::WRL::ComPtr<ID3D12CommandQueue> impl;
 				Microsoft::WRL::ComPtr<ID3D12Fence> fence;
-				std::atomic_uint64_t next_fence_value;
+				std::atomic_uint64_t next_fence_value = 1u;
+				std::shared_ptr<CommandPool> command_pool;
+				D3D12_COMMAND_LIST_TYPE type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+				std::mutex submission_mutex;
+			};
+
+			struct QueueCollection {
+				std::shared_ptr<QueueState> graphics;
+				std::shared_ptr<QueueState> compute;
+				std::shared_ptr<QueueState> copy;
+
+				[[nodiscard]] std::shared_ptr<QueueState> const& Select(
+					execution::GraphNodeFlagBits capability
+				) const;
+			};
+
+			struct Implementation {
+				QueueCollection queues;
+				Microsoft::WRL::ComPtr<IDXGIAdapter1> physical_device;
+				std::shared_ptr<LogicalDevice::PresentationCache> presentation_cache;
+				boost::intrusive_ptr<execution::CompletionService> completion_service;
 			};
 			std::shared_ptr<Implementation> impl;
 		};
 
 		struct Resource {
-			struct Implementation {
-				Microsoft::WRL::ComPtr<D3D12MA::Allocation> alloc;
-				D3D12_RESOURCE_STATES last_state;
-				D3D12_RESOURCE_STATES curr_state;
-			};
-
-			std::shared_ptr<Implementation> impl;
-
+			Microsoft::WRL::ComPtr<D3D12MA::Allocation> impl;
+			D3D12_RESOURCE_STATES last_state = D3D12_RESOURCE_STATE_COMMON;
+			D3D12_RESOURCE_STATES curr_state = D3D12_RESOURCE_STATE_COMMON;
 		};
 
-		using View = std::shared_ptr<ManagedDescriptorHandle>;
+		struct View {
+			enum class Type : std::uint8_t {
+				ShaderResource,
+				UnorderedAccess,
+				RenderTarget,
+				DepthStencil
+			};
 
-		using Sampler = std::shared_ptr<ManagedDescriptorHandle>;
+			Microsoft::WRL::ComPtr<D3D12MA::Allocation> allocation;
+			ManagedDescriptorHandle impl;
+			Type type;
+			std::uint32_t base_mip_level = 0u;
+			std::uint32_t mip_level_count = 1u;
+			std::uint32_t base_array_layer = 0u;
+			std::uint32_t array_layer_count = 1u;
+			DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+
+			[[nodiscard]] D3D12_CPU_DESCRIPTOR_HANDLE CPU() const noexcept {
+				return impl.CPU();
+			}
+
+			[[nodiscard]] D3D12_GPU_DESCRIPTOR_HANDLE GPU() const noexcept {
+				return impl.GPU();
+			}
+
+			[[nodiscard]] ID3D12Resource* Resource() const noexcept {
+				return allocation->GetResource();
+			}
+		};
+
+		using Sampler = ManagedDescriptorHandle;
 
 		struct Pipeline {
+			bool compute = false;
 			Microsoft::WRL::ComPtr<ID3D12RootSignature> root_signature;
-			Microsoft::WRL::ComPtr<ID3D12PipelineState> state;
+			Microsoft::WRL::ComPtr<ID3D12PipelineState> impl;
 			D3D_PRIMITIVE_TOPOLOGY primitive_topology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
 			std::vector<PipelineBindingMetadata> bindings;
 		};
 
-		using PipelineResourceGroup = NativePipelineResourceGroup<Backend>;
+		struct PipelineResourceGroup {
+			struct Table {
+				std::uint32_t root_parameter = 0u;
+				ManagedDescriptorRange descriptors;
+			};
+
+			std::uint32_t space = 0u;
+			Microsoft::WRL::ComPtr<ID3D12RootSignature> root_signature;
+			ManagedDescriptorHeap resource_heap;
+			ManagedDescriptorHeap sampler_heap;
+			std::vector<Table> tables;
+		};
+		using CommandGraph = std::shared_ptr<execution::NativeCommandGraph<Backend>>;
+		using ExecutableGraph = std::shared_ptr<execution::NativeExecutableGraph<Backend>>;
+		struct GraphExecution {
+			struct Batch {
+				struct PresentationRequest {
+					PresentationTarget target;
+					execution::GraphResourceID source_id;
+					Microsoft::WRL::ComPtr<ID3D12Resource> source;
+					D3D12_RESOURCE_STATES source_state = D3D12_RESOURCE_STATE_COMMON;
+					bool vertical_sync = true;
+					std::uint32_t frames_in_flight = 3u;
+				};
+
+				struct InFlightPresentation {
+					LogicalDevice::PresentationCache::Lease entry;
+					Scheduler::CommandPool::Lease commands;
+					std::uint32_t frame_index;
+
+					InFlightPresentation(
+						LogicalDevice::PresentationCache::Lease&& entry_,
+						Scheduler::CommandPool::Lease&& commands_,
+						std::uint32_t frame_index_
+					) noexcept : entry(std::move(entry_)),
+						commands(std::move(commands_)),
+						frame_index(frame_index_) {
+
+					}
+				};
+
+				std::shared_ptr<Scheduler::QueueState> queue;
+				Scheduler::CommandPool::Lease commands;
+				std::uint64_t fence_value = 0u;
+				std::vector<PresentationRequest> presentation_requests;
+				std::vector<InFlightPresentation> in_flight_presentations;
+
+				Batch(
+					std::shared_ptr<Scheduler::QueueState> const& queue_,
+					Scheduler::CommandPool::Lease&& commands_,
+					std::uint64_t fence_value_
+				) noexcept : queue(queue_),
+					commands(std::move(commands_)),
+					fence_value(fence_value_) {
+
+				}
+
+				Batch(Batch const&) = delete;
+				Batch& operator=(Batch const&) = delete;
+				Batch(Batch&&) noexcept = default;
+				Batch& operator=(Batch&&) noexcept = default;
+			};
+
+			Scheduler scheduler;
+			ExecutableGraph graph;
+			std::vector<Batch> batches;
+		};
 
 		static Microsoft::WRL::ComPtr<IDXGIFactory2> CreateInstance(std::string_view app_name, Version const& app_ver, std::string_view engine_name, Version const& engine_ver);
 
@@ -121,18 +273,23 @@ namespace fyuu_rhi::d3d12 {
 		static LogicalDevice CreateLogicalDevice(Microsoft::WRL::ComPtr<IDXGIAdapter1> const& adapter);
 
 		static Scheduler CreateScheduler(LogicalDevice const& ld, SchedulerDescriptor const& descriptor);
+		static CommandGraph CreateCommandGraph(
+			execution::CommandGraphDescriptor const& descriptor,
+			execution::NativeCommandGraphBindings<Backend> const& bindings
+		);
 
 		static Resource CreateBuffer(LogicalDevice const& ld, std::size_t size_in_bytes, ResourceFlags const& flags);
 
 		static Resource CreateTexture(LogicalDevice const& ld, std::size_t width, std::size_t height, std::size_t depth_arr_layers, std::size_t mip_lvl_cnt, ResourceFlags const& flags);
 
-		static std::shared_ptr<ManagedDescriptorHandle> CreateTextureView(LogicalDevice& ld, Resource const& res, std::size_t base_mip_lvl, std::size_t mip_lvl_cnt, std::size_t base_arr_layer, std::size_t arr_layer_cnt, ResourceFlags const& flags);
+		static View CreateTextureView(LogicalDevice& ld, Resource const& res, std::size_t base_mip_lvl, std::size_t mip_lvl_cnt, std::size_t base_arr_layer, std::size_t arr_layer_cnt, ResourceFlags const& flags);
 
-		static std::shared_ptr<ManagedDescriptorHandle> CreateBufferView(LogicalDevice& ld, Resource const& res, std::size_t offset, std::size_t range, ResourceFlags const& flags);
+		static View CreateBufferView(LogicalDevice& ld, Resource const& res, std::size_t offset, std::size_t range, ResourceFlags const& flags);
 
-		static std::shared_ptr<ManagedDescriptorHandle> CreateSampler(LogicalDevice& ld, SamplerDescriptor const& descriptor);
+		static Sampler CreateSampler(LogicalDevice& ld, SamplerDescriptor const& descriptor);
 
 		static Pipeline CreateGraphicsPipeline(LogicalDevice const& ld, GraphicsPipelineDescriptor const& desc);
+		static Pipeline CreateComputePipeline(LogicalDevice const& ld, ComputePipelineDescriptor const& descriptor);
 
 		static PipelineResourceGroup CreatePipelineResourceGroup(
 			LogicalDevice const& ld,
@@ -142,6 +299,16 @@ namespace fyuu_rhi::d3d12 {
 		);
 
 	};
+
+	Backend::GraphExecution CreateGraphExecution(
+		Backend::Scheduler const& scheduler,
+		Backend::ExecutableGraph const& graph
+	);
+	Backend::ExecutableGraph CompileCommandGraph(Backend::CommandGraph const& graph);
+	void StartGraphExecution(
+		Backend::GraphExecution& graph_execution,
+		execution::GraphCompletion const& completion
+	);
 
 }
 #endif // defined(_WIN32)

@@ -11,8 +11,9 @@ module;
 #include <mutex>
 #include <optional>
 #include <span>
+#include <limits>
 #endif
-export module fyuu_rhi:vulkan_queue_allocator;
+module fyuu_rhi:vulkan_queue_allocator;
 #if !defined(__APPLE__)
 #if defined(__cpp_lib_modules)
 import std;
@@ -20,19 +21,40 @@ import std;
 
 namespace fyuu_rhi::vulkan {
 
-	export enum class CommandQueueType : std::uint8_t {
-		Graphics,
-		Compute,
-		Copy,
+	enum class CommandQueueType : std::uint8_t {
+		None = 0u,
+		Graphics = 1u << 0u,
+		Compute = 1u << 1u,
+		Copy = 1u << 2u,
 	};
 
-	export enum class QueuePriority : std::uint8_t {
+	[[nodiscard]] constexpr CommandQueueType operator|(CommandQueueType lhs, CommandQueueType rhs) noexcept {
+		return static_cast<CommandQueueType>(
+			static_cast<std::uint8_t>(lhs) | static_cast<std::uint8_t>(rhs)
+		);
+	}
+
+	[[nodiscard]] constexpr CommandQueueType operator&(CommandQueueType lhs, CommandQueueType rhs) noexcept {
+		return static_cast<CommandQueueType>(
+			static_cast<std::uint8_t>(lhs) & static_cast<std::uint8_t>(rhs)
+		);
+	}
+
+	constexpr CommandQueueType& operator|=(CommandQueueType& lhs, CommandQueueType rhs) noexcept {
+		return lhs = lhs | rhs;
+	}
+
+	constexpr CommandQueueType& operator&=(CommandQueueType& lhs, CommandQueueType rhs) noexcept {
+		return lhs = lhs & rhs;
+	}
+
+	enum class QueuePriority : std::uint8_t {
 		High,
 		Medium,
 		Low
 	};
 
-	export struct CommandQueueInfo {
+	struct CommandQueueInfo {
 		CommandQueueType type;
 		std::optional<std::uint32_t> family;
 		std::uint32_t num_available;
@@ -65,13 +87,13 @@ namespace {
 
 namespace fyuu_rhi::vulkan {
 
-	export struct AllocatedCommandQueueInfo {
+	struct AllocatedCommandQueueInfo {
 		std::uint32_t family;
 		std::uint32_t index;
 	};
 
 	// Configuration options for the queue allocator.
-	export struct QueueOptions {
+	struct QueueOptions {
 		std::size_t max_graphics; // Max number of graphics queues to use
 		std::span<float const> graphics_priorities; // Priorities for each graphics queue
 
@@ -84,8 +106,8 @@ namespace fyuu_rhi::vulkan {
 		static QueueOptions PlatformDefault(); // Returns a default configuration for the current platform
 	};
 
-	// Handle that automatically releases the queue index when the last reference is destroyed.
-	export class ManagedQueue final {
+	// Move-only lease that returns its queue index to the allocator on destruction.
+	class ManagedQueue final {
 	private:
 		std::shared_ptr<QueueSet> m_queue_set;
 		std::uint32_t m_index;
@@ -97,17 +119,26 @@ namespace fyuu_rhi::vulkan {
 
 		~ManagedQueue() {
 			if (m_queue_set) {
-				std::lock_guard<std::mutex> lock(m_queue_set->allocated_queue_mutex);
+				std::unique_lock<std::mutex> lock(m_queue_set->allocated_queue_mutex);
 				m_queue_set->allocated_queue.erase(m_index);
 			}
 		}
 
-		// Disable copying (move-only or shared ownership via shared_ptr)
+		// Queue leases have unique ownership.
 		ManagedQueue(ManagedQueue const&) = delete;
 		ManagedQueue& operator=(ManagedQueue const&) = delete;
 
-		ManagedQueue(ManagedQueue&&) noexcept = default;
-		ManagedQueue& operator=(ManagedQueue&&) noexcept = default;
+		ManagedQueue(ManagedQueue&& other) noexcept
+			: m_queue_set(std::move(other.m_queue_set)),
+			m_index(other.m_index) {
+
+		}
+
+		ManagedQueue& operator=(ManagedQueue&& other) noexcept {
+			std::swap(m_queue_set, other.m_queue_set);
+			std::swap(m_index, other.m_index);
+			return *this;
+		}
 
 		[[nodiscard]] std::uint32_t GetFamily() const noexcept {
 			return *m_queue_set->info.family;
@@ -122,22 +153,22 @@ namespace fyuu_rhi::vulkan {
 		}
 	};
 
-	export class QueueAllocator {
+	class QueueAllocator {
 	private:
 		std::unordered_map<CommandQueueType, std::shared_ptr<QueueSet>> m_queue_sets;
 
 		static std::shared_ptr<QueueSet> MakeQueueSet(CommandQueueType type, std::span<CommandQueueInfo const> queue_infos, QueueOptions const& init_options);
 
 	public:
-		// Constructor: builds the three queue sets by selecting appropriate families from the given list.
+		// Builds queue sets for every capability available in the given family list.
 		QueueAllocator(
 			std::span<CommandQueueInfo const> queue_infos,
 			QueueOptions const& init_options = QueueOptions::PlatformDefault()
 		);
 
 		// Allocate a queue of the given type with the requested priority.
-		// Returns a shared_ptr to a ManagedQueue that automatically frees the index.
-		[[nodiscard]] std::shared_ptr<ManagedQueue> Allocate(CommandQueueType type, QueuePriority priority);
+		[[nodiscard]] ManagedQueue Allocate(CommandQueueType type, QueuePriority priority);
+		[[nodiscard]] bool Supports(CommandQueueType type) const noexcept;
 
 		// Query properties of the underlying queue set for a given type.
 		[[nodiscard]] std::uint32_t GetFamily(CommandQueueType type) const noexcept;
@@ -181,15 +212,33 @@ namespace fyuu_rhi::vulkan {
 
 	std::shared_ptr<QueueSet> QueueAllocator::MakeQueueSet(CommandQueueType type, std::span<CommandQueueInfo const> queue_infos, QueueOptions const& init_options) {
 		std::vector<std::uint32_t> indices;
+		std::uint8_t minimum_capability_count = std::numeric_limits<std::uint8_t>::max();
 	
 		auto length = static_cast<std::uint32_t>(queue_infos.size());
 
 		// Collect indices of queue families that support the requested type.
 
 		for (std::uint32_t i = 0; i < length; ++i) {
-			if (queue_infos[i].type == type) {
-				indices.emplace_back(i);
+			if ((queue_infos[i].type & type) == type) {
+				auto capabilities = static_cast<std::uint8_t>(queue_infos[i].type);
+				std::uint8_t capability_count = 0u;
+				while (capabilities != 0u) {
+					capability_count += capabilities & 1u;
+					capabilities >>= 1u;
+				}
+
+				if (capability_count < minimum_capability_count) {
+					indices.clear();
+					minimum_capability_count = capability_count;
+				}
+				if (capability_count == minimum_capability_count) {
+					indices.emplace_back(i);
+				}
 			}
+		}
+
+		if (indices.empty()) {
+			return nullptr;
 		}
 
 		// Randomly select one family from the matching ones.
@@ -232,18 +281,21 @@ namespace fyuu_rhi::vulkan {
 	QueueAllocator::QueueAllocator(
 		std::span<CommandQueueInfo const> queue_infos,
 		QueueOptions const& init_options
-	) : m_queue_sets(
-		[queue_infos, &init_options]() {
-			decltype(m_queue_sets) queue_sets;
-			queue_sets.emplace(CommandQueueType::Graphics, MakeQueueSet(CommandQueueType::Graphics, queue_infos, init_options));
-			queue_sets.emplace(CommandQueueType::Compute, MakeQueueSet(CommandQueueType::Compute, queue_infos, init_options));
-			queue_sets.emplace(CommandQueueType::Copy, MakeQueueSet(CommandQueueType::Copy, queue_infos, init_options));
-			return queue_sets;
-		}()) {
+	) : m_queue_sets() {
+		for (CommandQueueType type : {
+			CommandQueueType::Graphics,
+			CommandQueueType::Compute,
+			CommandQueueType::Copy
+		}) {
+			auto queue_set = MakeQueueSet(type, queue_infos, init_options);
+			if (queue_set) {
+				m_queue_sets.emplace(type, std::move(queue_set));
+			}
+		}
 
 	}
 
-	std::shared_ptr<ManagedQueue> QueueAllocator::Allocate(CommandQueueType type, QueuePriority priority) {
+	ManagedQueue QueueAllocator::Allocate(CommandQueueType type, QueuePriority priority) {
 
 		auto& queue_set = m_queue_sets.at(type);
 		auto const& priorities = queue_set->priorities;
@@ -269,17 +321,20 @@ namespace fyuu_rhi::vulkan {
 		if (candidates.empty())
 			throw std::runtime_error("No queue satisfies the priorities");
 
-		std::lock_guard<std::mutex> lock(queue_set->allocated_queue_mutex);
+		std::unique_lock<std::mutex> lock(queue_set->allocated_queue_mutex);
 		for (std::uint32_t index : candidates) {
 			auto& allocated_queue = queue_set->allocated_queue;
 			if (allocated_queue.find(index) == allocated_queue.end()) {
 				allocated_queue.insert(index);
-				// Return a shared_ptr to a handle that keeps the queue_set alive
-				return std::make_shared<ManagedQueue>(queue_set, index);
+				return ManagedQueue(queue_set, index);
 			}
 		}
 
 		throw std::runtime_error("No queue available");
+	}
+
+	bool QueueAllocator::Supports(CommandQueueType type) const noexcept {
+		return m_queue_sets.contains(type);
 	}
 
 	std::uint32_t QueueAllocator::GetFamily(CommandQueueType type) const noexcept {

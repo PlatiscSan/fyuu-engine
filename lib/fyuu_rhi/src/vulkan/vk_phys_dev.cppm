@@ -14,7 +14,7 @@ module;
 #include <vma/vk_mem_alloc.h>
 #endif //!defined(__APPLE__)
 #include "log.hpp"
-export module fyuu_rhi:vulkan_physical_device;
+module fyuu_rhi:vulkan_physical_device;
 #if !defined(__APPLE__)
 #if defined(__cpp_lib_modules)
 import std;
@@ -23,6 +23,7 @@ import vulkan;
 import :core_types;
 import :vulkan_traits;
 import :vulkan_queue_allocator;
+import :vulkan_utility;
 import :log;
 
 namespace {
@@ -39,13 +40,6 @@ namespace {
 		case vk::PhysicalDeviceType::eVirtualGpu: return Type::Virtual;
 		default: return Type::Unknown;
 		}
-	}
-
-	std::vector<std::string> ToStrings(std::span<char const* const> strings) {
-		std::vector<std::string> result;
-		result.reserve(strings.size());
-		for (auto string : strings) result.emplace_back(string);
-		return result;
 	}
 
 	struct OptionalDeviceExt {
@@ -102,8 +96,9 @@ namespace {
 
 		static constexpr OptionalDeviceExt optional_exts[] = {
 			{ vk::EXTSwapchainMaintenance1ExtensionName, vk::EXTSurfaceMaintenance1ExtensionName },
+			{ vk::KHRMaintenance2ExtensionName, "" },
+			{ vk::KHRImageFormatListExtensionName, "" },
 			{ vk::KHRSwapchainMutableFormatExtensionName, "" },
-			{ vk::EXTSwapchainColorSpaceExtensionName, "" },
 			{ vk::KHRSurfaceProtectedCapabilitiesExtensionName, "" },
 			{ vk::KHRPresentModeFifoLatestReadyExtensionName, vk::KHRGetSurfaceCapabilities2ExtensionName },
 		};
@@ -116,21 +111,33 @@ namespace {
 		);
 	}
 
-	void InsertFutureExtensions(
-		std::unordered_set<std::string_view> const& device_extensions,
-		std::span<std::string const> enabled_instance_extensions,
-		std::vector<char const*>& enabled_device_extensions
-	) {
-		static constexpr OptionalDeviceExt optional_exts[] = {
-			{ vk::KHRTimelineSemaphoreExtensionName, "" },
-		};
+	[[nodiscard]] bool IsDeviceExtensionEnabled(
+		std::span<char const* const> enabled_extensions,
+		std::string_view extension
+	) noexcept {
+		for (auto enabled : enabled_extensions) {
+			if (std::string_view(enabled) == extension) {
+				return true;
+			}
+		}
+		return false;
+	}
 
-		ProcessOptionalDeviceExtensions(
-			device_extensions, 
-			enabled_instance_extensions,
-			enabled_device_extensions, 
-			optional_exts
-		);
+	[[nodiscard]] bool EnablePromotedDeviceExtension(
+		std::uint32_t api_version,
+		std::uint32_t core_version,
+		char const* extension_name,
+		std::unordered_set<std::string_view> const& available_extensions,
+		std::vector<char const*>& enabled_extensions
+	) {
+		if (api_version >= core_version) {
+			return true;
+		}
+		if (!available_extensions.contains(extension_name)) {
+			return false;
+		}
+		enabled_extensions.emplace_back(extension_name);
+		return true;
 	}
 
 	std::vector<CommandQueueInfo> QueryQueueInfo(Backend::PhysicalDevice const& phys_dev) {
@@ -144,23 +151,19 @@ namespace {
 		for (std::uint32_t i = 0; i < length; ++i) {
 			vk::QueueFamilyProperties const& current_family = queue_families[i];
 
-			bool is_graphics = static_cast<bool>(current_family.queueFlags & vk::QueueFlagBits::eGraphics);
-			bool is_compute = static_cast<bool>(current_family.queueFlags & vk::QueueFlagBits::eCompute);
-			bool is_copy = static_cast<bool>(current_family.queueFlags & vk::QueueFlagBits::eTransfer);
-
-			if (is_graphics && is_compute && is_copy) {
-				queue_infos.push_back({ CommandQueueType::Graphics, i, current_family.queueCount });
-				continue;
+			CommandQueueType type = CommandQueueType::None;
+			if (current_family.queueFlags & vk::QueueFlagBits::eGraphics) {
+				type |= CommandQueueType::Graphics;
+			}
+			if (current_family.queueFlags & vk::QueueFlagBits::eCompute) {
+				type |= CommandQueueType::Compute;
+			}
+			if (current_family.queueFlags & vk::QueueFlagBits::eTransfer) {
+				type |= CommandQueueType::Copy;
 			}
 
-			if (is_compute && is_copy) {
-				queue_infos.push_back({ CommandQueueType::Compute, i, current_family.queueCount });
-				continue;
-			}
-
-			if (is_copy) {
-				queue_infos.push_back({ CommandQueueType::Copy, i, current_family.queueCount });
-				continue;
+			if (type != CommandQueueType::None) {
+				queue_infos.push_back({ type, i, current_family.queueCount });
 			}
 		}
 
@@ -213,24 +216,84 @@ namespace fyuu_rhi::vulkan {
 		std::vector<char const*> enabled_extensions;
 
 		InsertSwapChainExtensions(device_extensions, instance.enabled_extensions, enabled_extensions);
-		InsertFutureExtensions(device_extensions, instance.enabled_extensions, enabled_extensions);
-
 		auto properties = phys_dev_impl->getProperties(instance.dispatcher);
-		bool dynamic_rendering_core = properties.apiVersion >= vk::ApiVersion13;
-		bool dynamic_rendering_extension =
-			!dynamic_rendering_core &&
-			device_extensions.contains(vk::KHRDynamicRenderingExtensionName);
-		if (dynamic_rendering_extension) {
-			enabled_extensions.push_back(vk::KHRDynamicRenderingExtensionName);
+		bool timeline_semaphore_available = EnablePromotedDeviceExtension(
+			properties.apiVersion,
+			vk::ApiVersion12,
+			vk::KHRTimelineSemaphoreExtensionName,
+			device_extensions,
+			enabled_extensions
+		);
+		bool dynamic_rendering_available = EnablePromotedDeviceExtension(
+			properties.apiVersion,
+			vk::ApiVersion13,
+			vk::KHRDynamicRenderingExtensionName,
+			device_extensions,
+			enabled_extensions
+		);
+		bool synchronization2_available = EnablePromotedDeviceExtension(
+			properties.apiVersion,
+			vk::ApiVersion13,
+			vk::KHRSynchronization2ExtensionName,
+			device_extensions,
+			enabled_extensions
+		);
+
+		vk::PhysicalDeviceTimelineSemaphoreFeatures timeline_semaphore_features;
+		vk::PhysicalDeviceDynamicRenderingFeatures dynamic_rendering_features;
+		vk::PhysicalDeviceSynchronization2Features synchronization2_features;
+		vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR swapchain_maintenance_features;
+		vk::PhysicalDevicePresentModeFifoLatestReadyFeaturesKHR fifo_latest_ready_features;
+		void* feature_chain = nullptr;
+		bool swapchain_maintenance_available = IsDeviceExtensionEnabled(
+			enabled_extensions,
+			vk::EXTSwapchainMaintenance1ExtensionName
+		);
+		bool fifo_latest_ready_available = IsDeviceExtensionEnabled(
+			enabled_extensions,
+			vk::KHRPresentModeFifoLatestReadyExtensionName
+		);
+		if (swapchain_maintenance_available) {
+			swapchain_maintenance_features.pNext = feature_chain;
+			feature_chain = &swapchain_maintenance_features;
+		}
+		if (fifo_latest_ready_available) {
+			fifo_latest_ready_features.pNext = feature_chain;
+			feature_chain = &fifo_latest_ready_features;
+		}
+		if (timeline_semaphore_available) {
+			timeline_semaphore_features.pNext = feature_chain;
+			feature_chain = &timeline_semaphore_features;
+		}
+		if (dynamic_rendering_available) {
+			dynamic_rendering_features.pNext = feature_chain;
+			feature_chain = &dynamic_rendering_features;
+		}
+		if (synchronization2_available) {
+			synchronization2_features.pNext = feature_chain;
+			feature_chain = &synchronization2_features;
 		}
 
-		vk::PhysicalDeviceDynamicRenderingFeatures dynamic_rendering_features;
-		vk::PhysicalDeviceFeatures2 supported_features({}, &dynamic_rendering_features);
+		vk::PhysicalDeviceFeatures2 supported_features({}, feature_chain);
 		phys_dev_impl->getFeatures2(&supported_features, instance.dispatcher);
+		bool timeline_semaphore_supported =
+			timeline_semaphore_available &&
+			timeline_semaphore_features.timelineSemaphore;
+		timeline_semaphore_features.timelineSemaphore = timeline_semaphore_supported;
 		bool dynamic_rendering_supported =
-			(dynamic_rendering_core || dynamic_rendering_extension) &&
+			dynamic_rendering_available &&
 			dynamic_rendering_features.dynamicRendering;
 		dynamic_rendering_features.dynamicRendering = dynamic_rendering_supported;
+		bool synchronization2_supported =
+			synchronization2_available &&
+			synchronization2_features.synchronization2;
+		synchronization2_features.synchronization2 = synchronization2_supported;
+		bool swapchain_maintenance_supported =
+			swapchain_maintenance_available && swapchain_maintenance_features.swapchainMaintenance1;
+		swapchain_maintenance_features.swapchainMaintenance1 = swapchain_maintenance_supported;
+		bool fifo_latest_ready_supported =
+			fifo_latest_ready_available && fifo_latest_ready_features.presentModeFifoLatestReady;
+		fifo_latest_ready_features.presentModeFifoLatestReady = fifo_latest_ready_supported;
 
 		
 		// --------------------------------------------------------------------
@@ -241,32 +304,29 @@ namespace fyuu_rhi::vulkan {
 		// --------------------------------------------------------------------
 		std::vector<vk::DeviceQueueCreateInfo> queue_create_infos;
 
-		// Graphics queue family.
-		queue_create_infos.emplace_back(
-			vk::DeviceQueueCreateFlags{},
-			queue_alloc.GetFamily(CommandQueueType::Graphics),
-			queue_alloc.GetTotalQueue(CommandQueueType::Graphics),
-			queue_alloc.GetPriorities(CommandQueueType::Graphics).data(),
-			nullptr
-		);
+		std::unordered_set<std::uint32_t> queue_families;
+		for (CommandQueueType type : {
+			CommandQueueType::Graphics,
+			CommandQueueType::Compute,
+			CommandQueueType::Copy
+		}) {
+			if (!queue_alloc.Supports(type)) {
+				continue;
+			}
 
-		// Dedicated compute queue family (if separate from graphics).
-		queue_create_infos.emplace_back(
-			vk::DeviceQueueCreateFlags{},
-			queue_alloc.GetFamily(CommandQueueType::Compute),
-			queue_alloc.GetTotalQueue(CommandQueueType::Compute),
-			queue_alloc.GetPriorities(CommandQueueType::Compute).data(),
-			nullptr
-		);
+			auto family = queue_alloc.GetFamily(type);
+			if (!queue_families.emplace(family).second) {
+				continue;
+			}
 
-		// Dedicated copy/transfer queue family.
-		queue_create_infos.emplace_back(
-			vk::DeviceQueueCreateFlags{},
-			queue_alloc.GetFamily(CommandQueueType::Copy),
-			queue_alloc.GetTotalQueue(CommandQueueType::Copy),
-			queue_alloc.GetPriorities(CommandQueueType::Copy).data(),
-			nullptr
-		);
+			queue_create_infos.emplace_back(
+				vk::DeviceQueueCreateFlags{},
+				family,
+				queue_alloc.GetTotalQueue(type),
+				queue_alloc.GetPriorities(type).data(),
+				nullptr
+			);
+		}
 
 		vk::DeviceCreateInfo device_create_info(
 			{},					// flags_
@@ -274,7 +334,7 @@ namespace fyuu_rhi::vulkan {
 			{},					// pEnabledLayerNames_
 			enabled_extensions,	// pEnabledExtensionNames_
 			nullptr,			// pEnabledFeatures_
-			dynamic_rendering_supported ? &dynamic_rendering_features : nullptr
+			feature_chain
 		);
 
 		vk::SharedDevice dev(
@@ -304,15 +364,38 @@ namespace fyuu_rhi::vulkan {
 			throw std::runtime_error("CreateLogicalDevice(): Failed to create VMA allocator");
 		}
 
-		auto mem_alloc = std::make_shared<VMAAllocator>(mem_alloc_impl);
+		auto mem_alloc = std::make_shared<VMAAllocator>(dev, mem_alloc_impl);
+		std::unordered_set<vk::StructureType> enabled_features;
+		if (timeline_semaphore_supported) {
+			enabled_features.emplace(vk::StructureType::ePhysicalDeviceTimelineSemaphoreFeatures);
+		}
+		if (dynamic_rendering_supported) {
+			enabled_features.emplace(vk::StructureType::ePhysicalDeviceDynamicRenderingFeatures);
+		}
+		if (synchronization2_supported) {
+			enabled_features.emplace(vk::StructureType::ePhysicalDeviceSynchronization2Features);
+		}
+		if (swapchain_maintenance_supported) {
+			enabled_features.emplace(
+				vk::StructureType::ePhysicalDeviceSwapchainMaintenance1FeaturesKHR
+			);
+		}
+		if (fifo_latest_ready_supported) {
+			enabled_features.emplace(
+				vk::StructureType::ePhysicalDevicePresentModeFifoLatestReadyFeaturesKHR
+			);
+		}
 
 		return {
 			phys_dev,
 			std::move(queue_alloc),
 			ToStrings(enabled_extensions),
-			std::move(dev),
-			std::move(dev_dispatcher),
-			std::move(mem_alloc)
+			std::move(enabled_features),
+			dev,
+			dev_dispatcher,
+			mem_alloc,
+			std::make_shared<LogicalDevice::PresentationCache>(),
+			execution::CompletionService::Instance()
 		};
 	}
 

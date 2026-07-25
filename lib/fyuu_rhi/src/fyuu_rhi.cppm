@@ -28,6 +28,7 @@ import :view;
 import :sampler;
 export import :scheduler_types;
 export import :scheduler;
+export import :command_graph;
 export import :pipeline_types;
 export import :pipeline;
 import :logical_device;
@@ -148,11 +149,19 @@ namespace fyuu_rhi::execution {
 
 #if defined(_WIN32)
 	export using D3D12Scheduler = Scheduler<d3d12::Backend>;
+	export using D3D12CommandGraph = CommandGraph<d3d12::Backend>;
+	export using D3D12ExecutableGraph = ExecutableGraph<d3d12::Backend>;
 #endif // defined(_WIN32)
 #if !defined(__APPLE__)
 	export using VulkanScheduler = Scheduler<vulkan::Backend>;
+	export using VulkanCommandGraph = CommandGraph<vulkan::Backend>;
+	export using VulkanExecutableGraph = ExecutableGraph<vulkan::Backend>;
 	export using OpenGLScheduler = Scheduler<opengl::Backend>;
+	export using OpenGLCommandGraph = CommandGraph<opengl::Backend>;
+	export using OpenGLExecutableGraph = ExecutableGraph<opengl::Backend>;
 #endif // defined(__APPLE__)
 	export using WebGPUScheduler = Scheduler<webgpu::Backend>;
+	export using WebGPUCommandGraph = CommandGraph<webgpu::Backend>;
+	export using WebGPUExecutableGraph = ExecutableGraph<webgpu::Backend>;
 
 }

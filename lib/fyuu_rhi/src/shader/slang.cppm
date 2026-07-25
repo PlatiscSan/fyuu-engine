@@ -294,20 +294,20 @@ namespace fyuu_rhi::shader {
 				{ "fragment_outputs", nlohmann::json::array() },
 				{ "push_constants", nlohmann::json::array() }
 			};
-			for (auto const& binding : interface.bindings) {
+			for (auto const& entry : interface.bindings) {
 				nlohmann::json flags = nlohmann::json::array();
-				auto words = binding.flags.Snapshot();
+				auto words = entry.flags.Snapshot();
 				for (auto word : words) {
 					flags.push_back(word);
 				}
 				result["bindings"].push_back(
 					{
-						{ "name", binding.name },
+						{ "name", entry.name },
 						{ "flags", std::move(flags) },
-						{ "binding", binding.binding },
-						{ "space", binding.space },
-						{ "count", binding.count },
-						{ "visibility", binding.visibility }
+						{ "binding", entry.slot },
+						{ "space", entry.space },
+						{ "count", entry.count },
+						{ "visibility", entry.visibility }
 					}
 				);
 			}
@@ -331,7 +331,7 @@ namespace fyuu_rhi::shader {
 					{
 						{ "offset", range.offset },
 						{ "size", range.size },
-						{ "binding", range.binding },
+						{ "binding", range.slot },
 						{ "space", range.space },
 						{ "visibility", range.visibility }
 					}
@@ -343,9 +343,9 @@ namespace fyuu_rhi::shader {
 		static SlangPipelineInterface DeserializeInterface(nlohmann::json const& json) {
 			SlangPipelineInterface result;
 			for (auto const& item : json.at("bindings")) {
-				SlangPipelineBinding binding;
-				binding.name = item.at("name").get<std::string>();
-				auto words = binding.flags.Snapshot();
+				SlangPipelineBinding entry;
+				entry.name = item.at("name").get<std::string>();
+				auto words = entry.flags.Snapshot();
 				auto const& serialized_words = item.at("flags");
 				if (serialized_words.size() != words.size()) {
 					throw std::runtime_error("Pipeline interface flag word count mismatch");
@@ -353,12 +353,12 @@ namespace fyuu_rhi::shader {
 				for (std::size_t index = 0; index < words.size(); ++index) {
 					words[index] = serialized_words[index].get<std::size_t>();
 				}
-				binding.flags.Assign(words);
-				binding.binding = item.at("binding").get<std::uint32_t>();
-				binding.space = item.at("space").get<std::uint32_t>();
-				binding.count = item.at("count").get<std::uint32_t>();
-				binding.visibility = item.at("visibility").get<std::uint32_t>();
-				result.bindings.push_back(std::move(binding));
+				entry.flags.Assign(words);
+				entry.slot = item.at("binding").get<std::uint32_t>();
+				entry.space = item.at("space").get<std::uint32_t>();
+				entry.count = item.at("count").get<std::uint32_t>();
+				entry.visibility = item.at("visibility").get<std::uint32_t>();
+				result.bindings.push_back(std::move(entry));
 			}
 			for (auto const& item : json.at("vertex_inputs")) {
 				result.vertex_inputs.push_back(

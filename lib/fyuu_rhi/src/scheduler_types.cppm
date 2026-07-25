@@ -11,12 +11,10 @@ import std;
 import plastic.atomic_flags;
 
 namespace fyuu_rhi::execution {
-
 	export enum class SchedulerFlagBits : std::uint8_t {
 		Graphics,
 		Compute,
 		Copy,
-		Present,
 		Count
 	};
 

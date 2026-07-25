@@ -77,9 +77,6 @@ namespace {
 	using namespace fyuu_rhi::pipeline;
 	using namespace fyuu_rhi::opengl;
 
-	std::pmr::synchronized_pool_resource s_obj_pool{};
-	std::mutex s_pipeline_cache_mutex;
-
 	GLbitfield ExtractBufferFlags(ResourceFlags const& flags) noexcept {
 		GLbitfield gl_flags = 0;
 		if (flags.Test(ResourceFlagBits::CopySRC)) {
@@ -363,8 +360,7 @@ namespace {
 		case PipelineStage::TessellationControl:	return GL_TESS_CONTROL_SHADER;
 		case PipelineStage::TessellationEvaluation:return GL_TESS_EVALUATION_SHADER;
 		case PipelineStage::Geometry:				return GL_GEOMETRY_SHADER;
-		case PipelineStage::Compute:
-			throw std::invalid_argument("A compute stage cannot be used in an OpenGL graphics pipeline");
+		case PipelineStage::Compute:				return GL_COMPUTE_SHADER;
 		case PipelineStage::Task:
 		case PipelineStage::Mesh:
 			throw std::invalid_argument("OpenGL mesh shading pipelines are not implemented");
@@ -497,27 +493,13 @@ namespace {
 			return 0u;
 		}
 
-		GLenum bin_fmt = 0;
-		std::vector<std::byte> bytes;
-		{
-			std::unique_lock<std::mutex> cache_lock(s_pipeline_cache_mutex);
-			std::ifstream file(path, std::ios::binary | std::ios::ate);
-			if (!file) {
-				return 0u;
-			}
-			std::streamsize size = file.tellg();
-			if (size <= static_cast<std::streamsize>(sizeof(GLenum))) {
-				return 0u;
-			}
-			file.seekg(0, std::ios::beg);
-			bytes.resize(static_cast<std::size_t>(size) - sizeof(GLenum));
-			if (!file.read(reinterpret_cast<char*>(&bin_fmt), sizeof(GLenum))) {
-				return 0u;
-			}
-			if (!file.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()))) {
-				return 0u;
-			}
+		auto cached = cache::ReadFile(path);
+		if (cached.size() <= sizeof(GLenum)) {
+			return 0u;
 		}
+		GLenum bin_fmt = 0;
+		std::memcpy(&bin_fmt, cached.data(), sizeof(GLenum));
+		auto bytes = std::span(cached).subspan(sizeof(GLenum));
 
 		GLuint program = glCreateProgram();
 		if (!program) {
@@ -559,24 +541,10 @@ namespace {
 			return;
 		}
 
-		std::unique_lock<std::mutex> cache_lock(s_pipeline_cache_mutex);
-		auto temporary = path;
-		temporary += std::format(".tmp-{:x}", std::hash<std::thread::id>{}(std::this_thread::get_id()));
-		{
-			std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
-			output.write(reinterpret_cast<char const*>(&bin_fmt), sizeof(GLenum));
-			output.write(reinterpret_cast<char const*>(bytes.data()), written);
-			if (!output) {
-				return;
-			}
-		}
-		std::error_code error;
-		fs::remove(path, error);
-		error.clear();
-		fs::rename(temporary, path, error);
-		if (error) {
-			fs::remove(temporary);
-		}
+		std::vector<std::byte> serialized(sizeof(GLenum) + static_cast<std::size_t>(written));
+		std::memcpy(serialized.data(), &bin_fmt, sizeof(GLenum));
+		std::memcpy(serialized.data() + sizeof(GLenum), bytes.data(), written);
+		cache::WriteFileAtomically(path, serialized);
 	}
 //
 //	GLenum ToGLShaderType(EShLanguage stage) noexcept {
@@ -1118,9 +1086,7 @@ namespace fyuu_rhi::opengl {
 
 	using namespace fyuu_rhi::pipeline;
 
-	std::shared_ptr<Backend::GLResource> Backend::CreateBuffer(Backend::LogicalDevice const& ld, std::size_t size_in_bytes, ResourceFlags const& flags) {
-
-		std::pmr::polymorphic_allocator<Backend::GLResource> pmr_alloc(&s_obj_pool);
+	Backend::Resource Backend::CreateBuffer(Backend::LogicalDevice const& ld, std::size_t size_in_bytes, ResourceFlags const& flags) {
 
 		GLuint buf = 0u;
 		GLbitfield buffer_flags = ExtractBufferFlags(flags);
@@ -1194,13 +1160,11 @@ namespace fyuu_rhi::opengl {
 
 		}
 
-		return std::allocate_shared<Backend::GLResource>(pmr_alloc, buf, Backend::GLResource::Type::Buffer);
+		return Backend::GLResource(buf, Backend::GLResource::Type::Buffer, size_in_bytes);
 
 	}
 
-	std::shared_ptr<Backend::GLResource> Backend::CreateTexture(Backend::LogicalDevice const& ld, std::size_t width, std::size_t height, std::size_t depth_arr_layers, std::size_t mip_lvl_cnt, ResourceFlags const& flags) {
-	
-		std::pmr::polymorphic_allocator<Backend::GLResource> pmr_alloc(&s_obj_pool);
+	Backend::Resource Backend::CreateTexture(Backend::LogicalDevice const& ld, std::size_t width, std::size_t height, std::size_t depth_arr_layers, std::size_t mip_lvl_cnt, ResourceFlags const& flags) {
 
 		GLsizei sample_cnt = ExtractSampleCount(flags);
 		GLenum target = ExtractTextureTarget(flags, depth_arr_layers, sample_cnt);
@@ -1351,13 +1315,17 @@ namespace fyuu_rhi::opengl {
 
 		glBindTexture(target, 0);
 
-		return std::allocate_shared<Backend::GLResource>(pmr_alloc, tex, Backend::GLResource::Type::Texture);
+		return Backend::GLResource(
+			tex, target, internal_format, static_cast<std::uint32_t>(width),
+			static_cast<std::uint32_t>(height), static_cast<std::uint32_t>(depth_arr_layers),
+			static_cast<std::uint32_t>(mip_lvl_cnt), static_cast<std::uint32_t>(sample_cnt)
+		);
 
 	}
 
-	Backend::View Backend::CreateTextureView(Backend::LogicalDevice const& ld, std::shared_ptr<GLResource> const& res, std::size_t base_mip_lvl, std::size_t mip_lvl_cnt, std::size_t base_arr_layer, std::size_t arr_layer_cnt, ResourceFlags const& flags) {
+	Backend::View Backend::CreateTextureView(Backend::LogicalDevice const& ld, Resource const& res, std::size_t base_mip_lvl, std::size_t mip_lvl_cnt, std::size_t base_arr_layer, std::size_t arr_layer_cnt, ResourceFlags const& flags) {
 		
-		if (!res || res->type != Backend::GLResource::Type::Texture) {
+		if (res.type != Backend::GLResource::Type::Texture) {
 			throw std::invalid_argument("CreateTextureView(): source is not a texture");
 		}
 
@@ -1382,20 +1350,24 @@ namespace fyuu_rhi::opengl {
 		GLenum internal_format = ExtractInternalFormat(flags);
 
 		glTextureView(
-			view, view_target, res->impl, internal_format,
+			view, view_target, res.impl, internal_format,
 			static_cast<GLuint>(base_mip_lvl), static_cast<GLuint>(mip_lvl_cnt),
 			static_cast<GLuint>(base_arr_layer), static_cast<GLuint>(arr_layer_cnt)
 		);
 
-		std::pmr::polymorphic_allocator<Backend::GLTextureView> pmr_alloc(&s_obj_pool);
-
-		return { std::allocate_shared<Backend::GLTextureView>(pmr_alloc, view) };
+		return {
+			Backend::GLTextureView(
+				view, view_target, internal_format,
+				static_cast<std::uint32_t>(base_mip_lvl), static_cast<std::uint32_t>(mip_lvl_cnt),
+				static_cast<std::uint32_t>(base_arr_layer), static_cast<std::uint32_t>(arr_layer_cnt)
+			)
+		};
 			
 	}
 
-	Backend::View Backend::CreateBufferView(Backend::LogicalDevice const& ld, std::shared_ptr<GLResource> const& res, std::size_t offset, std::size_t range, ResourceFlags const& flags) {
+	Backend::View Backend::CreateBufferView(Backend::LogicalDevice const& ld, Resource const& res, std::size_t offset, std::size_t range, ResourceFlags const& flags) {
 		
-		if (!res || res->type != Backend::GLResource::Type::Buffer) {
+		if (res.type != Backend::GLResource::Type::Buffer) {
 			throw std::invalid_argument("CreateBufferView(): source resource is not a buffer");
 		}
 
@@ -1412,26 +1384,24 @@ namespace fyuu_rhi::opengl {
 		GLenum internal_format = ExtractInternalFormat(flags);
 		if (GLAD_GL_ARB_direct_state_access) {
 			if (GLAD_GL_ARB_texture_buffer_range && (offset != 0u || range != 0u)) {
-				glTextureBufferRange(view, internal_format, res->impl, static_cast<GLintptr>(offset), static_cast<GLsizeiptr>(range));
+				glTextureBufferRange(view, internal_format, res.impl, static_cast<GLintptr>(offset), static_cast<GLsizeiptr>(range));
 			}
 			else {
-				glTextureBuffer(view, internal_format, res->impl);
+				glTextureBuffer(view, internal_format, res.impl);
 			}
 		}
 		else {
 			glBindTexture(target, view);
 			if (GLAD_GL_ARB_texture_buffer_range && (offset != 0u || range != 0u)) {
-				glTexBufferRange(target, internal_format, res->impl, static_cast<GLintptr>(offset), static_cast<GLsizeiptr>(range));
+				glTexBufferRange(target, internal_format, res.impl, static_cast<GLintptr>(offset), static_cast<GLsizeiptr>(range));
 			}
 			else {
-				glTexBuffer(target, internal_format, res->impl);
+				glTexBuffer(target, internal_format, res.impl);
 			}
 			glBindTexture(target, 0u);
 		}
-		std::pmr::polymorphic_allocator<Backend::GLBufferView> pmr_alloc(&s_obj_pool);
 		return {
-			std::allocate_shared<Backend::GLBufferView>(
-				pmr_alloc,
+			Backend::GLBufferView(
 				view,
 				GLAD_GL_ARB_texture_buffer_range
 					? std::nullopt
@@ -1517,8 +1487,7 @@ namespace fyuu_rhi::opengl {
 		std::array border_color = { 0.0f, 0.0f, 0.0f, 0.0f };
 		glSamplerParameterfv(sampler, GL_TEXTURE_BORDER_COLOR, border_color.data());
 
-		std::pmr::polymorphic_allocator<Backend::GLSampler> pmr_alloc(&s_obj_pool);
-		return std::allocate_shared<Backend::GLSampler>(pmr_alloc, sampler);
+		return Backend::GLSampler(sampler);
 
 	}
 
@@ -1526,7 +1495,7 @@ namespace fyuu_rhi::opengl {
 		Backend::LogicalDevice const& ld,
 		GraphicsPipelineDescriptor const& descriptor
 	) {
-		(void)ld;
+		Backend::ShareContextOnThisThread(*ld.instance);
 		auto shader_target = SelectOpenGLShaderTarget();
 		slang::TargetDesc target{ .format = shader_target.format };
 		target.profile = shader::SlangGlobalSession()->findProfile(shader_target.profile.data());
@@ -1548,6 +1517,9 @@ namespace fyuu_rhi::opengl {
 		bool has_vertex_stage = false;
 		std::uint32_t stage_mask = 0;
 		for (auto const& entry : slang_program.EntryPoints()) {
+			if (entry.stage == PipelineStage::Compute) {
+				throw std::invalid_argument("A compute entry point cannot be used by an OpenGL graphics pipeline");
+			}
 			MapPipelineStage(entry.stage);
 			if (
 				shader_target.essl_version &&
@@ -1615,9 +1587,7 @@ namespace fyuu_rhi::opengl {
 			}
 		}
 
-		std::pmr::polymorphic_allocator<Backend::GLPipeline> pmr_alloc(&s_obj_pool);
-		return std::allocate_shared<Backend::GLPipeline>(
-			pmr_alloc,
+		return Backend::GLPipeline(
 			program,
 			std::vector<VertexBufferLayout>(descriptor.vertex.buffers.begin(), descriptor.vertex.buffers.end()),
 			std::vector<VertexAttribute>(descriptor.vertex.attributes.begin(), descriptor.vertex.attributes.end()),
@@ -1630,141 +1600,130 @@ namespace fyuu_rhi::opengl {
 		);
 	}
 
+	Backend::Pipeline Backend::CreateComputePipeline(
+		Backend::LogicalDevice const& ld,
+		ComputePipelineDescriptor const& descriptor
+	) {
+		Backend::ShareContextOnThisThread(*ld.instance);
+		if (!GLAD_GL_VERSION_4_3 && !GLAD_GL_ES_VERSION_3_1 && !GLAD_GL_ARB_compute_shader) {
+			throw std::runtime_error("Compute pipelines require OpenGL 4.3 or OpenGL ES 3.1");
+		}
+		auto shader_target = SelectOpenGLShaderTarget();
+		slang::TargetDesc target{ .format = shader_target.format };
+		target.profile = shader::SlangGlobalSession()->findProfile(shader_target.profile.data());
+		shader::SlangProgram slang_program(
+			target,
+			descriptor.program,
+			GetOpenGLCacheTag(shader_target.cache_name)
+		);
+		for (auto const& binding : slang_program.Interface().bindings) {
+			if (binding.space != 0u) {
+				throw std::invalid_argument("OpenGL compute resource bindings must use space 0");
+			}
+		}
+		if (!slang_program.Interface().push_constants.empty()) {
+			throw std::invalid_argument("OpenGL compute pipelines do not support push constants");
+		}
+		if (slang_program.EntryPoints().size() != 1u ||
+			slang_program.EntryPoints().front().stage != PipelineStage::Compute) {
+			throw std::invalid_argument("OpenGL compute pipelines require exactly one compute entry point");
+		}
+
+		auto cache_path = GetPipelineCachePath(slang_program, shader_target.cache_name);
+		GLuint program = LoadProgramBinary(cache_path);
+		if (!program) {
+			program = glCreateProgram();
+			if (!program) {
+				throw std::runtime_error("Failed to create an OpenGL compute pipeline program");
+			}
+			if (SupportsProgramBinary()) {
+				glProgramParameteri(program, GL_PROGRAM_BINARY_RETRIEVABLE_HINT, GL_TRUE);
+			}
+			GLuint stage = 0u;
+			try {
+				stage = CompilePipelineStage(slang_program.EntryPoints().front(), shader_target.essl_version);
+				glAttachShader(program, stage);
+				glLinkProgram(program);
+				GLint linked = GL_FALSE;
+				glGetProgramiv(program, GL_LINK_STATUS, &linked);
+				if (linked == GL_FALSE) {
+					throw std::runtime_error(
+						std::format("Failed to link OpenGL compute pipeline: {}", GetProgramInfoLog(program))
+					);
+				}
+			}
+			catch (...) {
+				if (stage) {
+					glDetachShader(program, stage);
+					glDeleteShader(stage);
+				}
+				glDeleteProgram(program);
+				throw;
+			}
+			glDetachShader(program, stage);
+			glDeleteShader(stage);
+			if (SupportsProgramBinary()) {
+				SaveProgramBinary(program, cache_path);
+			}
+		}
+		return Backend::GLPipeline(
+			program,
+			MakePipelineBindingMetadata(slang_program.Interface())
+		);
+	}
+
 	Backend::PipelineResourceGroup Backend::CreatePipelineResourceGroup(
 		Backend::LogicalDevice const& ld,
 		Backend::Pipeline const& pipeline,
 		std::uint32_t space,
 		std::span<NativePipelineResourceBinding<Backend> const> bindings
 	) {
-		(void)ld;
-		if (!pipeline) {
+		if (!ld) {
+			throw std::invalid_argument("OpenGL logical device must not be empty");
+		}
+		if (!pipeline.impl) {
 			throw std::invalid_argument("Cannot create an OpenGL resource group for an empty pipeline");
 		}
 
-		return MakePipelineResourceGroup<Backend>(pipeline->bindings, space, bindings);
+		return MakePipelineResourceGroup<Backend>(pipeline.bindings, space, bindings);
 	}
 
-	//Backend::Shader Backend::CreateShader(Backend::LogicalDevice const& ld, std::string_view src, ShaderCompilationOptions const& options, std::string_view entry) {
-	//	
-	//	std::pmr::polymorphic_allocator<Backend::GLShader> pmr_alloc(&s_obj_pool);
-	//	shader::ShaderCacheKey key{ src, options, entry };
-	//	std::uint64_t hash = key.Hash();
-	//	fs::path cache_path = cache::GetCacheFilePath(std::format("gl_shader_{}.bin", hash));
+	Backend::Scheduler Backend::CreateScheduler(
+		LogicalDevice const& ld,
+		SchedulerDescriptor const& descriptor
+	) {
+		using Flag = SchedulerFlagBits;
+		if (!ld) {
+			throw std::invalid_argument("CreateScheduler(): logical device must not be null");
+		}
+		if (!descriptor.flags.Test(Flag::Graphics) &&
+			!descriptor.flags.Test(Flag::Compute) &&
+			!descriptor.flags.Test(Flag::Copy)) {
+			throw std::invalid_argument("CreateScheduler(): no execution capability was requested");
+		}
+		auto queue = std::make_shared<GLScheduler::QueueState>(
+			ld,
+			std::make_shared<GLScheduler::CommandPool>()
+		);
+		GLScheduler::QueueCollection queues;
+		if (descriptor.flags.Test(Flag::Graphics)) {
+			queues.graphics = queue;
+		}
+		if (descriptor.flags.Test(Flag::Compute)) {
+			queues.compute = queue;
+		}
+		if (descriptor.flags.Test(Flag::Copy)) {
+			queues.copy = queue;
+		}
+		return std::make_shared<GLScheduler>(queues);
+	}
 
-	//	if (GLuint program = LoadCache(cache_path)) {
-	//		LOG_INFO(std::format("CreateShader(): Shader cache hit for hash {:016x}", hash));
-	//		return std::allocate_shared<Backend::GLShader>(pmr_alloc, program);
-	//	}
-	//	
-	//	LOG_INFO(std::format("CreateShader(): Shader cache miss, compiling shader hash {:016x}", hash));
-
-	//	shader::Language lang = shader::DetectLanguage(src);
-	//	GLuint program;
-	//	switch (lang) {
-	//	case shader::Language::HLSL:
-	//		program = CompileHLSL(ld, src, options, entry);
-	//		break;
-	//	case shader::Language::GLSL:
-	//		program = CompileGLSL(ld, src, options, entry);
-	//		//case shader::Language::WGSL:
-	//		//	return CompileWGSL(src, options, entry);
-	//		break;
-	//	default:
-	//		try {
-	//			program = CompileHLSL(ld, src, options, entry);
-	//		}
-	//		catch (std::exception const&) {
-	//			LOG_WARNING("CreateShader(): Compiling as HLSL but failed, trying to do as GLSL");
-	//			try {
-	//				program = CompileGLSL(ld, src, options, entry);
-	//			}
-	//			catch (std::exception const&) {
-	//				//LOG_WARNING("CreateShader(): Compiling as GLSL but failed, trying to do as WGSL");
-	//				//try {
-	//				//	return CompileWGSL(src, options, entry);
-	//				//}
-	//				//catch (std::exception const&) {
-	//				//	throw std::invalid_argument("CreateShader(): Unsupported shader language or compilation failed");
-	//				//}
-	//				throw std::invalid_argument("CreateShader(): Unsupported shader language or compilation failed");
-	//			}
-	//		}
-	//	}
-
-	//	auto shader = std::allocate_shared<Backend::GLShader>(pmr_alloc, program);
-
-	//	if (GLAD_GL_ARB_get_program_binary) {
-
-	//		static std::mutex save_mutex;
-	//		static std::deque<std::pair<std::shared_ptr<Backend::GLShader>, fs::path>> pending_saves;
-	//		static std::condition_variable save_cv;
-
-	//		static std::jthread save_thread(
-	//			[ld](std::stop_token token) {
-
-	//				Backend::ShareContextOnThisThread(*ld);
-
-	//				std::optional<std::pair<std::shared_ptr<Backend::GLShader>, fs::path>> item;
-
-	//				while (!token.stop_requested()) {
-
-
-	//					{
-	//						std::unique_lock<std::mutex> lock(save_mutex);
-	//						save_cv.wait(lock, [&token]() { return !pending_saves.empty() || token.stop_requested(); });
-	//						if (!pending_saves.empty()) {
-	//							item.emplace(pending_saves.front());
-	//							pending_saves.pop_front();
-	//						}
-	//					}
-
-	//					try {
-	//						SaveProgramBinary(item->first, item->second);
-	//					}
-	//					catch (std::exception const& ex) {
-	//						LOG_WARNING(std::format("Background cache thread: {}", ex.what()));
-	//					}
-
-	//				}
-
-	//				while (!pending_saves.empty()) {
-	//					{					
-	//						std::unique_lock<std::mutex> lock(save_mutex);
-	//						item.emplace(pending_saves.front());
-	//						pending_saves.pop_front();
-	//					}
-	//					try {
-	//						SaveProgramBinary(item->first, item->second);
-	//					}
-	//					catch (std::exception const& ex) {
-	//						LOG_WARNING(std::format("Background cache thread: {}", ex.what()));
-	//					}
-	//				}
-
-
-	//			}
-	//		);
-
-	//		static boost::scope::defer_guard notifier(
-	//			[]() {
-	//				save_thread.get_stop_source().request_stop();
-	//				save_cv.notify_one();
-	//			}
-	//		);
-
-	//		{
-	//			std::lock_guard<std::mutex> lock(save_mutex);
-	//			pending_saves.emplace_back(shader, cache_path);
-	//		}
-
-	//		save_cv.notify_one();
-
-	//	}
-
-	//	return shader;
-
-
-	//}
+	Backend::CommandGraph Backend::CreateCommandGraph(
+		execution::CommandGraphDescriptor const& descriptor,
+		execution::NativeCommandGraphBindings<Backend> const& bindings
+	) {
+		return execution::MakeCommandGraph<Backend>(descriptor, bindings);
+	}
 
 }
 

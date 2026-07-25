@@ -42,6 +42,12 @@ namespace fyuu_rhi {
 
 		}
 
+		Resource(Resource const&) = delete;
+		Resource& operator=(Resource const&) = delete;
+		Resource(Resource&&) noexcept = default;
+		Resource& operator=(Resource&&) noexcept = default;
+		~Resource() noexcept = default;
+
 		template <class Self>
 		auto GetLogicalDevicePassKey(this Self&& self) noexcept {
 			using ResType = std::remove_reference_t<Self>;

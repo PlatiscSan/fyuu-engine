@@ -20,8 +20,11 @@ module;
 #include <span>
 #include <format>
 #include <latch>
+#include <limits>
+#include <memory>
 #include <compare>
 #include <ranges>
+#include <variant>
 #endif // !defined(__cpp_lib_modules)
 #if defined(_WIN32)
 #include <D3D12MemAlloc.h>
@@ -70,6 +73,33 @@ namespace {
 	DXGI_FORMAT ExtractFormat(ResourceFlags const& flags);
 	UINT ExtractSampleCount(ResourceFlags const& flags);
 
+	std::shared_ptr<Backend::Scheduler::QueueState> CreateSchedulerQueue(
+		Backend::LogicalDevice const& ld,
+		D3D12_COMMAND_LIST_TYPE type,
+		float priority
+	) {
+		D3D12_COMMAND_QUEUE_DESC descriptor = {
+			.Type = type,
+			.Priority = priority >= 0.75f ?
+				D3D12_COMMAND_QUEUE_PRIORITY_HIGH :
+				D3D12_COMMAND_QUEUE_PRIORITY_NORMAL,
+			.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE,
+			.NodeMask = 0u
+		};
+		Microsoft::WRL::ComPtr<ID3D12CommandQueue> queue;
+		ThrowIfFailed(ld.impl->CreateCommandQueue(&descriptor, IID_PPV_ARGS(&queue)));
+		Microsoft::WRL::ComPtr<ID3D12Fence> fence;
+		ThrowIfFailed(ld.impl->CreateFence(0u, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)));
+		return std::make_shared<Backend::Scheduler::QueueState>(
+			ld.impl,
+			queue,
+			fence,
+			1u,
+			std::make_shared<Backend::Scheduler::CommandPool>(),
+			type
+		);
+	}
+
 	D3D12_DESCRIPTOR_RANGE_TYPE DescriptorRangeType(SlangPipelineBinding const& binding) {
 		if (binding.flags.Test(ResourceFlagBits::SamplerBinding)) {
 			if (binding.flags.Count() != 1) {
@@ -80,7 +110,8 @@ namespace {
 		if (binding.flags.Test(ResourceFlagBits::UniformBuffer)) {
 			return D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
 		}
-		if (binding.flags.Test(ResourceFlagBits::StorageBinding)) {
+		if (binding.flags.Test(ResourceFlagBits::StorageBuffer) ||
+			binding.flags.Test(ResourceFlagBits::StorageBinding)) {
 			return D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
 		}
 		if (binding.flags.Test(ResourceFlagBits::TextureBinding)) {
@@ -93,61 +124,25 @@ namespace {
 		boost::hash2::xxhash_64 hash;
 		constexpr std::uint32_t schema = 1;
 		hash.update(&schema, sizeof(schema));
-		for (auto const& binding : pipeline_interface.bindings) {
-			auto name_size = binding.name.size();
+		for (auto const& entry : pipeline_interface.bindings) {
+			auto name_size = entry.name.size();
 			hash.update(&name_size, sizeof(name_size));
-			hash.update(binding.name.data(), binding.name.size());
-			auto flags = binding.flags.Snapshot();
+			hash.update(entry.name.data(), entry.name.size());
+			auto flags = entry.flags.Snapshot();
 			hash.update(flags.data(), sizeof(flags));
-			hash.update(&binding.binding, sizeof(binding.binding));
-			hash.update(&binding.space, sizeof(binding.space));
-			hash.update(&binding.count, sizeof(binding.count));
-			hash.update(&binding.visibility, sizeof(binding.visibility));
+			hash.update(&entry.slot, sizeof(entry.slot));
+			hash.update(&entry.space, sizeof(entry.space));
+			hash.update(&entry.count, sizeof(entry.count));
+			hash.update(&entry.visibility, sizeof(entry.visibility));
 		}
 		for (auto const& range : pipeline_interface.push_constants) {
 			hash.update(&range.offset, sizeof(range.offset));
 			hash.update(&range.size, sizeof(range.size));
-			hash.update(&range.binding, sizeof(range.binding));
+			hash.update(&range.slot, sizeof(range.slot));
 			hash.update(&range.space, sizeof(range.space));
 			hash.update(&range.visibility, sizeof(range.visibility));
 		}
 		return std::format("d3d12-root-signature-{:016x}.bin", hash.result());
-	}
-
-	std::vector<std::byte> ReadCacheBlob(fs::path const& path) {
-		std::ifstream input(path, std::ios::binary | std::ios::ate);
-		if (!input) {
-			return {};
-		}
-		auto size = input.tellg();
-		if (size <= 0) {
-			return {};
-		}
-		std::vector<std::byte> result(static_cast<std::size_t>(size));
-		input.seekg(0);
-		input.read(reinterpret_cast<char*>(result.data()), size);
-		return input ? std::move(result) : std::vector<std::byte>{};
-	}
-
-	void WriteCacheBlob(fs::path const& path, std::span<std::byte const> bytes) {
-		auto temporary = path;
-		temporary += std::format(".tmp-{:x}", std::hash<std::thread::id>{}(std::this_thread::get_id()));
-		{
-			std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
-			output.write(reinterpret_cast<char const*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-			output.flush();
-			if (!output) {
-				throw std::runtime_error(std::format("Failed to write D3D12 cache '{}'", temporary.string()));
-			}
-		}
-		std::error_code error;
-		fs::remove(path, error);
-		error.clear();
-		fs::rename(temporary, path, error);
-		if (error) {
-			fs::remove(temporary);
-			throw std::runtime_error(std::format("Failed to publish D3D12 cache '{}': {}", path.string(), error.message()));
-		}
 	}
 
 	Microsoft::WRL::ComPtr<ID3D12RootSignature> CreateRootSignature(
@@ -155,7 +150,7 @@ namespace {
 		SlangPipelineInterface const& pipeline_interface
 	) {
 		auto cache_path = cache::GetCacheFilePath(RootSignatureCacheKey(pipeline_interface));
-		auto serialized = ReadCacheBlob(cache_path);
+		auto serialized = cache::ReadFile(cache_path);
 
 		if (serialized.empty()) {
 			std::vector<D3D12_DESCRIPTOR_RANGE1> ranges;
@@ -163,13 +158,13 @@ namespace {
 			ranges.reserve(pipeline_interface.bindings.size());
 			parameters.reserve(pipeline_interface.bindings.size() + pipeline_interface.push_constants.size());
 
-			for (auto const& binding : pipeline_interface.bindings) {
+			for (auto const& entry : pipeline_interface.bindings) {
 				ranges.push_back(
 					{
-						.RangeType = DescriptorRangeType(binding),
-						.NumDescriptors = binding.count,
-						.BaseShaderRegister = binding.binding,
-						.RegisterSpace = binding.space,
+						.RangeType = DescriptorRangeType(entry),
+						.NumDescriptors = entry.count,
+						.BaseShaderRegister = entry.slot,
+						.RegisterSpace = entry.space,
 						.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE,
 						.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND
 					}
@@ -190,7 +185,7 @@ namespace {
 					{
 						.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
 						.Constants = {
-							.ShaderRegister = range.binding,
+							.ShaderRegister = range.slot,
 							.RegisterSpace = range.space,
 							.Num32BitValues = range.size / sizeof(std::uint32_t)
 						},
@@ -220,7 +215,9 @@ namespace {
 			}
 			auto begin = static_cast<std::byte const*>(blob->GetBufferPointer());
 			serialized.assign(begin, begin + blob->GetBufferSize());
-			WriteCacheBlob(cache_path, serialized);
+			if (!cache::WriteFileAtomically(cache_path, serialized)) {
+				throw std::runtime_error("Failed to write D3D12 root-signature cache");
+			}
 		}
 
 		Microsoft::WRL::ComPtr<ID3D12RootSignature> result;
@@ -229,7 +226,7 @@ namespace {
 				0,
 				serialized.data(),
 				serialized.size(),
-				IID_PPV_ARGS(result.ReleaseAndGetAddressOf())
+				IID_PPV_ARGS(&result)
 			)
 		);
 		return result;
@@ -1081,8 +1078,7 @@ namespace fyuu_rhi::d3d12 {
 			IID_PPV_ARGS(&res)
 		);
 		ThrowIfFailed(result);
-		std::pmr::polymorphic_allocator<Backend::Resource::Impl> alloc(&s_res_pool);
-		return { std::allocate_shared<Backend::Resource::Impl>(alloc, std::move(allocation), init_state, init_state) };
+		return { std::move(allocation), init_state, init_state };
 	}
 
 	Backend::Resource Backend::CreateTexture(Backend::LogicalDevice const& ld, std::size_t width, std::size_t height, std::size_t depth_arr_layers, std::size_t mip_lvl_cnt, ResourceFlags const& flags) {
@@ -1142,13 +1138,12 @@ namespace fyuu_rhi::d3d12 {
 		);
 		ThrowIfFailed(result);
 
-		std::pmr::polymorphic_allocator<Backend::Resource::Impl> alloc(&s_res_pool);
-		return { std::allocate_shared<Backend::Resource::Impl>(alloc, std::move(allocation), init_state, init_state) };
+		return { std::move(allocation), init_state, init_state };
 	}
 	
-	std::shared_ptr<ManagedDescriptorHandle> Backend::CreateTextureView(Backend::LogicalDevice& ld, Backend::Resource const& res, std::size_t base_mip_lvl, std::size_t mip_lvl_cnt, std::size_t base_arr_layer, std::size_t arr_layer_cnt, ResourceFlags const& flags) {
+	Backend::View Backend::CreateTextureView(Backend::LogicalDevice& ld, Backend::Resource const& res, std::size_t base_mip_lvl, std::size_t mip_lvl_cnt, std::size_t base_arr_layer, std::size_t arr_layer_cnt, ResourceFlags const& flags) {
 		
-		ID3D12Resource* tex = res.impl->alloc->GetResource();
+		ID3D12Resource* tex = res.impl->GetResource();
 		D3D12_RESOURCE_DESC desc = tex->GetDesc();
 		DXGI_FORMAT format = ExtractFormat(flags);
 
@@ -1222,8 +1217,17 @@ namespace fyuu_rhi::d3d12 {
 			}
 
 			auto handle = ld.univ_alloc.Allocate();
-			ld.impl->CreateShaderResourceView(tex, &srv_desc, handle->CPU());
-			return handle;
+			ld.impl->CreateShaderResourceView(tex, &srv_desc, handle.CPU());
+			return {
+				res.impl,
+				std::move(handle),
+				View::Type::ShaderResource,
+				static_cast<std::uint32_t>(base_mip_lvl),
+				static_cast<std::uint32_t>(mip_lvl_cnt),
+				static_cast<std::uint32_t>(base_arr_layer),
+				static_cast<std::uint32_t>(arr_layer_cnt),
+				format
+			};
 		}
 
 		if (is_uav) {
@@ -1261,8 +1265,17 @@ namespace fyuu_rhi::d3d12 {
 			}
 
 			auto handle = ld.univ_alloc.Allocate();
-			ld.impl->CreateUnorderedAccessView(tex	, nullptr, &uav_desc, handle->CPU());
-			return handle;
+			ld.impl->CreateUnorderedAccessView(tex	, nullptr, &uav_desc, handle.CPU());
+			return {
+				res.impl,
+				std::move(handle),
+				View::Type::UnorderedAccess,
+				static_cast<std::uint32_t>(base_mip_lvl),
+				static_cast<std::uint32_t>(mip_lvl_cnt),
+				static_cast<std::uint32_t>(base_arr_layer),
+				static_cast<std::uint32_t>(arr_layer_cnt),
+				format
+			};
 		}
 
 		if (is_rtv) {
@@ -1300,8 +1313,17 @@ namespace fyuu_rhi::d3d12 {
 			}
 
 			auto handle = ld.rtv_alloc.Allocate();
-			ld.impl->CreateRenderTargetView(tex, &rtv_desc, handle->CPU());
-			return handle;
+			ld.impl->CreateRenderTargetView(tex, &rtv_desc, handle.CPU());
+			return {
+				res.impl,
+				std::move(handle),
+				View::Type::RenderTarget,
+				static_cast<std::uint32_t>(base_mip_lvl),
+				static_cast<std::uint32_t>(mip_lvl_cnt),
+				static_cast<std::uint32_t>(base_arr_layer),
+				static_cast<std::uint32_t>(arr_layer_cnt),
+				format
+			};
 		}
 
 		if (is_dsv) {
@@ -1333,17 +1355,26 @@ namespace fyuu_rhi::d3d12 {
 			}
 
 			auto handle = ld.dsv_alloc.Allocate();
-			ld.impl->CreateDepthStencilView(tex, &dsv_desc, handle->CPU());
-			return handle;
+			ld.impl->CreateDepthStencilView(tex, &dsv_desc, handle.CPU());
+			return {
+				res.impl,
+				std::move(handle),
+				View::Type::DepthStencil,
+				static_cast<std::uint32_t>(base_mip_lvl),
+				static_cast<std::uint32_t>(mip_lvl_cnt),
+				static_cast<std::uint32_t>(base_arr_layer),
+				static_cast<std::uint32_t>(arr_layer_cnt),
+				format
+			};
 		}
 
 		throw std::invalid_argument("CreateTextureView(): no valid view type specified in flags");
 
 	}
 
-	std::shared_ptr<ManagedDescriptorHandle> Backend::CreateBufferView(LogicalDevice& ld, Backend::Resource const& res, std::size_t offset, std::size_t range, ResourceFlags const& flags) {
+	Backend::View Backend::CreateBufferView(LogicalDevice& ld, Backend::Resource const& res, std::size_t offset, std::size_t range, ResourceFlags const& flags) {
 		
-		ID3D12Resource* buf = res.impl->alloc->GetResource();
+		ID3D12Resource* buf = res.impl->GetResource();
 		DXGI_FORMAT format = ExtractFormat(flags);
 
 		bool is_uav = flags.Test(ResourceFlagBits::StorageBuffer) ||
@@ -1396,7 +1427,7 @@ namespace fyuu_rhi::d3d12 {
 				srv_desc.Buffer.NumElements = static_cast<UINT>(range / element_size);
 			}
 
-			ld.impl->CreateShaderResourceView(buf, &srv_desc, handle->CPU());
+			ld.impl->CreateShaderResourceView(buf, &srv_desc, handle.CPU());
 		}
 		else if (is_uav) {
 			D3D12_UNORDERED_ACCESS_VIEW_DESC uav_desc = {
@@ -1430,15 +1461,24 @@ namespace fyuu_rhi::d3d12 {
 				uav_desc.Buffer.NumElements = static_cast<UINT>(range / element_size);
 			}
 
-			ld.impl->CreateUnorderedAccessView(buf, nullptr, &uav_desc, handle->CPU());
+			ld.impl->CreateUnorderedAccessView(buf, nullptr, &uav_desc, handle.CPU());
 		}
 
-		return handle;
+		return {
+			res.impl,
+			std::move(handle),
+			is_srv ? View::Type::ShaderResource : View::Type::UnorderedAccess,
+			0u,
+			1u,
+			0u,
+			1u,
+			format
+		};
 		
 		
 	}
 
-	std::shared_ptr<ManagedDescriptorHandle> Backend::CreateSampler(Backend::LogicalDevice& ld, SamplerDescriptor const& descriptor) {
+	Backend::Sampler Backend::CreateSampler(Backend::LogicalDevice& ld, SamplerDescriptor const& descriptor) {
 
 		D3D12_SAMPLER_DESC sampler_desc = {
 			.Filter = BuildFilter(
@@ -1458,11 +1498,7 @@ namespace fyuu_rhi::d3d12 {
 		};
 
 		auto handle = ld.sampler_alloc.Allocate();
-		if (!handle) {
-			throw std::runtime_error("CreateSampler(): failed to allocate sampler descriptor");
-		}
-
-		ld.impl->CreateSampler(&sampler_desc, handle->CPU());
+		ld.impl->CreateSampler(&sampler_desc, handle.CPU());
 		return handle;
 	}
 
@@ -1627,27 +1663,116 @@ namespace fyuu_rhi::d3d12 {
 			pso_hash.update(&copy, sizeof(copy));
 		}
 		auto pso_path = cache::GetCacheFilePath(std::format("d3d12-graphics-pso-{:016x}.bin", pso_hash.result()));
-		auto cached_pso = ReadCacheBlob(pso_path);
+		auto cached_pso = cache::ReadFile(pso_path);
 		native.CachedPSO = { cached_pso.data(), cached_pso.size() };
 
 		auto creation_result = ld.impl->CreateGraphicsPipelineState(
 			&native,
-			IID_PPV_ARGS(pipeline.state.ReleaseAndGetAddressOf())
+			IID_PPV_ARGS(&pipeline.impl)
 		);
 		if (FAILED(creation_result) && !cached_pso.empty()) {
 			native.CachedPSO = {};
 			cached_pso.clear();
 			creation_result = ld.impl->CreateGraphicsPipelineState(
 				&native,
-				IID_PPV_ARGS(pipeline.state.ReleaseAndGetAddressOf())
+				IID_PPV_ARGS(&pipeline.impl)
 			);
 		}
 		ThrowIfFailed(creation_result);
 		if (cached_pso.empty()) {
 			Microsoft::WRL::ComPtr<ID3DBlob> blob;
-			ThrowIfFailed(pipeline.state->GetCachedBlob(blob.ReleaseAndGetAddressOf()));
+			ThrowIfFailed(pipeline.impl->GetCachedBlob(&blob));
 			auto begin = static_cast<std::byte const*>(blob->GetBufferPointer());
-			WriteCacheBlob(pso_path, std::span<std::byte const>(begin, blob->GetBufferSize()));
+			if (!cache::WriteFileAtomically(
+				pso_path,
+				std::span<std::byte const>(begin, blob->GetBufferSize())
+			)) {
+				throw std::runtime_error("Failed to write D3D12 graphics-pipeline cache");
+			}
+		}
+		return pipeline;
+	}
+
+	Backend::Pipeline Backend::CreateComputePipeline(
+		Backend::LogicalDevice const& ld,
+		ComputePipelineDescriptor const& descriptor
+	) {
+		slang::TargetDesc target{
+			.format = SLANG_DXIL,
+			.profile = QueryHighestSMLevel(ld)
+		};
+		DXGI_ADAPTER_DESC1 adapter_desc{};
+		ThrowIfFailed(ld.phys_dev->GetDesc1(&adapter_desc));
+		auto driver = QueryDXDriverVersion(adapter_desc);
+		auto cache_tag = std::format(
+			"d3d12-compute-{:04x}-{:04x}-{}.{}.{}.{}",
+			adapter_desc.VendorId,
+			adapter_desc.DeviceId,
+			driver[0], driver[1], driver[2], driver[3]
+		);
+		shader::SlangProgram program(target, descriptor.program, cache_tag);
+		Backend::Pipeline pipeline;
+		pipeline.compute = true;
+		pipeline.bindings = MakePipelineBindingMetadata(program.Interface());
+		pipeline.root_signature = CreateRootSignature(ld, program.Interface());
+
+		D3D12_COMPUTE_PIPELINE_STATE_DESC native{};
+		native.pRootSignature = pipeline.root_signature.Get();
+		for (auto const& entry : program.EntryPoints()) {
+			if (entry.stage != PipelineStage::Compute) {
+				throw std::invalid_argument("D3D12 compute pipelines accept only a compute entry point");
+			}
+			if (native.CS.pShaderBytecode) {
+				throw std::invalid_argument("D3D12 compute pipelines require exactly one compute entry point");
+			}
+			native.CS = { entry.code.data(), entry.code.size() };
+		}
+		if (!native.CS.pShaderBytecode) {
+			throw std::invalid_argument("D3D12 compute pipelines require one compute entry point");
+		}
+
+		boost::hash2::xxhash_64 pso_hash;
+		constexpr std::uint32_t pso_schema = 1u;
+		pso_hash.update(&pso_schema, sizeof(pso_schema));
+		auto root_key = RootSignatureCacheKey(program.Interface());
+		pso_hash.update(root_key.data(), root_key.size());
+		for (auto const& entry : program.EntryPoints()) {
+			pso_hash.update(&entry.stage, sizeof(entry.stage));
+			pso_hash.update(entry.code.data(), entry.code.size());
+		}
+		auto hash_desc = native;
+		hash_desc.pRootSignature = nullptr;
+		hash_desc.CS = {};
+		hash_desc.CachedPSO = {};
+		pso_hash.update(&hash_desc, sizeof(hash_desc));
+		auto pso_path = cache::GetCacheFilePath(
+			std::format("d3d12-compute-pso-{:016x}.bin", pso_hash.result())
+		);
+		auto cached_pso = cache::ReadFile(pso_path);
+		native.CachedPSO = { cached_pso.data(), cached_pso.size() };
+		auto creation_result = ld.impl->CreateComputePipelineState(
+			&native,
+			IID_PPV_ARGS(&pipeline.impl)
+		);
+		if (FAILED(creation_result) && !cached_pso.empty()) {
+			native.CachedPSO = {};
+			cached_pso.clear();
+			creation_result = ld.impl->CreateComputePipelineState(
+				&native,
+				IID_PPV_ARGS(&pipeline.impl)
+			);
+		}
+		ThrowIfFailed(creation_result);
+		if (cached_pso.empty()) {
+			Microsoft::WRL::ComPtr<ID3DBlob> blob;
+			ThrowIfFailed(pipeline.impl->GetCachedBlob(&blob));
+			auto begin = static_cast<std::byte const*>(blob->GetBufferPointer());
+			if (!cache::WriteFileAtomically(
+				pso_path,
+				std::span<std::byte const>(begin, blob->GetBufferSize())
+			)) {
+				throw std::runtime_error("Failed to write D3D12 compute-pipeline cache");
+			}
 		}
 		return pipeline;
 	}
@@ -1658,12 +1783,139 @@ namespace fyuu_rhi::d3d12 {
 		std::uint32_t space,
 		std::span<NativePipelineResourceBinding<Backend> const> bindings
 	) {
-		(void)ld;
-		return MakePipelineResourceGroup<Backend>(pipeline.bindings, space, bindings);
+		auto native = MakePipelineResourceGroup<Backend>(pipeline.bindings, space, bindings);
+		PipelineResourceGroup result;
+		result.space = space;
+		result.root_signature = pipeline.root_signature;
+		result.resource_heap = ld.univ_alloc.GetHeap();
+		result.sampler_heap = ld.sampler_alloc.GetHeap();
+		for (std::uint32_t root_parameter = 0u;
+			root_parameter < pipeline.bindings.size();
+			++root_parameter) {
+			auto const& layout = pipeline.bindings[root_parameter];
+			if (layout.space != space) continue;
+			bool sampler = layout.flags.Test(ResourceFlagBits::SamplerBinding);
+			auto descriptors = sampler ?
+				ld.sampler_alloc.Allocate(layout.count) :
+				ld.univ_alloc.Allocate(layout.count);
+			for (std::uint32_t element = 0u; element < layout.count; ++element) {
+				typename NativePipelineResourceGroup<Backend>::Binding const* source = nullptr;
+				for (auto const& entry : native.bindings) {
+					if (entry.slot == layout.slot && entry.array_element == element) {
+						source = &entry;
+						break;
+					}
+				}
+				if (!source) {
+					throw std::invalid_argument("D3D12 resource groups require every descriptor array element");
+				}
+				auto destination = descriptors.CPU(element);
+				if (auto view_binding = std::get_if<NativePipelineViewBinding<Backend>>(&source->value)) {
+					ld.impl->CopyDescriptorsSimple(
+						1u, destination, view_binding->impl.get().CPU(),
+						D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV
+					);
+				}
+				else if (auto sampler_binding = std::get_if<NativePipelineSamplerBinding<Backend>>(&source->value)) {
+					ld.impl->CopyDescriptorsSimple(
+						1u, destination, sampler_binding->impl.get().CPU(),
+						D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER
+					);
+				}
+				else if (auto buffer_binding = std::get_if<NativePipelineBufferBinding<Backend>>(&source->value)) {
+					auto resource = buffer_binding->impl.get().impl->GetResource();
+					auto resource_size = static_cast<std::size_t>(resource->GetDesc().Width);
+					if (buffer_binding->offset > resource_size) {
+						throw std::out_of_range("D3D12 pipeline buffer offset exceeds the resource");
+					}
+					auto size = buffer_binding->size == PipelineWholeBuffer ?
+						resource_size - buffer_binding->offset : buffer_binding->size;
+					if (size == 0u || size > resource_size - buffer_binding->offset) {
+						throw std::out_of_range("D3D12 pipeline buffer range exceeds the resource");
+					}
+					if (layout.flags.Test(ResourceFlagBits::UniformBuffer)) {
+						if (buffer_binding->offset % D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT != 0u) {
+							throw std::invalid_argument("D3D12 constant buffer offset must be 256-byte aligned");
+						}
+						if (size > (std::numeric_limits<std::size_t>::max)() -
+							(D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT - 1u)) {
+							throw std::out_of_range("D3D12 constant buffer range cannot be represented");
+						}
+						auto aligned_size =
+							(size + D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT - 1u) &
+							~(D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT - 1u);
+						if (aligned_size > resource_size - buffer_binding->offset ||
+							aligned_size > (std::numeric_limits<UINT>::max)()) {
+							throw std::out_of_range("D3D12 constant buffer range cannot be represented");
+						}
+						D3D12_CONSTANT_BUFFER_VIEW_DESC descriptor{
+							.BufferLocation = resource->GetGPUVirtualAddress() + buffer_binding->offset,
+							.SizeInBytes = static_cast<UINT>(aligned_size)
+						};
+						ld.impl->CreateConstantBufferView(&descriptor, destination);
+					}
+					else {
+						if (buffer_binding->offset % sizeof(std::uint32_t) != 0u ||
+							size % sizeof(std::uint32_t) != 0u ||
+							size / sizeof(std::uint32_t) > (std::numeric_limits<UINT>::max)()) {
+							throw std::invalid_argument("D3D12 storage buffer range is invalid");
+						}
+						D3D12_UNORDERED_ACCESS_VIEW_DESC descriptor{
+							.Format = DXGI_FORMAT_R32_TYPELESS,
+							.ViewDimension = D3D12_UAV_DIMENSION_BUFFER,
+							.Buffer = {
+								.FirstElement = buffer_binding->offset / sizeof(std::uint32_t),
+								.NumElements = static_cast<UINT>(size / sizeof(std::uint32_t)),
+								.StructureByteStride = 0u,
+								.CounterOffsetInBytes = 0u,
+								.Flags = D3D12_BUFFER_UAV_FLAG_RAW
+							}
+						};
+						ld.impl->CreateUnorderedAccessView(resource, nullptr, &descriptor, destination);
+					}
+				}
+				else {
+					throw std::invalid_argument("Unsupported D3D12 pipeline resource binding");
+				}
+			}
+			result.tables.emplace_back(root_parameter, std::move(descriptors));
+		}
+		return result;
 	}
 
-	Backend::Scheduler Backend::CreateScheduler(LogicalDevice const& ld, SchedulerDescriptor const& descriptor) {
+	Backend::Scheduler Backend::CreateScheduler(
+		LogicalDevice const& ld,
+		SchedulerDescriptor const& descriptor
+	) {
+		using Flag = SchedulerFlagBits;
+		Backend::Scheduler::QueueCollection queues;
+		if (descriptor.flags.Test(Flag::Graphics)) {
+			queues.graphics = CreateSchedulerQueue(ld, D3D12_COMMAND_LIST_TYPE_DIRECT, descriptor.priority);
+		}
+		if (descriptor.flags.Test(Flag::Compute)) {
+			queues.compute = CreateSchedulerQueue(ld, D3D12_COMMAND_LIST_TYPE_COMPUTE, descriptor.priority);
+		}
+		if (descriptor.flags.Test(Flag::Copy)) {
+			queues.copy = CreateSchedulerQueue(ld, D3D12_COMMAND_LIST_TYPE_COPY, descriptor.priority);
+		}
+		if (!queues.graphics && !queues.compute && !queues.copy) {
+			throw std::invalid_argument("CreateScheduler(): no execution capability was requested");
+		}
+		return {
+			std::make_shared<Backend::Scheduler::Implementation>(
+				queues,
+				ld.phys_dev,
+				ld.presentation_cache,
+				ld.completion_service
+			)
+		};
+	}
 
+	Backend::CommandGraph Backend::CreateCommandGraph(
+		execution::CommandGraphDescriptor const& descriptor,
+		execution::NativeCommandGraphBindings<Backend> const& bindings
+	) {
+		return execution::MakeCommandGraph<Backend>(descriptor, bindings);
 	}
 
 }

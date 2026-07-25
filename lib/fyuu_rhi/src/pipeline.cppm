@@ -20,6 +20,10 @@ import :resource;
 import :view;
 import :sampler;
 
+namespace fyuu_rhi {
+	template <class Backend> class LogicalDevice;
+}
+
 namespace fyuu_rhi::pipeline {
 
 	export template <class Backend> class Pipeline {
@@ -37,7 +41,7 @@ namespace fyuu_rhi::pipeline {
 				"PipelineType must be Pipeline or const Pipeline"
 			);
 
-			template <class U> friend class LogicalDevice;
+			template <class U> friend class fyuu_rhi::LogicalDevice;
 			template <class U> friend class PipelineResourceGroup;
 
 			PipelineType* m_pipeline;
@@ -59,6 +63,12 @@ namespace fyuu_rhi::pipeline {
 			: m_impl(std::forward<I>(impl)) {
 
 		}
+
+		Pipeline(Pipeline const&) = delete;
+		Pipeline& operator=(Pipeline const&) = delete;
+		Pipeline(Pipeline&&) noexcept = default;
+		Pipeline& operator=(Pipeline&&) noexcept = default;
+		~Pipeline() noexcept = default;
 
 		template <class Self>
 		auto GetPassKey(this Self&& self) noexcept {
@@ -123,12 +133,12 @@ namespace fyuu_rhi::pipeline {
 
 		Resource<Backend> const* Buffer() const noexcept {
 			auto binding = std::get_if<BufferBinding>(&m_value);
-			return binding ? &binding->buffer.get() : nullptr;
+			return binding ? &binding->impl.get() : nullptr;
 		}
 
 		View<Backend> const* BoundView() const noexcept {
 			if (auto binding = std::get_if<ViewBinding>(&m_value)) {
-				return &binding->view.get();
+				return &binding->impl.get();
 			}
 			if (auto binding = std::get_if<CombinedBinding>(&m_value)) {
 				return &binding->view.get();
@@ -138,7 +148,7 @@ namespace fyuu_rhi::pipeline {
 
 		Sampler<Backend> const* BoundSampler() const noexcept {
 			if (auto binding = std::get_if<SamplerBinding>(&m_value)) {
-				return &binding->sampler.get();
+				return &binding->impl.get();
 			}
 			if (auto binding = std::get_if<CombinedBinding>(&m_value)) {
 				return &binding->sampler.get();
@@ -158,18 +168,41 @@ namespace fyuu_rhi::pipeline {
 	};
 
 	export template <class Backend> struct PipelineResourceBinding {
-		std::uint32_t binding = 0;
+		std::uint32_t slot = 0;
 		std::uint32_t array_element = 0;
 		PipelineBindingValue<Backend> value;
 	};
 
 	// A resource group is created for one pipeline space and is immutable after
-	// creation. The backend retains the resources needed to materialize a
+	// creation. Bound resources are non-owning and must remain alive and unmoved
+	// while the group can be used to materialize a
 	// Vulkan descriptor set, WebGPU bind group, D3D12 descriptor tables, or
 	// OpenGL bindings when command encoding is introduced.
 	export template <class Backend> class PipelineResourceGroup {
 	public:
 		using Implementation = typename Backend::PipelineResourceGroup;
+
+		template <class ResourceGroupType> class PassKey {
+			static_assert(
+				std::same_as<ResourceGroupType, PipelineResourceGroup> ||
+				std::same_as<ResourceGroupType, PipelineResourceGroup const>
+			);
+
+			template <class U> friend class fyuu_rhi::LogicalDevice;
+
+			ResourceGroupType* m_resource_group;
+
+			template <class Self>
+			decltype(auto) GetImplementation(this Self&& self) noexcept {
+				return self.m_resource_group->m_impl;
+			}
+
+		public:
+			explicit PassKey(ResourceGroupType* resource_group) noexcept
+				: m_resource_group(resource_group) {
+
+			}
+		};
 
 	private:
 		Implementation m_impl;
@@ -185,6 +218,12 @@ namespace fyuu_rhi::pipeline {
 
 		std::uint32_t Space() const noexcept {
 			return m_space;
+		}
+
+		template <class Self>
+		auto GetPassKey(this Self&& self) noexcept {
+			using ResourceGroupType = std::remove_reference_t<Self>;
+			return PassKey<ResourceGroupType>{ &self };
 		}
 	};
 

@@ -7,7 +7,7 @@ module;
 #endif // !defined(__cpp_lib_modules)
 #include <webgpu/webgpu_cpp.h>
 #include "log.hpp"
-export module fyuu_rhi:webgpu_physical_device;
+module fyuu_rhi:webgpu_physical_device;
 #if defined(__cpp_lib_modules)
 import std;
 #endif // defined(__cpp_lib_modules)
@@ -91,7 +91,7 @@ namespace fyuu_rhi::webgpu {
 
 	}
 
-	wgpu::Device Backend::CreateLogicalDevice(wgpu::Adapter const& adapter) {
+	Backend::LogicalDevice Backend::CreateLogicalDevice(wgpu::Adapter const& adapter) {
 		wgpu::DeviceDescriptor desc;
 		desc.SetDeviceLostCallback(
 			wgpu::CallbackMode::AllowProcessEvents,
@@ -101,7 +101,12 @@ namespace fyuu_rhi::webgpu {
 			OnUncapturedError
 		);
 
-		return adapter.CreateDevice(&desc);
+		return {
+			adapter.CreateDevice(&desc),
+			adapter,
+			std::make_shared<LogicalDevice::PresentationCache>(),
+			execution::CompletionService::Instance()
+		};
 
 	}
 

@@ -45,6 +45,12 @@ namespace fyuu_rhi {
 
 		}
 
+		Sampler(Sampler const&) = delete;
+		Sampler& operator=(Sampler const&) = delete;
+		Sampler(Sampler&&) noexcept = default;
+		Sampler& operator=(Sampler&&) noexcept = default;
+		~Sampler() noexcept = default;
+
 		template <class Self>
 		auto GetPassKey(this Self&& self) noexcept {
 			using SamplerType = std::remove_reference_t<Self>;

@@ -19,13 +19,13 @@ namespace fyuu_rhi::execution {
 
 	template <class Backend> class Scheduler;
 
-	template <class Backend> class ScheduleEnvironment {
+	export template <class Backend> class ScheduleEnvironment {
 	private:
 		Scheduler<Backend> m_scheduler;
 
 	public:
-		explicit ScheduleEnvironment(Scheduler<Backend> scheduler) noexcept
-			: m_scheduler(std::move(scheduler)) {
+		explicit ScheduleEnvironment(Scheduler<Backend> const& scheduler) noexcept
+			: m_scheduler(scheduler) {
 
 		}
 
@@ -39,7 +39,7 @@ namespace fyuu_rhi::execution {
 #endif // defined(__cpp_lib_senders) && __cpp_lib_senders >= 202406L
 	};
 
-	template <class Backend, class Receiver> class ScheduleOperation {
+	template <class Backend, class Receiver> class ScheduleOperationState {
 	private:
 		Scheduler<Backend> m_scheduler;
 		Receiver m_receiver;
@@ -49,16 +49,16 @@ namespace fyuu_rhi::execution {
 		using operation_state_concept = std::execution::operation_state_t;
 #endif // defined(__cpp_lib_senders) && __cpp_lib_senders >= 202406L
 
-		ScheduleOperation(Scheduler<Backend> scheduler, Receiver receiver)
-			: m_scheduler(std::move(scheduler)),
-			m_receiver(std::move(receiver)) {
+		ScheduleOperationState(Scheduler<Backend> const& scheduler, Receiver const& receiver)
+			: m_scheduler(scheduler),
+			m_receiver(receiver) {
 
 		}
 
-		ScheduleOperation(ScheduleOperation const&) = delete;
-		ScheduleOperation(ScheduleOperation&&) = delete;
-		ScheduleOperation& operator=(ScheduleOperation const&) = delete;
-		ScheduleOperation& operator=(ScheduleOperation&&) = delete;
+		ScheduleOperationState(ScheduleOperationState const&) = delete;
+		ScheduleOperationState(ScheduleOperationState&&) = delete;
+		ScheduleOperationState& operator=(ScheduleOperationState const&) = delete;
+		ScheduleOperationState& operator=(ScheduleOperationState&&) = delete;
 
 		void start() & noexcept {
 #if defined(__cpp_lib_senders) && __cpp_lib_senders >= 202406L
@@ -78,8 +78,8 @@ namespace fyuu_rhi::execution {
 		using sender_concept = std::execution::sender_t;
 #endif // defined(__cpp_lib_senders) && __cpp_lib_senders >= 202406L
 
-		explicit Sender(Scheduler<Backend> scheduler) noexcept
-			: m_scheduler(std::move(scheduler)) {
+		explicit Sender(Scheduler<Backend> const& scheduler) noexcept
+			: m_scheduler(scheduler) {
 
 		}
 
@@ -97,10 +97,10 @@ namespace fyuu_rhi::execution {
 #endif // defined(__cpp_lib_senders) && __cpp_lib_senders >= 202406L
 
 		template <class Receiver>
-		auto connect(Receiver receiver) const {
-			return ScheduleOperation<Backend, Receiver>(
+		auto connect(Receiver const& receiver) const {
+			return ScheduleOperationState<Backend, Receiver>(
 				m_scheduler,
-				std::move(receiver)
+				receiver
 			);
 		}
 	};
@@ -118,7 +118,7 @@ namespace fyuu_rhi::execution {
 	public:
 		explicit Scheduler(Implementation const& impl) noexcept
 			: m_impl(impl) {
-			static_assert(std::is_nothrow_move_constructible_v<Implementation>);
+			static_assert(std::is_nothrow_copy_constructible_v<Implementation>);
 		}
 
 		Scheduler(Scheduler const&) noexcept = default;
@@ -130,6 +130,10 @@ namespace fyuu_rhi::execution {
 		[[nodiscard]]
 		Sender<Backend> schedule() const noexcept {
 			return Sender<Backend>(*this);
+		}
+
+		[[nodiscard]] Implementation const& GetImplementation() const noexcept {
+			return m_impl;
 		}
 
 		friend bool operator==(Scheduler const&, Scheduler const&) noexcept = default;

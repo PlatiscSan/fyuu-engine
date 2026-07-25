@@ -45,6 +45,12 @@ namespace fyuu_rhi {
 
 		}
 
+		View(View const&) = delete;
+		View& operator=(View const&) = delete;
+		View(View&&) noexcept = default;
+		View& operator=(View&&) noexcept = default;
+		~View() noexcept = default;
+
 		template <class Self>
 		auto GetPassKey(this Self&& self) noexcept {
 			using ViewType = std::remove_reference_t<Self>;

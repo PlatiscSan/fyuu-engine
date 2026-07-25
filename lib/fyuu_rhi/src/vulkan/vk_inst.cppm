@@ -35,18 +35,12 @@ import vulkan;
 import :core_types;
 import :log;
 import :vulkan_traits;
+import :vulkan_utility;
 import :cache_system;
 
 namespace {
 
 	using namespace fyuu_rhi;
-
-	std::vector<std::string> ToStrings(std::span<char const* const> strings) {
-		std::vector<std::string> result;
-		result.reserve(strings.size());
-		for (auto string : strings) result.emplace_back(string);
-		return result;
-	}
 
 	vk::Bool32 VKDebugMessager(vk::DebugUtilsMessageSeverityFlagBitsEXT message_severity, vk::DebugUtilsMessageTypeFlagsEXT message_types, vk::DebugUtilsMessengerCallbackDataEXT const* callback_data, void* user_data) {
 
@@ -185,6 +179,7 @@ namespace fyuu_rhi::vulkan {
 #endif
 			vk::KHRGetSurfaceCapabilities2ExtensionName,
 			vk::EXTSurfaceMaintenance1ExtensionName,
+			vk::EXTSwapchainColorSpaceExtensionName,
 			vk::KHRGetPhysicalDeviceProperties2ExtensionName
 		};
 

@@ -20,7 +20,7 @@ namespace fyuu_rhi::pipeline {
 	struct SlangPipelineBinding {
 		std::string name;
 		ResourceFlags flags;
-		std::uint32_t binding = 0;
+		std::uint32_t slot = 0;
 		std::uint32_t space = 0;
 		std::uint32_t count = 1;
 		std::uint32_t visibility = 0;
@@ -41,7 +41,7 @@ namespace fyuu_rhi::pipeline {
 	struct SlangPipelinePushConstantRange {
 		std::uint32_t offset = 0;
 		std::uint32_t size = 0;
-		std::uint32_t binding = 0;
+		std::uint32_t slot = 0;
 		std::uint32_t space = 0;
 		std::uint32_t visibility = 0;
 	};

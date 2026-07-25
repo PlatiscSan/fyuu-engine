@@ -66,7 +66,11 @@ namespace fyuu_rhi::opengl {
 	}
 
 	Backend::LogicalDevice Backend::CreateLogicalDevice(Backend::PhysicalDevice const& phys_dev) noexcept {
-		return phys_dev;
+		return {
+			phys_dev,
+			std::make_shared<PresentationCache>(),
+			execution::CompletionService::Instance()
+		};
 	}
 
 }

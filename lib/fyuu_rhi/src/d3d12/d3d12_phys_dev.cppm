@@ -101,7 +101,9 @@ namespace fyuu_rhi::d3d12 {
 			std::move(sampler_alloc),
 			std::move(multidraw),
 			std::move(multidraw_indexed),
-			std::move(dispatch_indirect)
+			std::move(dispatch_indirect),
+			std::make_shared<LogicalDevice::PresentationCache>(),
+			execution::CompletionService::Instance()
 		};
 
 	}

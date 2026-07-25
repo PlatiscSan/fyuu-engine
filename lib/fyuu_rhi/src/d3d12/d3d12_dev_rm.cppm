@@ -5,6 +5,7 @@ module;
 #include <utility>
 #include <string>
 #include <format>
+#include <optional>
 #endif // !defined(__cpp_lib_modules)
 #if defined(_WIN32)
 #include <strsafe.h>
@@ -17,7 +18,7 @@ module;
 #define BOOST_DISABLE_ASSERTS
 #include <boost/locale.hpp>
 #include "log.hpp"
-export module fyuu_rhi:d3d12_device_removal_tracker;
+module fyuu_rhi:d3d12_device_removal_tracker;
 #if defined(_WIN32)
 #if defined(__cpp_lib_modules)
 import std;
@@ -254,11 +255,11 @@ namespace {
 }
 
 namespace fyuu_rhi::d3d12 {
-	export class DeviceRemovalTracker {
+	class DeviceRemovalTracker {
 	private:
-		std::shared_ptr<ManagedEvent> m_fence_event;
+		ManagedEvent m_fence_event;
 		Microsoft::WRL::ComPtr<ID3D12Fence> m_dev_rm_fence;
-		std::shared_ptr<UniqueWait> m_dev_rm_wait;
+		std::optional<UniqueWait> m_dev_rm_wait;
 		Microsoft::WRL::ComPtr<ID3D12InfoQueue1> m_info_queue;
 		DWORD m_cb_cookie;
 
@@ -278,20 +279,20 @@ namespace fyuu_rhi::d3d12 {
 				Microsoft::WRL::ComPtr<ID3D12Fence> dev_rm_fence;
 				HRESULT result = dev->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&dev_rm_fence));
 				ThrowIfFailed(result);
-				result = dev_rm_fence->SetEventOnCompletion((std::numeric_limits<std::uint64_t>::max)(), m_fence_event->impl.get());
+				result = dev_rm_fence->SetEventOnCompletion((std::numeric_limits<std::uint64_t>::max)(), m_fence_event.impl.get());
 				ThrowIfFailed(result);
 				return dev_rm_fence;
 			}()),
 		m_dev_rm_wait(
-			[this, &dev]() -> std::shared_ptr<UniqueWait> {
+			[this, &dev]() -> std::optional<UniqueWait> {
 				HANDLE raw_wait_handle;
-				if (!RegisterWaitForSingleObject(&raw_wait_handle, m_fence_event->impl.get(), DeviceRemovedCallback, dev.Get(), INFINITE, 0u)) {
+				if (!RegisterWaitForSingleObject(&raw_wait_handle, m_fence_event.impl.get(), DeviceRemovedCallback, dev.Get(), INFINITE, 0u)) {
 					LOG_WARNING(
 						"Calling RegisterWaitForSingleObject() failed then no crash report will be logged if device removal is triggered"
 					);
-					return nullptr;
+					return std::nullopt;
 				}
-				return std::make_shared<UniqueWait>(raw_wait_handle);
+				return UniqueWait(raw_wait_handle);
 			}()),
 		m_info_queue(
 #if defined(NDEBUG)

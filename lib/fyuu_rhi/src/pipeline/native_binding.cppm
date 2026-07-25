@@ -5,6 +5,7 @@ module;
 #include <cstddef>
 #include <cstdint>
 #include <format>
+#include <functional>
 #include <ranges>
 #include <span>
 #include <stdexcept>
@@ -24,25 +25,25 @@ namespace fyuu_rhi::pipeline {
 
 	template <class Backend>
 	struct NativePipelineBufferBinding {
-		typename Backend::Resource buffer;
+		std::reference_wrapper<typename Backend::Resource const> impl;
 		std::size_t offset = 0;
 		std::size_t size = PipelineWholeBuffer;
 	};
 
 	template <class Backend>
 	struct NativePipelineViewBinding {
-		typename Backend::View view;
+		std::reference_wrapper<typename Backend::View const> impl;
 	};
 
 	template <class Backend>
 	struct NativePipelineSamplerBinding {
-		typename Backend::Sampler sampler;
+		std::reference_wrapper<typename Backend::Sampler const> impl;
 	};
 
 	template <class Backend>
 	struct NativePipelineCombinedBinding {
-		typename Backend::View view;
-		typename Backend::Sampler sampler;
+		std::reference_wrapper<typename Backend::View const> view;
+		std::reference_wrapper<typename Backend::Sampler const> sampler;
 	};
 
 	template <class Backend>
@@ -56,14 +57,14 @@ namespace fyuu_rhi::pipeline {
 
 	template <class Backend>
 	struct NativePipelineResourceBinding {
-		std::uint32_t binding = 0;
+		std::uint32_t slot = 0;
 		std::uint32_t array_element = 0;
 		NativePipelineBindingValue<Backend> value;
 	};
 
 	struct PipelineBindingMetadata {
 		ResourceFlags flags;
-		std::uint32_t binding = 0;
+		std::uint32_t slot = 0;
 		std::uint32_t space = 0;
 		std::uint32_t count = 1;
 	};
@@ -73,13 +74,13 @@ namespace fyuu_rhi::pipeline {
 	) {
 		std::vector<PipelineBindingMetadata> result;
 		result.reserve(pipeline_interface.bindings.size());
-		for (auto const& binding : pipeline_interface.bindings) {
+		for (auto const& entry : pipeline_interface.bindings) {
 			result.push_back(
 				{
-					.flags = binding.flags,
-					.binding = binding.binding,
-					.space = binding.space,
-					.count = binding.count
+					.flags = entry.flags,
+					.slot = entry.slot,
+					.space = entry.space,
+					.count = entry.count
 				}
 			);
 		}
@@ -89,7 +90,7 @@ namespace fyuu_rhi::pipeline {
 	template <class Backend>
 	struct NativePipelineResourceGroup {
 		struct Binding {
-			std::uint32_t binding = 0;
+			std::uint32_t slot = 0;
 			std::uint32_t array_element = 0;
 			NativePipelineBindingValue<Backend> value;
 		};
@@ -111,35 +112,35 @@ namespace fyuu_rhi::pipeline {
 			}
 		}
 		result.bindings.reserve(bindings.size());
-		for (auto const& binding : bindings) {
-			auto MatchesLocation = [space, &binding](PipelineBindingMetadata const& value) {
-				return value.space == space && value.binding == binding.binding;
+		for (auto const& entry : bindings) {
+			auto MatchesLocation = [space, &entry](PipelineBindingMetadata const& value) {
+				return value.space == space && value.slot == entry.slot;
 			};
 			auto reflected = std::ranges::find_if(metadata, MatchesLocation);
 			if (reflected == metadata.end()) {
 				throw std::invalid_argument(
-					std::format("Pipeline space {} has no binding {}", space, binding.binding)
+					std::format("Pipeline space {} has no slot {}", space, entry.slot)
 				);
 			}
-			if (binding.array_element >= reflected->count) {
+			if (entry.array_element >= reflected->count) {
 				throw std::out_of_range(
 					std::format(
 						"Pipeline binding {} array element {} exceeds count {}",
-						binding.binding,
-						binding.array_element,
+						entry.slot,
+						entry.array_element,
 						reflected->count
 					)
 				);
 			}
-			auto MatchesExisting = [&binding](typename NativePipelineResourceGroup<Backend>::Binding const& value) {
-				return value.binding == binding.binding && value.array_element == binding.array_element;
+			auto MatchesExisting = [&entry](typename NativePipelineResourceGroup<Backend>::Binding const& value) {
+				return value.slot == entry.slot && value.array_element == entry.array_element;
 			};
 			if (std::ranges::find_if(result.bindings, MatchesExisting) != result.bindings.end()) {
 				throw std::invalid_argument(
 					std::format(
 						"Pipeline binding {} array element {} is specified more than once",
-						binding.binding,
-						binding.array_element
+						entry.slot,
+						entry.array_element
 					)
 				);
 			}
@@ -153,27 +154,27 @@ namespace fyuu_rhi::pipeline {
 				reflected->flags.Test(ResourceFlagBits::StorageBinding);
 			bool matches = false;
 			if (expects_buffer && !expects_view && !expects_sampler) {
-				matches = std::holds_alternative<NativePipelineBufferBinding<Backend>>(binding.value);
+				matches = std::holds_alternative<NativePipelineBufferBinding<Backend>>(entry.value);
 			}
 			else if (!expects_buffer && expects_view && !expects_sampler) {
-				matches = std::holds_alternative<NativePipelineViewBinding<Backend>>(binding.value);
+				matches = std::holds_alternative<NativePipelineViewBinding<Backend>>(entry.value);
 			}
 			else if (!expects_buffer && !expects_view && expects_sampler) {
-				matches = std::holds_alternative<NativePipelineSamplerBinding<Backend>>(binding.value);
+				matches = std::holds_alternative<NativePipelineSamplerBinding<Backend>>(entry.value);
 			}
 			else if (!expects_buffer && expects_view && expects_sampler) {
-				matches = std::holds_alternative<NativePipelineCombinedBinding<Backend>>(binding.value);
+				matches = std::holds_alternative<NativePipelineCombinedBinding<Backend>>(entry.value);
 			}
 			if (!matches) {
 				throw std::invalid_argument(
-					std::format("Resources do not match pipeline binding {}", binding.binding)
+					std::format("Resources do not match pipeline slot {}", entry.slot)
 				);
 			}
 			result.bindings.push_back(
 				{
-					.binding = binding.binding,
-					.array_element = binding.array_element,
-					.value = binding.value
+					.slot = entry.slot,
+					.array_element = entry.array_element,
+					.value = entry.value
 				}
 			);
 		}
@@ -185,13 +186,13 @@ namespace fyuu_rhi::pipeline {
 				auto MatchesRequired = [&reflected, array_element](
 					typename NativePipelineResourceGroup<Backend>::Binding const& value
 				) {
-					return value.binding == reflected.binding && value.array_element == array_element;
+					return value.slot == reflected.slot && value.array_element == array_element;
 				};
 				if (std::ranges::find_if(result.bindings, MatchesRequired) == result.bindings.end()) {
 					throw std::invalid_argument(
 						std::format(
 							"Pipeline binding {} array element {} is missing",
-							reflected.binding,
+							reflected.slot,
 							array_element
 						)
 					);

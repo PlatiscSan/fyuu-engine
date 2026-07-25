@@ -2,6 +2,9 @@ module;
 #include <version>
 #include <cstdlib>
 #if !defined(__cpp_lib_modules)
+#include <cstddef>
+#include <fstream>
+#include <functional>
 #include <string>
 #include <atomic>
 #include <mutex>
@@ -11,6 +14,9 @@ module;
 #include <format>
 #include <source_location>
 #include <ranges>
+#include <span>
+#include <thread>
+#include <vector>
 #endif // !defined(__cpp_lib_modules)
 #include <boost/hash2/xxhash.hpp>
 #if defined(__ANDROID__)
@@ -42,6 +48,7 @@ namespace {
 	
 	std::atomic_size_t s_max_cache_size_bytes{ 500u * 1024 * 1024 };
 	std::mutex s_cleanup_mutex;
+	std::mutex s_file_mutex;
 	std::chrono::steady_clock::time_point s_last_check_time{};
 	constexpr auto CHECK_COOLDOWN = std::chrono::seconds(30);
 
@@ -148,6 +155,57 @@ namespace {
 }
 
 namespace fyuu_rhi::cache {
+	std::vector<std::byte> ReadFile(fs::path const& path) {
+		std::unique_lock<std::mutex> lock(s_file_mutex);
+		std::ifstream input(path, std::ios::binary | std::ios::ate);
+		if (!input) {
+			return {};
+		}
+		auto size = input.tellg();
+		if (size <= 0) {
+			return {};
+		}
+		std::vector<std::byte> result(static_cast<std::size_t>(size));
+		input.seekg(0);
+		input.read(reinterpret_cast<char*>(result.data()), size);
+		if (!input) {
+			return {};
+		}
+		return result;
+	}
+
+	bool WriteFileAtomically(
+		fs::path const& path,
+		std::span<std::byte const> data
+	) {
+		std::unique_lock<std::mutex> lock(s_file_mutex);
+		auto temporary = path;
+		temporary += std::format(
+			".tmp-{:x}",
+			std::hash<std::thread::id>{}(std::this_thread::get_id())
+		);
+		{
+			std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+			output.write(
+				reinterpret_cast<char const*>(data.data()),
+				static_cast<std::streamsize>(data.size())
+			);
+			if (!output) {
+				std::error_code error;
+				fs::remove(temporary, error);
+				return false;
+			}
+		}
+		std::error_code error;
+		fs::remove(path, error);
+		error.clear();
+		fs::rename(temporary, path, error);
+		if (error) {
+			fs::remove(temporary, error);
+			return false;
+		}
+		return true;
+	}
 
 	void Initialize(
 		std::string_view app_name, Version const& app_ver, std::string_view engine_name, Version const& engine_ver

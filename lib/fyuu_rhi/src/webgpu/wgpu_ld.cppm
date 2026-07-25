@@ -3,6 +3,7 @@ module;
 #if !defined(__cpp_lib_modules)
 #include <algorithm>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <variant>
@@ -409,7 +410,7 @@ namespace {
 namespace fyuu_rhi::webgpu {
 	using namespace fyuu_rhi::pipeline;
 
-	Backend::Resource Backend::CreateBuffer(wgpu::Device const& ld, std::size_t size_in_bytes, ResourceFlags const& flags) {
+	Backend::Resource Backend::CreateBuffer(LogicalDevice const& ld, std::size_t size_in_bytes, ResourceFlags const& flags) {
 		wgpu::BufferDescriptor desc{
 			nullptr,
 			{},
@@ -417,10 +418,10 @@ namespace fyuu_rhi::webgpu {
 			size_in_bytes,
 			false
 		};
-		return { ld.CreateBuffer(&desc) };
+		return { ld.impl.CreateBuffer(&desc) };
 	}
 
-	Backend::Resource Backend::CreateTexture(wgpu::Device const& ld, std::size_t width, std::size_t height, std::size_t depth_arr_layers, std::size_t mip_lvl_cnt, ResourceFlags const& flags) {
+	Backend::Resource Backend::CreateTexture(LogicalDevice const& ld, std::size_t width, std::size_t height, std::size_t depth_arr_layers, std::size_t mip_lvl_cnt, ResourceFlags const& flags) {
 		wgpu::TextureDescriptor desc{
 			nullptr,
 			{},
@@ -433,11 +434,11 @@ namespace fyuu_rhi::webgpu {
 			0,
 			nullptr
 		};
-		return { ld.CreateTexture(&desc) };
+		return { ld.impl.CreateTexture(&desc) };
 	}
 
-	Backend::View Backend::CreateTextureView(wgpu::Device const& ld, Backend::Resource const& res, std::size_t base_mip_lvl, std::size_t mip_lvl_cnt, std::size_t base_arr_layer, std::size_t arr_layer_cnt, ResourceFlags const& flags) {
-		
+	Backend::View Backend::CreateTextureView(LogicalDevice const& ld, Backend::Resource const& res, std::size_t base_mip_lvl, std::size_t mip_lvl_cnt, std::size_t base_arr_layer, std::size_t arr_layer_cnt, ResourceFlags const& flags) {
+		if (!ld.impl) throw std::invalid_argument("WebGPU logical device must not be empty");
 		wgpu::Texture const& tex = std::get<wgpu::Texture>(res.impl);
 
 		wgpu::TextureViewDescriptor view_desc = {
@@ -454,11 +455,16 @@ namespace fyuu_rhi::webgpu {
 
 	}
 
-	Backend::View Backend::CreateBufferView(wgpu::Device const& ld, Backend::Resource const& buf, std::size_t offset, std::size_t range, ResourceFlags const& flags) {
-		return { Backend::View::BufferView{ std::get<wgpu::Buffer>(buf.impl), offset, range } };
+	Backend::View Backend::CreateBufferView(LogicalDevice const& ld, Backend::Resource const& buf, std::size_t offset, std::size_t range, ResourceFlags const& flags) {
+		if (!ld.impl) throw std::invalid_argument("WebGPU logical device must not be empty");
+		auto const& buffer = std::get<wgpu::Buffer>(buf.impl);
+		if (offset + range > buffer.GetSize()) {
+			throw std::out_of_range("WebGPU buffer view exceeds the source buffer");
+		}
+		return { Backend::View::BufferView{ buffer, offset, range } };
 	}
 
-	wgpu::Sampler Backend::CreateSampler(wgpu::Device const& ld, SamplerDescriptor const& desc) {
+	wgpu::Sampler Backend::CreateSampler(LogicalDevice const& ld, SamplerDescriptor const& desc) {
 		wgpu::SamplerDescriptor wgpu_desc = {
 			.addressModeU = MapAddressMode(desc.address_mode_u),
 			.addressModeV = MapAddressMode(desc.address_mode_v),
@@ -471,11 +477,11 @@ namespace fyuu_rhi::webgpu {
 			.compare = MapCompare(desc.compare_function),
 			.maxAnisotropy = desc.max_anisotropy,
 		};
-		return ld.CreateSampler(&wgpu_desc);
+		return ld.impl.CreateSampler(&wgpu_desc);
 	}
 
 	Backend::Pipeline Backend::CreateGraphicsPipeline(
-		wgpu::Device const& ld,
+		LogicalDevice const& ld,
 		GraphicsPipelineDescriptor const& descriptor
 	) {
 		if (!descriptor.program.entry_points.empty()) {
@@ -506,7 +512,7 @@ namespace fyuu_rhi::webgpu {
 			wgpu::ShaderModuleDescriptor module_descriptor{
 				.nextInChain = &source
 			};
-			auto module = ld.CreateShaderModule(&module_descriptor);
+			auto module = ld.impl.CreateShaderModule(&module_descriptor);
 			modules.push_back(module);
 			if (entry.stage == PipelineStage::Vertex) {
 				vertex_module = module;
@@ -653,26 +659,153 @@ namespace fyuu_rhi::webgpu {
 
 		Backend::Pipeline pipeline;
 		pipeline.bindings = MakePipelineBindingMetadata(program.Interface());
-		pipeline.state = ld.CreateRenderPipeline(&pipeline_descriptor);
+		pipeline.impl = ld.impl.CreateRenderPipeline(&pipeline_descriptor);
 		std::uint32_t bind_group_count = 0;
 		for (auto const& binding : program.Interface().bindings) {
 			bind_group_count = std::max(bind_group_count, binding.space + 1);
 		}
 		pipeline.bind_group_layouts.reserve(bind_group_count);
 		for (std::uint32_t index = 0; index < bind_group_count; ++index) {
-			pipeline.bind_group_layouts.push_back(pipeline.state.GetBindGroupLayout(index));
+			pipeline.bind_group_layouts.push_back(
+				std::get<wgpu::RenderPipeline>(pipeline.impl).GetBindGroupLayout(index)
+			);
+		}
+		return pipeline;
+	}
+
+	Backend::Pipeline Backend::CreateComputePipeline(
+		LogicalDevice const& ld,
+		ComputePipelineDescriptor const& descriptor
+	) {
+		slang::TargetDesc target{ .format = SLANG_WGSL };
+		shader::SlangProgram program(target, descriptor.program, "webgpu-wgsl");
+		if (!program.Interface().push_constants.empty()) {
+			throw std::invalid_argument("WebGPU does not support push constants");
+		}
+		if (program.EntryPoints().size() != 1u ||
+			program.EntryPoints().front().stage != PipelineStage::Compute) {
+			throw std::invalid_argument("WebGPU compute pipelines require one compute entry point");
+		}
+		auto const& entry = program.EntryPoints().front();
+		wgpu::ShaderSourceWGSL source;
+		source.code = {
+			reinterpret_cast<char const*>(entry.code.data()),
+			entry.code.size()
+		};
+		wgpu::ShaderModuleDescriptor module_descriptor{ .nextInChain = &source };
+		auto module = ld.impl.CreateShaderModule(&module_descriptor);
+		wgpu::ComputePipelineDescriptor pipeline_descriptor{
+			.compute = {
+				.module = module,
+				.entryPoint = { entry.name.data(), entry.name.size() }
+			}
+		};
+		Backend::Pipeline pipeline;
+		pipeline.compute = true;
+		pipeline.bindings = MakePipelineBindingMetadata(program.Interface());
+		pipeline.impl = ld.impl.CreateComputePipeline(&pipeline_descriptor);
+		std::uint32_t bind_group_count = 0u;
+		for (auto const& binding : program.Interface().bindings) {
+			bind_group_count = std::max(bind_group_count, binding.space + 1u);
+		}
+		pipeline.bind_group_layouts.reserve(bind_group_count);
+		for (std::uint32_t index = 0u; index < bind_group_count; ++index) {
+			pipeline.bind_group_layouts.emplace_back(
+				std::get<wgpu::ComputePipeline>(pipeline.impl).GetBindGroupLayout(index)
+			);
 		}
 		return pipeline;
 	}
 
 	Backend::PipelineResourceGroup Backend::CreatePipelineResourceGroup(
-		wgpu::Device const& ld,
+		LogicalDevice const& ld,
 		Backend::Pipeline const& pipeline,
 		std::uint32_t space,
 		std::span<NativePipelineResourceBinding<Backend> const> bindings
 	) {
-		(void)ld;
-		return MakePipelineResourceGroup<Backend>(pipeline.bindings, space, bindings);
+		if (!ld.impl) {
+			throw std::invalid_argument("WebGPU logical device must not be empty");
+		}
+		if (space >= pipeline.bind_group_layouts.size()) {
+			throw std::out_of_range("WebGPU pipeline resource group space is unavailable");
+		}
+		Backend::PipelineResourceGroup result;
+		result.native = MakePipelineResourceGroup<Backend>(pipeline.bindings, space, bindings);
+		result.space = space;
+		std::vector<wgpu::BindGroupEntry> entries;
+		entries.reserve(result.native.bindings.size());
+		for (auto const& resource_binding : result.native.bindings) {
+			if (resource_binding.array_element != 0u) {
+				throw std::invalid_argument("WebGPU binding arrays are not implemented");
+			}
+			wgpu::BindGroupEntry entry{ .binding = resource_binding.slot };
+			if (auto buffer = std::get_if<NativePipelineBufferBinding<Backend>>(&resource_binding.value)) {
+				entry.buffer = std::get<wgpu::Buffer>(buffer->impl.get().impl);
+				entry.offset = buffer->offset;
+				entry.size = buffer->size == PipelineWholeBuffer ? wgpu::kWholeSize : buffer->size;
+			}
+			else if (auto view = std::get_if<NativePipelineViewBinding<Backend>>(&resource_binding.value)) {
+				if (auto texture = std::get_if<wgpu::TextureView>(&view->impl.get().impl)) {
+					entry.textureView = *texture;
+				}
+				else if (auto buffer_view = std::get_if<View::BufferView>(&view->impl.get().impl)) {
+					entry.buffer = buffer_view->buf;
+					entry.offset = buffer_view->offset;
+					entry.size = buffer_view->range;
+				}
+				else throw std::invalid_argument("WebGPU resource binding has an empty view");
+			}
+			else if (auto sampler = std::get_if<NativePipelineSamplerBinding<Backend>>(&resource_binding.value)) {
+				entry.sampler = sampler->impl.get();
+			}
+			else if (std::holds_alternative<NativePipelineCombinedBinding<Backend>>(resource_binding.value)) {
+				throw std::invalid_argument("WebGPU requires separate texture and sampler bindings");
+			}
+			entries.emplace_back(entry);
+		}
+		wgpu::BindGroupDescriptor descriptor{
+			.layout = pipeline.bind_group_layouts[space],
+			.entryCount = entries.size(),
+			.entries = entries.data()
+		};
+		result.impl = ld.impl.CreateBindGroup(&descriptor);
+		return result;
+	}
+
+	Backend::Scheduler Backend::CreateScheduler(
+		LogicalDevice const& ld,
+		SchedulerDescriptor const& descriptor
+	) {
+		using Flag = SchedulerFlagBits;
+		if (!descriptor.flags.Test(Flag::Graphics) &&
+			!descriptor.flags.Test(Flag::Compute) &&
+			!descriptor.flags.Test(Flag::Copy)) {
+			throw std::invalid_argument("CreateScheduler(): no execution capability was requested");
+		}
+		auto queue = std::make_shared<WebGPUScheduler::QueueState>(ld.impl, ld.GetQueue());
+		WebGPUScheduler::QueueCollection queues;
+		if (descriptor.flags.Test(Flag::Graphics)) {
+			queues.graphics = queue;
+		}
+		if (descriptor.flags.Test(Flag::Compute)) {
+			queues.compute = queue;
+		}
+		if (descriptor.flags.Test(Flag::Copy)) {
+			queues.copy = queue;
+		}
+		return std::make_shared<WebGPUScheduler>(
+			queues,
+			ld.adapter,
+			ld.presentation_cache,
+			ld.completion_service
+		);
+	}
+
+	Backend::CommandGraph Backend::CreateCommandGraph(
+		execution::CommandGraphDescriptor const& descriptor,
+		execution::NativeCommandGraphBindings<Backend> const& bindings
+	) {
+		return execution::MakeCommandGraph<Backend>(descriptor, bindings);
 	}
 
 }

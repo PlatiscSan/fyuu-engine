@@ -16,7 +16,7 @@ module;
 #endif // defined(_WIN32)
 #define BOOST_DISABLE_ASSERTS
 #include <boost/locale.hpp>
-export module fyuu_rhi:d3d12_utility;
+module fyuu_rhi:d3d12_utility;
 #if defined(_WIN32)
 #if defined(__cpp_lib_modules)
 import std;
@@ -28,14 +28,27 @@ namespace {
 
 namespace fyuu_rhi::d3d12 {
 
-	export struct ManagedEvent {
+	struct ManagedEvent {
 		wil::unique_event impl;
+
+		explicit ManagedEvent(wil::unique_event&& event) noexcept
+			: impl(std::move(event)) {
+
+		}
+
+		ManagedEvent(ManagedEvent const&) = delete;
+		ManagedEvent& operator=(ManagedEvent const&) = delete;
+		ManagedEvent(ManagedEvent&&) noexcept = default;
+		ManagedEvent& operator=(ManagedEvent&&) noexcept = default;
+
 		~ManagedEvent() noexcept {
-			s_events.emplace_back(std::move(impl));
+			if (impl) {
+				s_events.emplace_back(std::move(impl));
+			}
 		}
 	};
 
-	export void ThrowIfFailed(HRESULT result) {
+	void ThrowIfFailed(HRESULT result) {
 
 		if (!FAILED(result)) {
 			return;
@@ -50,27 +63,16 @@ namespace fyuu_rhi::d3d12 {
 	}
 
 
-	export std::shared_ptr<ManagedEvent> CreateManagedEvent() {
-
-		constexpr std::size_t BUFFER_SIZE = 1024 * 1024; // 1 MB
-		static std::array<std::byte, BUFFER_SIZE> buffer;
-		static std::pmr::monotonic_buffer_resource s_buffer_resource(
-			buffer.data(), buffer.size(),
-			std::pmr::null_memory_resource()
-		);
-		static std::pmr::synchronized_pool_resource pool(&s_buffer_resource);
-
-		std::pmr::polymorphic_allocator<ManagedEvent> alloc(&pool);
-
+	ManagedEvent CreateManagedEvent() {
 		if (s_events.empty()) {
-			return std::allocate_shared<ManagedEvent>(alloc, wil::unique_event(wil::EventOptions::None));
+			return ManagedEvent(wil::unique_event(wil::EventOptions::None));
 		}
 
 		wil::unique_event event = std::move(s_events.back());
 		s_events.pop_back();
 		event.ResetEvent();
 
-		return std::allocate_shared<ManagedEvent>(alloc, std::move(event));
+		return ManagedEvent(std::move(event));
 
 	}
 

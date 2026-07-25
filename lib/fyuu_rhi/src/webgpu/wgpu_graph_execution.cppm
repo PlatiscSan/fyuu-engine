@@ -1,0 +1,393 @@
+module;
+#include <version>
+#if !defined(__cpp_lib_modules)
+#include <algorithm>
+#include <cstdint>
+#include <exception>
+#include <memory>
+#include <optional>
+#include <ranges>
+#include <span>
+#include <stdexcept>
+#include <string>
+#include <type_traits>
+#include <utility>
+#include <variant>
+#include <vector>
+#endif // !defined(__cpp_lib_modules)
+#if !defined(__APPLE__)
+#include <webgpu/webgpu_cpp.h>
+#endif // !defined(__APPLE__)
+module fyuu_rhi:webgpu_graph_execution;
+#if !defined(__APPLE__)
+#if defined(__cpp_lib_modules)
+import std;
+#endif // defined(__cpp_lib_modules)
+import :webgpu_traits;
+
+namespace fyuu_rhi::webgpu {
+	namespace {
+		using Bindings = execution::NativeCommandGraphBindings<Backend>;
+
+		wgpu::Surface CreateSurface(
+			wgpu::Instance const& instance,
+			Backend::PresentationTarget const& target
+		) {
+#if defined(_WIN32) || defined(__ANDROID__)
+			return Backend::CreateSurface(instance, target);
+#elif defined(__linux__)
+			struct CreateSurfaceVisitor {
+				wgpu::Instance const& instance;
+
+				wgpu::Surface operator()(Backend::X11PresentationTarget const& target) const {
+					return Backend::CreateSurface(instance, target.display, target.window);
+				}
+
+				wgpu::Surface operator()(Backend::WaylandPresentationTarget const& target) const {
+					return Backend::CreateSurface(instance, target.display, target.surface);
+				}
+			};
+			return std::visit(CreateSurfaceVisitor{ instance }, target);
+#endif
+		}
+
+		Backend::LogicalDevice::PresentationEntry CreatePresentationEntry(
+			Backend::Scheduler const& scheduler,
+			Backend::PresentationTarget const& target,
+			wgpu::Texture const& source
+		) {
+			wgpu::InstanceDescriptor instance_descriptor{};
+			auto instance = wgpu::CreateInstance(&instance_descriptor);
+			auto surface = CreateSurface(instance, target);
+			wgpu::SurfaceCapabilities capabilities;
+			if (!surface.GetCapabilities(scheduler->adapter, &capabilities)) {
+				throw std::runtime_error("WebGPU could not query presentation capabilities");
+			}
+			if (capabilities.formatCount == 0u || capabilities.presentModeCount == 0u) {
+				throw std::runtime_error("WebGPU surface has no presentation configuration");
+			}
+			auto format = source.GetFormat();
+			if (!std::ranges::contains(
+				std::span(capabilities.formats, capabilities.formatCount), format
+			)) {
+				throw std::invalid_argument("WebGPU presentation source format is unsupported by the surface");
+			}
+			if ((capabilities.usages & wgpu::TextureUsage::CopyDst) == wgpu::TextureUsage::None) {
+				throw std::invalid_argument("WebGPU surface does not support copy destination usage");
+			}
+			auto present_mode = std::ranges::contains(
+				std::span(capabilities.presentModes, capabilities.presentModeCount),
+				wgpu::PresentMode::Fifo
+			) ? wgpu::PresentMode::Fifo : capabilities.presentModes[0];
+			wgpu::SurfaceConfiguration configuration{
+				.device = scheduler->queues.graphics
+					? scheduler->queues.graphics->device
+					: scheduler->queues.copy->device,
+				.format = format,
+				.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::CopyDst,
+				.width = source.GetWidth(),
+				.height = source.GetHeight(),
+				.presentMode = present_mode
+			};
+			surface.Configure(&configuration);
+			return {
+				instance,
+				surface,
+				format,
+				present_mode,
+				source.GetWidth(),
+				source.GetHeight()
+			};
+		}
+
+		struct WebGPUCommandRecorder {
+			Bindings const* bindings;
+			Backend::Scheduler const* scheduler;
+			wgpu::CommandEncoder encoder;
+			std::vector<Backend::LogicalDevice::PresentationCache::Lease>* presentations;
+			Backend::Pipeline const* current_pipeline = nullptr;
+			wgpu::RenderPassEncoder render_pass;
+			wgpu::ComputePassEncoder compute_pass;
+
+			void EndComputePass() {
+				if (compute_pass) {
+					compute_pass.End();
+					compute_pass = nullptr;
+				}
+			}
+
+			void operator()(execution::BeginRenderingCommand const& command) {
+				EndComputePass();
+				if (render_pass) throw std::logic_error("WebGPU rendering commands cannot be nested");
+				if (command.offset_x < 0 || command.offset_y < 0 ||
+					command.width == 0u || command.height == 0u) {
+					throw std::invalid_argument("WebGPU rendering area is invalid");
+				}
+				std::vector<wgpu::RenderPassColorAttachment> colors;
+				colors.reserve(command.colors.size());
+				for (auto const& color : command.colors) {
+					wgpu::RenderPassColorAttachment attachment{
+						.view = std::get<wgpu::TextureView>(bindings->views[color.view.value].get().impl),
+						.resolveTarget = color.resolve_view
+							? std::get<wgpu::TextureView>(bindings->views[color.resolve_view->value].get().impl)
+							: nullptr,
+						.loadOp = color.load ? wgpu::LoadOp::Load : wgpu::LoadOp::Clear,
+						.storeOp = color.store ? wgpu::StoreOp::Store : wgpu::StoreOp::Discard,
+						.clearValue = {
+							color.clear_red, color.clear_green, color.clear_blue, color.clear_alpha
+						}
+					};
+					colors.emplace_back(attachment);
+				}
+				std::optional<wgpu::RenderPassDepthStencilAttachment> depth_stencil;
+				if (command.depth_stencil) {
+					auto const& attachment = *command.depth_stencil;
+					depth_stencil = {
+						.view = std::get<wgpu::TextureView>(bindings->views[attachment.view.value].get().impl),
+						.depthLoadOp = attachment.load_depth ? wgpu::LoadOp::Load : wgpu::LoadOp::Clear,
+						.depthStoreOp = attachment.store_depth ? wgpu::StoreOp::Store : wgpu::StoreOp::Discard,
+						.depthClearValue = attachment.clear_depth,
+						.stencilLoadOp = attachment.load_stencil ? wgpu::LoadOp::Load : wgpu::LoadOp::Clear,
+						.stencilStoreOp = attachment.store_stencil ? wgpu::StoreOp::Store : wgpu::StoreOp::Discard,
+						.stencilClearValue = attachment.clear_stencil
+					};
+				}
+				wgpu::RenderPassDescriptor descriptor{
+					.colorAttachmentCount = colors.size(),
+					.colorAttachments = colors.data(),
+					.depthStencilAttachment = depth_stencil ? &*depth_stencil : nullptr
+				};
+				render_pass = encoder.BeginRenderPass(&descriptor);
+				render_pass.SetViewport(
+					static_cast<float>(command.offset_x), static_cast<float>(command.offset_y),
+					static_cast<float>(command.width), static_cast<float>(command.height),
+					0.0f, 1.0f
+				);
+			}
+
+			void operator()(execution::EndRenderingCommand const&) {
+				if (!render_pass) throw std::logic_error("WebGPU rendering scope is not active");
+				render_pass.End();
+				render_pass = nullptr;
+			}
+
+			void operator()(execution::BindPipelineCommand const& command) {
+				current_pipeline = &bindings->pipelines[command.pipeline.value].get();
+				if (current_pipeline->compute) {
+					if (render_pass) throw std::logic_error("WebGPU compute pipeline cannot be used in a render pass");
+					if (!compute_pass) compute_pass = encoder.BeginComputePass();
+					compute_pass.SetPipeline(std::get<wgpu::ComputePipeline>(current_pipeline->impl));
+				}
+				else {
+					if (!render_pass) throw std::logic_error("WebGPU render pipeline requires a render pass");
+					render_pass.SetPipeline(std::get<wgpu::RenderPipeline>(current_pipeline->impl));
+				}
+			}
+
+			void operator()(execution::BindResourceGroupCommand const& command) {
+				auto const& group = bindings->resource_groups[command.group.value].get();
+				if (group.space != command.index) {
+					throw std::invalid_argument("WebGPU resource group index does not match its pipeline space");
+				}
+				if (render_pass) render_pass.SetBindGroup(command.index, group.impl);
+				else if (compute_pass) compute_pass.SetBindGroup(command.index, group.impl);
+				else throw std::logic_error("WebGPU resource group requires an active pass");
+			}
+
+			void operator()(execution::BindVertexBufferCommand const& command) {
+				if (!render_pass) throw std::logic_error("WebGPU vertex buffer requires a render pass");
+				auto const& buffer = std::get<wgpu::Buffer>(bindings->resources[command.resource.value].get().impl);
+				render_pass.SetVertexBuffer(command.slot, buffer, command.offset, buffer.GetSize() - command.offset);
+			}
+
+			void operator()(execution::BindIndexBufferCommand const& command) {
+				if (!render_pass) throw std::logic_error("WebGPU index buffer requires a render pass");
+				auto const& buffer = std::get<wgpu::Buffer>(bindings->resources[command.resource.value].get().impl);
+				render_pass.SetIndexBuffer(
+					buffer, command.uint32 ? wgpu::IndexFormat::Uint32 : wgpu::IndexFormat::Uint16,
+					command.offset, buffer.GetSize() - command.offset
+				);
+			}
+
+			void operator()(execution::SetViewportCommand const& command) {
+				if (!render_pass) throw std::logic_error("WebGPU viewport requires a render pass");
+				render_pass.SetViewport(
+					command.x, command.y, command.width, command.height,
+					command.minimum_depth, command.maximum_depth
+				);
+			}
+
+			void operator()(execution::SetScissorCommand const& command) {
+				if (!render_pass) throw std::logic_error("WebGPU scissor requires a render pass");
+				if (command.x < 0 || command.y < 0) {
+					throw std::invalid_argument("WebGPU scissor offset must not be negative");
+				}
+				render_pass.SetScissorRect(
+					static_cast<std::uint32_t>(command.x), static_cast<std::uint32_t>(command.y),
+					command.width, command.height
+				);
+			}
+
+			void operator()(execution::DrawCommand const& command) {
+				if (!render_pass || !current_pipeline || current_pipeline->compute) {
+					throw std::logic_error("Invalid WebGPU draw state");
+				}
+				render_pass.Draw(
+					command.vertex_count, command.instance_count,
+					command.first_vertex, command.first_instance
+				);
+			}
+
+			void operator()(execution::DrawIndexedCommand const& command) {
+				if (!render_pass || !current_pipeline || current_pipeline->compute) {
+					throw std::logic_error("Invalid WebGPU indexed draw state");
+				}
+				render_pass.DrawIndexed(
+					command.index_count, command.instance_count, command.first_index,
+					command.vertex_offset, command.first_instance
+				);
+			}
+
+			void operator()(execution::DispatchCommand const& command) {
+				if (!compute_pass || !current_pipeline || !current_pipeline->compute) {
+					throw std::logic_error("Invalid WebGPU dispatch state");
+				}
+				compute_pass.DispatchWorkgroups(
+					command.group_count_x, command.group_count_y, command.group_count_z
+				);
+			}
+
+			void operator()(execution::CopyBufferCommand const& command) {
+				if (render_pass) throw std::logic_error("WebGPU copy cannot execute in a render pass");
+				EndComputePass();
+				auto const& source = std::get<wgpu::Buffer>(bindings->resources[command.source.value].get().impl);
+				auto const& destination = std::get<wgpu::Buffer>(bindings->resources[command.destination.value].get().impl);
+				if (command.source_offset + command.size > source.GetSize() ||
+					command.destination_offset + command.size > destination.GetSize()) {
+					throw std::out_of_range("WebGPU buffer copy exceeds the resource range");
+				}
+				encoder.CopyBufferToBuffer(
+					source, command.source_offset, destination, command.destination_offset, command.size
+				);
+			}
+
+			void operator()(execution::PresentCommand const& command) {
+				if (render_pass) throw std::logic_error("WebGPU present cannot execute in a render pass");
+				EndComputePass();
+				auto const& source = std::get<wgpu::Texture>(bindings->resources[command.source.value].get().impl);
+				auto const& target = bindings->presentation_targets[command.target.value];
+				auto CreateEntry = [this, &target, &source]() {
+					return CreatePresentationEntry(*scheduler, target, source);
+				};
+				auto presentation = (*scheduler)->presentation_cache->Acquire(target, CreateEntry);
+				if (presentation.Get().width != source.GetWidth() ||
+					presentation.Get().height != source.GetHeight() ||
+					presentation.Get().format != source.GetFormat()) {
+					auto RecreateEntry = [&CreateEntry](Backend::LogicalDevice::PresentationEntry const&) {
+						return CreateEntry();
+					};
+					(*scheduler)->presentation_cache->Recreate(presentation, RecreateEntry);
+					presentation = (*scheduler)->presentation_cache->Acquire(target, CreateEntry);
+				}
+				wgpu::SurfaceTexture surface_texture;
+				presentation.Get().surface.GetCurrentTexture(&surface_texture);
+				if (surface_texture.status != wgpu::SurfaceGetCurrentTextureStatus::SuccessOptimal &&
+					surface_texture.status != wgpu::SurfaceGetCurrentTextureStatus::SuccessSuboptimal) {
+					throw std::runtime_error("WebGPU could not acquire the current surface texture");
+				}
+				wgpu::TexelCopyTextureInfo source_copy{ .texture = source };
+				wgpu::TexelCopyTextureInfo destination_copy{ .texture = surface_texture.texture };
+				wgpu::Extent3D size{ source.GetWidth(), source.GetHeight(), 1u };
+				encoder.CopyTextureToTexture(&source_copy, &destination_copy, &size);
+				presentations->emplace_back(std::move(presentation));
+			}
+		};
+	}
+
+	Backend::ExecutableGraph CompileCommandGraph(Backend::CommandGraph const& graph) {
+		return execution::MakeExecutableGraph<Backend>(graph);
+	}
+
+	Backend::GraphExecution CreateGraphExecution(
+		Backend::Scheduler const& scheduler,
+		Backend::ExecutableGraph const& graph
+	) {
+		Backend::GraphExecution result{ scheduler, graph };
+		auto const& native_graph = *graph->impl;
+		result.batches.reserve(graph->plan.batches.size());
+		for (auto const& batch_plan : graph->plan.batches) {
+			auto const& queue = scheduler->queues.Select(batch_plan.queue_flags);
+			auto encoder = queue->device.CreateCommandEncoder();
+			std::vector<Backend::LogicalDevice::PresentationCache::Lease> presentations;
+			WebGPUCommandRecorder recorder{ &native_graph.bindings, &scheduler, encoder, &presentations };
+			for (auto node_id : batch_plan.nodes) {
+				for (auto const& command : native_graph.descriptor.nodes[node_id.value].commands) {
+					std::visit(recorder, command);
+				}
+			}
+			if (recorder.render_pass) throw std::logic_error("WebGPU rendering scope must end in its batch");
+			recorder.EndComputePass();
+			result.batches.emplace_back(queue, encoder.Finish(), std::move(presentations));
+		}
+		return result;
+	}
+
+	void StartGraphExecution(
+		Backend::GraphExecution& graph_execution,
+		execution::GraphCompletion const& completion
+	) {
+		wgpu::Queue completion_queue;
+		for (auto& batch : graph_execution.batches) {
+			batch.queue->impl.Submit(1u, &batch.commands);
+			completion_queue = batch.queue->impl;
+			for (auto& presentation : batch.presentations) {
+				presentation.Get().surface.Present();
+			}
+		}
+		if (!completion_queue) {
+			completion_queue = graph_execution.scheduler->queues.graphics
+				? graph_execution.scheduler->queues.graphics->impl
+				: graph_execution.scheduler->queues.compute
+					? graph_execution.scheduler->queues.compute->impl
+					: graph_execution.scheduler->queues.copy->impl;
+		}
+		auto CompleteGraph = [completion](wgpu::QueueWorkDoneStatus status, char const* message) noexcept {
+			if (status == wgpu::QueueWorkDoneStatus::Success) {
+				completion.SetValue(completion.operation);
+			}
+			else {
+				try {
+					throw std::runtime_error(message ? message : "WebGPU queue execution failed");
+				}
+				catch (...) {
+					auto error = std::current_exception();
+					completion.SetError(completion.operation, error);
+				}
+			}
+		};
+		completion_queue.OnSubmittedWorkDone(
+			wgpu::CallbackMode::AllowSpontaneous,
+			CompleteGraph
+		);
+	}
+
+
+	std::shared_ptr<Backend::WebGPUScheduler::QueueState> const&
+	Backend::WebGPUScheduler::QueueCollection::Select(
+		execution::GraphNodeFlagBits capability
+	) const {
+		using Flag = execution::GraphNodeFlagBits;
+		if ((capability & (Flag::Graphics | Flag::Present)) != Flag::None && graphics) {
+			return graphics;
+		}
+		if ((capability & Flag::Compute) != Flag::None && compute) {
+			return compute;
+		}
+		if ((capability & Flag::Copy) != Flag::None && copy) {
+			return copy;
+		}
+		throw std::invalid_argument("Command graph batch requires an unavailable WebGPU queue");
+	}
+
+}
+#endif // !defined(__APPLE__)

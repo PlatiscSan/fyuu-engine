@@ -262,6 +262,10 @@ namespace fyuu_rhi::pipeline {
 		std::span<ColorTargetState const> color_targets{};
 	};
 
+	export struct ComputePipelineDescriptor {
+		SlangPipelineProgramDescriptor program{};
+	};
+
 	export inline constexpr std::size_t PipelineWholeBuffer = std::numeric_limits<std::size_t>::max();
 
 }
