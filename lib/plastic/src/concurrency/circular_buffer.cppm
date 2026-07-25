@@ -9,9 +9,8 @@
 // preventing the consumer from reading incompletely written elements.
 
 module;
-
-#if !defined(__cpp_lib_modules)
 #include <version>
+#if !defined(__cpp_lib_modules)
 #include <optional>
 #include <atomic>
 #include <array>

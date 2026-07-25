@@ -12,6 +12,10 @@
 cmake-build
 .vscode
 
+# Codex local state and generated agent workspace files
+.codex/
+.agents/
+
 # User-specific files (MonoDevelop/Xamarin Studio)
 *.userprefs
 *.last_build_config.json

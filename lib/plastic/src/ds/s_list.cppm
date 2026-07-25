@@ -17,6 +17,13 @@ import std;
 namespace plastic::ds {
 
 	export template <class T, std::size_t Capacity> class StaticList {
+	public:
+		 using value_type = T;
+		 using reference = value_type&;
+		 using const_reference = value_type const&;
+		 using size_type = std::size_t;
+		 using difference_type = std::ptrdiff_t;
+
 	private:
 		struct Node {
 			std::optional<T> value;
@@ -102,6 +109,74 @@ namespace plastic::ds {
 			--m_size;
 		}
 
+		constexpr std::pair<std::size_t, std::size_t> RemoveNode(std::size_t idx) noexcept {
+			std::size_t prev = m_nodes[idx].prev;
+			std::size_t next = m_nodes[idx].next;
+			if (prev != Capacity) {
+				m_nodes[prev].next = next;
+			}
+			else {
+				m_head = next;
+			}
+			if (next != Capacity) {
+				m_nodes[next].prev = prev;
+			}
+			else {
+				m_tail = prev;
+			}
+			m_nodes[idx].prev = Capacity;
+			m_nodes[idx].next = Capacity;
+			return { prev, next };
+		}
+
+		constexpr void InsertNodeAfter(std::size_t idx, std::size_t prev_idx) noexcept {
+			if (prev_idx == Capacity) {
+				m_nodes[idx].prev = Capacity;
+				m_nodes[idx].next = m_head;
+				if (m_head != Capacity) {
+					m_nodes[m_head].prev = idx;
+				}
+				else {
+					m_tail = idx;
+				}
+				m_head = idx;
+			}
+			else {
+				std::size_t next_idx = m_nodes[prev_idx].next;
+				m_nodes[idx].prev = prev_idx;
+				m_nodes[idx].next = next_idx;
+				m_nodes[prev_idx].next = idx;
+				if (next_idx != Capacity) {
+					m_nodes[next_idx].prev = idx;
+				}
+				else {
+					m_tail = idx;
+				}
+			}
+			++m_size;
+		}
+
+		constexpr void LinkChainAfter(std::size_t chain_head, std::size_t chain_tail,
+			std::size_t chain_size, std::size_t prev_idx) noexcept {
+			if (chain_size == 0) return;
+			std::size_t next_idx = (prev_idx == Capacity) ? m_head : m_nodes[prev_idx].next;
+			if (prev_idx == Capacity) {
+				m_head = chain_head;
+			}
+			else {
+				m_nodes[prev_idx].next = chain_head;
+				m_nodes[chain_head].prev = prev_idx;
+			}
+			if (next_idx == Capacity) {
+				m_tail = chain_tail;
+			}
+			else {
+				m_nodes[chain_tail].next = next_idx;
+				m_nodes[next_idx].prev = chain_tail;
+			}
+			m_size += chain_size;
+		}
+
 	public:
 		// iterator definition
 		template <bool IsConst>
@@ -110,10 +185,9 @@ namespace plastic::ds {
 		private:
 			using NodePtr = std::conditional_t<IsConst, Node const*, Node*>;
 			NodePtr m_ptr = nullptr;
-			StaticList const* m_owner = nullptr;
 
-			constexpr BasicIterator(NodePtr ptr, StaticList const* owner) noexcept
-				: m_ptr(ptr), m_owner(owner) {}
+			using OwnerPtr = std::conditional_t<IsConst, StaticList const*, StaticList*>;
+			OwnerPtr m_owner = nullptr;
 
 		public:
 			using iterator_category = std::bidirectional_iterator_tag;
@@ -125,6 +199,9 @@ namespace plastic::ds {
 			constexpr BasicIterator() = default;
 			constexpr BasicIterator(BasicIterator const&) = default;
 			constexpr BasicIterator& operator=(BasicIterator const&) = default;
+
+			constexpr BasicIterator(NodePtr ptr, OwnerPtr owner) noexcept
+				: m_ptr(ptr), m_owner(owner) {}
 
 			template <bool OtherConst, class = std::enable_if_t<IsConst && !OtherConst>>
 			constexpr BasicIterator(BasicIterator<OtherConst> const& other) noexcept
@@ -177,6 +254,13 @@ namespace plastic::ds {
 		using iterator = BasicIterator<false>;
 		using const_iterator = BasicIterator<true>;
 
+	private:
+		constexpr std::size_t GetIndex(const_iterator it) const noexcept {
+			if (it.m_ptr == nullptr) return Capacity;
+			return static_cast<std::size_t>(it.m_ptr - m_nodes.data());
+		}
+
+	public:
 		// constructors
 		constexpr StaticList() noexcept {
 			InitFreeList();
@@ -188,16 +272,6 @@ namespace plastic::ds {
 		static constexpr std::size_t capacity() noexcept { return Capacity; }
 
 		// iterators
-		constexpr iterator begin() noexcept {
-			if (m_head == Capacity) return end();
-			return iterator(&m_nodes[m_head], this);
-		}
-		constexpr const_iterator begin() const noexcept {
-			if (m_head == Capacity) return end();
-			return const_iterator(&m_nodes[m_head], this);
-		}
-		constexpr const_iterator cbegin() const noexcept { return begin(); }
-
 		constexpr iterator end() noexcept {
 			return iterator(nullptr, this);
 		}
@@ -206,11 +280,25 @@ namespace plastic::ds {
 		}
 		constexpr const_iterator cend() const noexcept { return end(); }
 
+		constexpr iterator begin() noexcept {
+			if (m_head == Capacity) {
+				return end();
+			}
+			return iterator(&m_nodes[m_head], this);
+		}
+		constexpr const_iterator begin() const noexcept {
+			if (m_head == Capacity) {
+				return end();
+			}
+			return const_iterator(&m_nodes[m_head], this);
+		}
+		constexpr const_iterator cbegin() const noexcept { return begin(); }
+
 		// element access
-		constexpr T& front() noexcept { return *m_nodes[m_head].value; }
-		constexpr T const& front() const noexcept { return *m_nodes[m_head].value; }
-		constexpr T& back() noexcept { return *m_nodes[m_tail].value; }
-		constexpr T const& back() const noexcept { return *m_nodes[m_tail].value; }
+		constexpr reference front() noexcept { return *m_nodes[m_head].value; }
+		constexpr const_reference front() const noexcept { return *m_nodes[m_head].value; }
+		constexpr reference back() noexcept { return *m_nodes[m_tail].value; }
+		constexpr const_reference back() const noexcept { return *m_nodes[m_tail].value; }
 
 		// push / pop
 		constexpr bool push_front(T const& value) {
@@ -279,10 +367,9 @@ namespace plastic::ds {
 			if (pos == end()) return end();
 			Node const* pos_node = pos.m_ptr;
 			std::size_t idx = static_cast<std::size_t>(pos_node - m_nodes.data());
-			iterator next = pos;
-			++next;
+			std::size_t next = m_nodes[idx].next;
 			EraseNode(idx);
-			return next;
+			return next == Capacity ? end() : iterator(&m_nodes[next], this);
 		}
 
 		// clear
@@ -294,6 +381,54 @@ namespace plastic::ds {
 			m_head = Capacity;
 			m_tail = Capacity;
 			m_size = 0;
+		}
+
+		constexpr void splice(const_iterator pos, StaticList& other) noexcept {
+			if (this == &other) return;
+			if (other.empty()) return;
+			std::size_t prev_idx = (pos == end()) ? m_tail : GetIndex(pos);
+			LinkChainAfter(other.m_head, other.m_tail, other.m_size, prev_idx);
+			other.m_head = other.m_tail = Capacity;
+			other.m_size = 0;
+		}
+
+		constexpr void splice(const_iterator pos, StaticList& other, const_iterator it) noexcept {
+			if (it == other.end()) return;
+			std::size_t src_idx = GetIndex(it);
+			if (this == &other && pos == it) return;
+			std::size_t prev_idx = (pos == end()) ? m_tail : GetIndex(pos);
+			other.RemoveNode(src_idx);
+			--other.m_size;
+			InsertNodeAfter(src_idx, prev_idx);
+		}
+
+		constexpr void splice(const_iterator pos, StaticList& other,
+			const_iterator first, const_iterator last) noexcept {
+			if (first == last) return;
+			std::size_t prev_idx = (pos == end()) ? m_tail : GetIndex(pos);
+			std::size_t indices[Capacity]{};
+			std::size_t count = 0;
+			for (auto it = first; it != last; ++it) {
+				indices[count++] = GetIndex(it);
+			}
+			std::size_t sub_head = Capacity, sub_tail = Capacity;
+			for (std::size_t i = 0; i < count; ++i) {
+				std::size_t idx = indices[i];
+				other.RemoveNode(idx);
+				--other.m_size;
+				if (sub_head == Capacity) {
+					sub_head = sub_tail = idx;
+					m_nodes[idx].prev = Capacity;
+					m_nodes[idx].next = Capacity;
+				}
+				else {
+					m_nodes[sub_tail].next = idx;
+					m_nodes[idx].prev = sub_tail;
+					m_nodes[idx].next = Capacity;
+					sub_tail = idx;
+				}
+			}
+			LinkChainAfter(sub_head, sub_tail, count, prev_idx);
 		}
 	};
 

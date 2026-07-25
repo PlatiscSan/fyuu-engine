@@ -115,7 +115,7 @@ namespace plastic::concurrency {
 
 	};
 
-	export template <> class SerialTask<void> {
+	template <> class SerialTask<void> {
 	public:
 		struct DoneTag {};
 		struct Context {

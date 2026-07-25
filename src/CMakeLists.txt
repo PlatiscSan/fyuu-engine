@@ -39,13 +39,9 @@ find_package(spdlog CONFIG REQUIRED)
 # graphics libraries
 find_package(SDL3 CONFIG REQUIRED)
 find_package(imgui CONFIG REQUIRED)
-find_package(Stb REQUIRED)
 
 # physics
 find_package(Jolt CONFIG REQUIRED)
-
-# useful data structures
-find_package(frozen CONFIG REQUIRED)
 
 if(BUILD_SHARED_LIBS)
 	add_library(${PROJECT_NAME} SHARED)
@@ -126,8 +122,6 @@ target_link_libraries(${PROJECT_NAME}
 		# parallel programming
 		TBB::tbb TBB::tbbmalloc TBB::tbbbind_2_5 TBB::tbbmalloc_proxy
 
-		# useful data structures
-		frozen::frozen frozen::frozen-headers
 )
 
 disable_rtti(${PROJECT_NAME})
