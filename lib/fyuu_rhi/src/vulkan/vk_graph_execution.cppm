@@ -710,12 +710,33 @@ namespace {
 			}
 		}
 
+		void SetDefaultRenderArea(execution::BeginRenderingCommand const& command) const {
+			bool engine_coordinates = command.coordinate_convention ==
+				execution::CoordinateConvention::Engine;
+			vk::Viewport viewport(
+				static_cast<float>(command.offset_x),
+				static_cast<float>(command.offset_y) +
+					(engine_coordinates ? static_cast<float>(command.height) : 0.0f),
+				static_cast<float>(command.width),
+				(engine_coordinates ? -1.0f : 1.0f) * static_cast<float>(command.height),
+				0.0f,
+				1.0f
+			);
+			commands.setViewport(0u, viewport, **dispatcher);
+			vk::Rect2D scissor(
+				{ command.offset_x, command.offset_y },
+				{ command.width, command.height }
+			);
+			commands.setScissor(0u, scissor, **dispatcher);
+		}
+
 		void operator()(execution::BeginRenderingCommand const& command) const {
 			if (rendering) throw std::logic_error("Vulkan rendering commands cannot be nested");
 			rendering = true;
 			if (!dynamic_rendering) {
 				pending_rendering = &command;
 				BeginTraditionalRendering();
+				SetDefaultRenderArea(command);
 				return;
 			}
 			std::vector<vk::RenderingAttachmentInfo> colors;
@@ -767,6 +788,7 @@ namespace {
 			info.pDepthAttachment = depth_pointer;
 			info.pStencilAttachment = depth_pointer;
 			commands.beginRendering(info, **dispatcher);
+			SetDefaultRenderArea(command);
 		}
 
 		void operator()(execution::EndRenderingCommand const&) const {
@@ -840,8 +862,13 @@ namespace {
 		}
 
 		void operator()(execution::SetViewportCommand const& command) const {
+			bool engine_coordinates = command.coordinate_convention ==
+				execution::CoordinateConvention::Engine;
 			vk::Viewport viewport(
-				command.x, command.y, command.width, command.height,
+				command.x,
+				command.y + (engine_coordinates ? command.height : 0.0f),
+				command.width,
+				(engine_coordinates ? -1.0f : 1.0f) * command.height,
 				command.minimum_depth, command.maximum_depth
 			);
 			commands.setViewport(0u, viewport, **dispatcher);

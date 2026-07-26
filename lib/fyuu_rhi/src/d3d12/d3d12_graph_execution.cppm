@@ -172,6 +172,7 @@ namespace {
 			resource_descriptor.DepthOrArraySize != 1u ||
 			resource_descriptor.MipLevels != 1u ||
 			resource_descriptor.SampleDesc.Count != 1u ||
+			resource_descriptor.SampleDesc.Quality != 0u ||
 			resource_descriptor.Width > (std::numeric_limits<std::uint32_t>::max)()) {
 			throw std::invalid_argument("D3D12 presentation source must be a single-sampled 2D texture");
 		}
@@ -373,6 +374,22 @@ namespace {
 				FALSE,
 				depth_pointer
 			);
+			D3D12_VIEWPORT viewport{
+				.TopLeftX = static_cast<float>(command.offset_x),
+				.TopLeftY = static_cast<float>(command.offset_y),
+				.Width = static_cast<float>(command.width),
+				.Height = static_cast<float>(command.height),
+				.MinDepth = 0.0f,
+				.MaxDepth = 1.0f
+			};
+			commands->RSSetViewports(1u, &viewport);
+			D3D12_RECT scissor{
+				.left = command.offset_x,
+				.top = command.offset_y,
+				.right = command.offset_x + static_cast<LONG>(command.width),
+				.bottom = command.offset_y + static_cast<LONG>(command.height)
+			};
+			commands->RSSetScissorRects(1u, &scissor);
 		}
 
 		void operator()(execution::EndRenderingCommand const&) const {

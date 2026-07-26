@@ -24,6 +24,7 @@ module;
 #include <optional>
 #include <source_location>
 #include <mutex>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -52,6 +53,8 @@ namespace {
 	using fyuu_engine::ApplicationDescriptor;
 	using fyuu_engine::Platform;
 	namespace log = fyuu_engine::log;
+	constexpr auto kTriFmtPos = fyuu_rhi::ResourceFlagBits::R32G32B32A32Float;
+	constexpr auto kTriFmtTarget = fyuu_rhi::ResourceFlagBits::R8G8B8A8Unorm;
 
 		void InitializeRHILogger() noexcept {
 			fyuu_rhi::log::Trace = log::Trace;
@@ -95,6 +98,47 @@ namespace {
 			);
 		}
 
+		template <class Backend>
+		fyuu_rhi::Resource<Backend> SyncUpload(
+			fyuu_rhi::LogicalDevice<Backend>& logical_device,
+			fyuu_rhi::execution::Scheduler<Backend>& scheduler,
+			fyuu_rhi::Resource<Backend>&& dest,
+			std::span<std::byte const> data
+		) {
+			struct SyncState {
+				std::mutex mtx;
+				std::condition_variable cv;
+				std::optional<fyuu_rhi::Resource<Backend>> result;
+				std::exception_ptr error;
+				bool done = false;
+			} state;
+
+			struct Recv {
+				SyncState* s;
+				void set_value(fyuu_rhi::Resource<Backend> r) && noexcept {
+					{ std::lock_guard l(s->mtx); s->result.emplace(std::move(r)); s->done = true; }
+					s->cv.notify_one();
+				}
+				void set_error(std::exception_ptr e) && noexcept {
+					{ std::lock_guard l(s->mtx); s->error = std::move(e); s->done = true; }
+					s->cv.notify_one();
+				}
+				void set_stopped() && noexcept {
+					{ std::lock_guard l(s->mtx); s->done = true; }
+					s->cv.notify_one();
+				}
+				[[nodiscard]] std::stop_token get_stop_token() const noexcept { return {}; }
+			};
+
+			auto sender = fyuu_rhi::execution::Upload(logical_device, scheduler, std::move(dest), 0u, data);
+			auto op_state = std::move(sender).connect(Recv{ &state });
+			op_state.start();
+			std::unique_lock l(state.mtx);
+			state.cv.wait(l, [&] { return state.done; });
+			if (state.error) std::rethrow_exception(state.error);
+			return std::move(*state.result);
+		}
+
 		template <class Instance, class PhysicalDevice, class LogicalDevice, class Scheduler>
 		struct RenderingBackend {
 			using Backend = typename Scheduler::BackendType;
@@ -113,6 +157,9 @@ namespace {
 				std::size_t{},
 				std::declval<fyuu_rhi::ResourceFlags const&>()
 			));
+			using Pipeline = decltype(std::declval<LogicalDevice&>().CreateGraphicsPipeline(
+				std::declval<fyuu_rhi::pipeline::GraphicsPipelineDescriptor const&>()
+			));
 
 			struct FrameResources {
 				fyuu_rhi::execution::CommandGraphDescriptor descriptor;
@@ -123,6 +170,8 @@ namespace {
 				fyuu_rhi::execution::CommandGraphBindings<Backend> bindings;
 				std::uint32_t width;
 				std::uint32_t height;
+				Pipeline triangle_pipeline;
+				fyuu_rhi::Resource<Backend> vertex_buffer;
 
 				static fyuu_rhi::ResourceFlags TargetFlags() {
 					fyuu_rhi::ResourceFlags flags;
@@ -145,11 +194,17 @@ namespace {
 					auto resource = builder.RegisterResource();
 					auto view = builder.RegisterView();
 					auto presentation = builder.RegisterPresentationTarget();
+					auto vertex_buf = builder.RegisterResource();
+					auto pipeline_id = builder.RegisterPipeline();
 					auto render = builder.AddNode(GraphNodeFlagBits::Graphics);
 					builder.AddAccess(render, {
 						.resource = resource,
 						.flags = GraphAccessFlagBits::Write |
 							GraphAccessFlagBits::ColorAttachment
+					});
+					builder.AddAccess(render, {
+						.resource = vertex_buf,
+						.flags = GraphAccessFlagBits::Read | GraphAccessFlagBits::Vertex
 					});
 					builder.AddCommand(render, BeginRenderingCommand{
 						.colors = {{
@@ -165,6 +220,11 @@ namespace {
 						.width = width,
 						.height = height
 					});
+					builder.AddCommand(render, BindPipelineCommand{ .pipeline = pipeline_id });
+					builder.AddCommand(render, BindVertexBufferCommand{
+						.resource = vertex_buf, .slot = 0, .stride = 32, .offset = 0
+					});
+					builder.AddCommand(render, DrawCommand{ .vertex_count = 3, .instance_count = 1 });
 					builder.AddCommand(render, EndRenderingCommand{});
 					auto present = builder.AddNode(GraphNodeFlagBits::Present);
 					builder.AddAccess(present, {
@@ -182,6 +242,7 @@ namespace {
 
 				FrameResources(
 					LogicalDevice& logical_device,
+					Scheduler& scheduler,
 					typename Backend::PresentationTarget const& presentation_target,
 					ApplicationDescriptor const& application
 				) : descriptor(BuildDescriptor(
@@ -209,13 +270,83 @@ namespace {
 					executable(logical_device.CompileCommandGraph(graph)),
 					bindings(descriptor),
 					width(application.surface_width),
-					height(application.surface_height) {
+					height(application.surface_height),
+					triangle_pipeline(CreateTrianglePipeline(logical_device)),
+					vertex_buffer(logical_device.CreateBuffer(
+						sizeof(kTriangleVertices),
+						[] {
+							fyuu_rhi::ResourceFlags flags;
+							flags.Set(fyuu_rhi::ResourceFlagBits::DeviceLocal);
+							flags.Set(fyuu_rhi::ResourceFlagBits::VertexBuffer);
+							flags.Set(fyuu_rhi::ResourceFlagBits::CopyDST);
+							return flags;
+						}()
+					)) {
+					vertex_buffer = SyncUpload(logical_device, scheduler,
+						std::move(vertex_buffer),
+						std::span<std::byte const>{
+							reinterpret_cast<std::byte const*>(kTriangleVertices),
+							sizeof(kTriangleVertices)
+						}
+					);
 					bindings.Bind(fyuu_rhi::execution::GraphResourceID{ 0u }, target);
 					bindings.Bind(fyuu_rhi::execution::GraphViewID{ 0u }, view);
 					bindings.Bind(
 						fyuu_rhi::execution::GraphPresentationID{ 0u },
 						presentation_target
 					);
+					bindings.Bind(fyuu_rhi::execution::GraphResourceID{ 1u }, vertex_buffer);
+					bindings.Bind(fyuu_rhi::execution::GraphPipelineID{ 0u }, triangle_pipeline);
+				}
+
+			private:
+				static constexpr float kTriangleVertices[] = {
+					// position            color
+					 0.0f,  0.5f, 0.0f, 1.0f,   1.0f, 0.0f, 0.0f, 1.0f,
+					 0.5f, -0.5f, 0.0f, 1.0f,   0.0f, 1.0f, 0.0f, 1.0f,
+					-0.5f, -0.5f, 0.0f, 1.0f,   0.0f, 0.0f, 1.0f, 1.0f,
+				};
+
+				static Pipeline CreateTrianglePipeline(LogicalDevice& ld) {
+					using namespace fyuu_rhi::pipeline;
+					static constexpr char const kShaderSource[] = R"(
+						struct VSOut { float4 pos : SV_Position; float3 color : COLOR; };
+						[shader("vertex")]
+						VSOut vs_main(float3 pos : POSITION, float3 color : COLOR) {
+							VSOut o;
+							o.pos = float4(pos, 1.0);
+							o.color = color;
+							return o;
+						}
+						[shader("fragment")]
+						float4 fs_main(VSOut input) : SV_Target0 {
+							return float4(input.color, 1.0);
+						}
+					)";
+					return ld.CreateGraphicsPipeline({
+						.program = {
+							.modules = {{{
+								SlangPipelineProgramDescriptor::Module{
+									.name = "tri",
+									.source = kShaderSource
+								}
+							}}},
+							.entry_points = {{
+								{.name = "vs_main", .stage = PipelineStage::Vertex},
+								{.name = "fs_main", .stage = PipelineStage::Fragment}
+							}}
+						},
+						.vertex = {
+							.buffers = {{ VertexBufferLayout{ .slot = 0, .stride = 32 } }},
+							.attributes = {{
+								{.location = 0, .slot = 0, .offset = 0,
+									.format = kTriFmtPos},
+								{.location = 1, .slot = 0, .offset = 16,
+									.format = kTriFmtPos}
+							}}
+						},
+						.color_targets = {{ ColorTargetState{ .format = kTriFmtTarget } }}
+					});
 				}
 			};
 
@@ -290,7 +421,7 @@ namespace {
 			) {
 				if (!frame || frame->width != application.surface_width ||
 					frame->height != application.surface_height) {
-					frame.emplace(logical_device, presentation_target, application);
+					frame.emplace(logical_device, scheduler, presentation_target, application);
 				}
 				Completion completion;
 				auto sender = fyuu_rhi::execution::Submit(

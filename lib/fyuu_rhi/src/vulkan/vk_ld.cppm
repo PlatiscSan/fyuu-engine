@@ -1045,7 +1045,9 @@ namespace fyuu_rhi::vulkan {
 			);
 			auto raw = ld.impl->createShaderModule(module_info, nullptr, *ld.dispatcher);
 			modules.push_back(vk::SharedShaderModule(raw, ld.impl, { nullptr, *ld.dispatcher }));
-			stages.emplace_back(vk::PipelineShaderStageCreateFlags{}, MapPipelineStage(entry.stage), raw, entry.name.c_str());
+			// getEntryPointCode emits one SPIR-V module per stage and normalizes its
+			// exported OpEntryPoint name to "main".
+			stages.emplace_back(vk::PipelineShaderStageCreateFlags{}, MapPipelineStage(entry.stage), raw, "main");
 		}
 
 		std::vector<vk::VertexInputBindingDescription> vertex_bindings;
@@ -1255,7 +1257,7 @@ namespace fyuu_rhi::vulkan {
 				vk::PipelineShaderStageCreateFlags{},
 				vk::ShaderStageFlagBits::eCompute,
 				raw_module,
-				entry.name.c_str()
+				"main"
 			);
 		}
 		if (!stage) {

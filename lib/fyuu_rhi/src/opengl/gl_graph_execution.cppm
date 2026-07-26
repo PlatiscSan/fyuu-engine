@@ -566,6 +566,23 @@ namespace {
 			bool index_uint32 = false;
 			std::optional<execution::BeginRenderingCommand> rendering;
 
+			static void SetCoordinateConvention(execution::CoordinateConvention convention) {
+				if (!GLAD_GL_VERSION_4_5 && !GLAD_GL_ARB_clip_control) {
+					if (convention == execution::CoordinateConvention::Engine) {
+						throw std::runtime_error(
+							"OpenGL engine coordinates require GL 4.5 or GL_ARB_clip_control"
+						);
+					}
+					return;
+				}
+				if (convention == execution::CoordinateConvention::Engine) {
+					glClipControl(GL_LOWER_LEFT, GL_ZERO_TO_ONE);
+				}
+				else {
+					glClipControl(GL_LOWER_LEFT, GL_NEGATIVE_ONE_TO_ONE);
+				}
+			}
+
 			void operator()(execution::BeginRenderingCommand const& command) {
 				if (rendering) throw std::logic_error("Nested OpenGL rendering scopes are invalid");
 				glGenFramebuffers(1u, &framebuffer);
@@ -620,6 +637,7 @@ namespace {
 						glClearBufferiv(GL_STENCIL, 0, &stencil);
 					}
 				}
+				SetCoordinateConvention(command.coordinate_convention);
 				glViewport(command.offset_x, command.offset_y, command.width, command.height);
 				rendering = command;
 			}
@@ -756,6 +774,7 @@ namespace {
 			}
 
 			void operator()(execution::SetViewportCommand const& command) {
+				SetCoordinateConvention(command.coordinate_convention);
 				glViewport(
 					static_cast<GLint>(command.x), static_cast<GLint>(command.y),
 					static_cast<GLsizei>(command.width), static_cast<GLsizei>(command.height)

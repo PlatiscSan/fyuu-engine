@@ -151,6 +151,16 @@ namespace fyuu_rhi::execution {
 		std::uint32_t clear_stencil = 0u;
 	};
 
+	export enum class CoordinateConvention : std::uint8_t {
+		// Engine space is right-handed: +X right, +Y up, and +Z backward (-Z forward).
+		// Clip space uses positive Y up and depth [0, 1]. Viewport offsets use each
+		// backend's native framebuffer origin unless a higher-level surface maps them.
+		Engine,
+		// Preserve the graphics API's native clip/window mapping. World/view-space
+		// handedness remains the responsibility of the camera and projection matrices.
+		Native
+	};
+
 	export struct BeginRenderingCommand {
 		std::vector<GraphColorAttachment> colors;
 		std::optional<GraphDepthStencilAttachment> depth_stencil;
@@ -158,6 +168,7 @@ namespace fyuu_rhi::execution {
 		std::int32_t offset_y = 0;
 		std::uint32_t width = 0u;
 		std::uint32_t height = 0u;
+		CoordinateConvention coordinate_convention = CoordinateConvention::Engine;
 	};
 
 	export struct EndRenderingCommand {};
@@ -185,6 +196,7 @@ namespace fyuu_rhi::execution {
 		float height = 0.0f;
 		float minimum_depth = 0.0f;
 		float maximum_depth = 1.0f;
+		CoordinateConvention coordinate_convention = CoordinateConvention::Engine;
 	};
 
 	export struct SetScissorCommand {

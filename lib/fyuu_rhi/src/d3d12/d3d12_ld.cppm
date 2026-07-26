@@ -386,6 +386,20 @@ namespace {
 
 	}
 
+	UINT SelectSampleQuality(ID3D12Device* device, DXGI_FORMAT format, UINT sample_cnt) {
+		if (QueryQualityLevels(device, format, sample_cnt) == 0u) {
+			throw std::invalid_argument(std::format(
+				"Sample count {} is not supported for DXGI format {}",
+				sample_cnt,
+				static_cast<UINT>(format)
+			));
+		}
+
+		// NumQualityLevels is a count, while SampleDesc.Quality is a zero-based index.
+		// The pipeline abstraction uses the standard quality level, so resources must too.
+		return 0u;
+	}
+
 	D3D12MA::ALLOCATION_FLAGS ExtractAllocationFlags(ResourceFlags const& flags) {
 
 		D3D12MA::ALLOCATION_FLAGS d3d12ma_flags{};
@@ -1125,7 +1139,7 @@ namespace fyuu_rhi::d3d12 {
 				return CD3DX12_RESOURCE_DESC::Tex2D(
 					format, width, static_cast<UINT>(height), static_cast<UINT16>(depth_arr_layers), 
 					static_cast<UINT16>(mip_lvl_cnt), sample_cnt,
-					QueryQualityLevels(ld.impl.Get(), format, sample_cnt), 
+					SelectSampleQuality(ld.impl.Get(), format, sample_cnt),
 					res_flags, tex_layout
 				);
 			}
@@ -1138,7 +1152,7 @@ namespace fyuu_rhi::d3d12 {
 			return CD3DX12_RESOURCE_DESC::Tex2D(
 				format, width, static_cast<UINT>(height), static_cast<UINT16>(depth_arr_layers), 
 				static_cast<UINT16>(mip_lvl_cnt), sample_cnt,
-				QueryQualityLevels(ld.impl.Get(), format, sample_cnt), 
+				SelectSampleQuality(ld.impl.Get(), format, sample_cnt),
 				res_flags, tex_layout
 			);
 			}();
