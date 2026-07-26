@@ -1,3 +1,4 @@
+#include <imgui.h>
 #include "fyuu_application.h"
 #include "fyuu_log.h"
 
@@ -14,6 +15,7 @@ int main(int argc, char** argv) {
 			FYUU_LOG_INFO("App initialized");
 		},
 		.Tick = [](Fyuu_App* self) {
+			ImGui::ShowDemoWindow();
 
 		},
 		.Shutdown = [](Fyuu_App* self) {

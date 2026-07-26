@@ -133,7 +133,7 @@ namespace fyuu_rhi::pipeline {
 
 		Resource<Backend> const* Buffer() const noexcept {
 			auto binding = std::get_if<BufferBinding>(&m_value);
-			return binding ? &binding->impl.get() : nullptr;
+			return binding ? &binding->buffer.get() : nullptr;
 		}
 
 		View<Backend> const* BoundView() const noexcept {

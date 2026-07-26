@@ -104,6 +104,8 @@ target_compile_features(${PROJECT_NAME}
 )
 	
 target_link_libraries(${PROJECT_NAME}
+	PUBLIC
+		imgui::imgui
 	PRIVATE
 		plastic
 		FyuuRHI
@@ -118,7 +120,6 @@ target_link_libraries(${PROJECT_NAME}
 
 		# graphics
 		SDL3::SDL3
-		imgui::imgui
 
 		# physics
 		Jolt::Jolt

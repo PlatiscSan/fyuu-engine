@@ -1425,20 +1425,22 @@ namespace fyuu_rhi::opengl {
 
 		glSamplerParameteri(sampler, GL_TEXTURE_MAG_FILTER, MapFilterMode(descriptor.mag_filter));
 
-		GLenum min_filter;
-		switch (descriptor.min_filter) {
-		case FilterMode::Nearest:
-			min_filter = (descriptor.mipmap_filter == MipmapFilterMode::Nearest)
-				? GL_NEAREST_MIPMAP_NEAREST
-				: GL_NEAREST_MIPMAP_LINEAR;
-			break;
-		case FilterMode::Linear:
-			min_filter = (descriptor.mipmap_filter == MipmapFilterMode::Nearest)
-				? GL_LINEAR_MIPMAP_NEAREST
-				: GL_LINEAR_MIPMAP_LINEAR;
-			break;
-		default:
-			min_filter = GL_LINEAR_MIPMAP_LINEAR;
+		GLenum min_filter = MapFilterMode(descriptor.min_filter);
+		if (descriptor.max_lod > descriptor.min_lod) {
+			switch (descriptor.min_filter) {
+			case FilterMode::Nearest:
+				min_filter = (descriptor.mipmap_filter == MipmapFilterMode::Nearest)
+					? GL_NEAREST_MIPMAP_NEAREST
+					: GL_NEAREST_MIPMAP_LINEAR;
+				break;
+			case FilterMode::Linear:
+				min_filter = (descriptor.mipmap_filter == MipmapFilterMode::Nearest)
+					? GL_LINEAR_MIPMAP_NEAREST
+					: GL_LINEAR_MIPMAP_LINEAR;
+				break;
+			default:
+				min_filter = GL_LINEAR_MIPMAP_LINEAR;
+			}
 		}
 		glSamplerParameteri(sampler, GL_TEXTURE_MIN_FILTER, min_filter);
 

@@ -306,7 +306,7 @@ namespace {
 		case CompareFunction::NotEqual:		return wgpu::CompareFunction::NotEqual;
 		case CompareFunction::GreaterEqual: return wgpu::CompareFunction::GreaterEqual;
 		case CompareFunction::Always:		return wgpu::CompareFunction::Always;
-		default:							return wgpu::CompareFunction::Never;
+		default:							return wgpu::CompareFunction::Undefined;
 		}
 	}
 

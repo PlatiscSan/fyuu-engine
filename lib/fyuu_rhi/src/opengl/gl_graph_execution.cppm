@@ -585,6 +585,7 @@ namespace {
 
 			void operator()(execution::BeginRenderingCommand const& command) {
 				if (rendering) throw std::logic_error("Nested OpenGL rendering scopes are invalid");
+				glDisable(GL_SCISSOR_TEST);
 				glGenFramebuffers(1u, &framebuffer);
 				glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
 				std::vector<GLenum> draw_buffers;
@@ -775,8 +776,12 @@ namespace {
 
 			void operator()(execution::SetViewportCommand const& command) {
 				SetCoordinateConvention(command.coordinate_convention);
+				auto y = command.y;
+				if (rendering && command.coordinate_convention == execution::CoordinateConvention::Engine) {
+					y = static_cast<float>(rendering->height) - command.y - command.height;
+				}
 				glViewport(
-					static_cast<GLint>(command.x), static_cast<GLint>(command.y),
+					static_cast<GLint>(command.x), static_cast<GLint>(y),
 					static_cast<GLsizei>(command.width), static_cast<GLsizei>(command.height)
 				);
 				glDepthRangef(command.minimum_depth, command.maximum_depth);
@@ -784,7 +789,12 @@ namespace {
 
 			void operator()(execution::SetScissorCommand const& command) {
 				glEnable(GL_SCISSOR_TEST);
-				glScissor(command.x, command.y, command.width, command.height);
+				auto y = command.y;
+				if (rendering && command.coordinate_convention == execution::CoordinateConvention::Engine) {
+					y = static_cast<std::int32_t>(rendering->height) - command.y -
+						static_cast<std::int32_t>(command.height);
+				}
+				glScissor(command.x, y, command.width, command.height);
 			}
 
 			void operator()(execution::DrawCommand const& command) {
@@ -800,15 +810,16 @@ namespace {
 				if (!current_pipeline || current_pipeline->compute || !rendering || !index_buffer) {
 					throw std::logic_error("Invalid OpenGL indexed draw state");
 				}
-				if (command.first_instance != 0u || command.vertex_offset != 0) {
-					throw std::invalid_argument("OpenGL base vertex/instance is unavailable on the portable path");
+				if (command.first_instance != 0u) {
+					throw std::invalid_argument("OpenGL base instance is unavailable on the portable path");
 				}
 				auto index_size = index_uint32 ? sizeof(std::uint32_t) : sizeof(std::uint16_t);
-				glDrawElementsInstanced(
+				glDrawElementsInstancedBaseVertex(
 					OpenGLPrimitive(current_pipeline->primitive.topology), command.index_count,
 					index_uint32 ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT,
 					reinterpret_cast<void const*>(index_offset + command.first_index * index_size),
-					command.instance_count
+					command.instance_count,
+					command.vertex_offset
 				);
 			}
 
@@ -1180,6 +1191,7 @@ namespace {
 					);
 				}
 				glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0u);
+				glDisable(GL_SCISSOR_TEST);
 				glBlitFramebuffer(
 					0, 0, source.width, source.height, 0, 0, source.width, source.height,
 					GL_COLOR_BUFFER_BIT, GL_NEAREST

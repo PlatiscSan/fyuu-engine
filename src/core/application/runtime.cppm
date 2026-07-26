@@ -115,9 +115,11 @@ namespace fyuu_engine {
 				RequestStop();
 			}
 			if (m_state == RuntimeState::Running &&
-				m_platform.SurfaceVisible() &&
-				m_application.Tick) {
-				m_application.Tick(*this);
+				m_platform.SurfaceVisible()) {
+				m_rendering.BeginFrame(m_platform);
+				if (m_application.Tick) {
+					m_application.Tick(*this);
+				}
 			}
 			if (m_state == RuntimeState::Running && m_platform.SurfaceVisible()) {
 				m_rendering.Render(m_platform, m_application);

@@ -8,6 +8,7 @@ module;
 #include <utility>
 #endif // !defined(__cpp_lib_modules)
 #include <SDL3/SDL.h>
+#include <imgui.h>
 
 module fyuu_engine:platform;
 #if defined(__cpp_lib_modules)
@@ -16,6 +17,34 @@ import std;
 import :application_types;
 
 namespace fyuu_engine {
+	namespace {
+		ImGuiKey ImGuiKeyFromSDL(SDL_Keycode key) noexcept {
+			switch (key) {
+			case SDLK_TAB: return ImGuiKey_Tab;
+			case SDLK_LEFT: return ImGuiKey_LeftArrow;
+			case SDLK_RIGHT: return ImGuiKey_RightArrow;
+			case SDLK_UP: return ImGuiKey_UpArrow;
+			case SDLK_DOWN: return ImGuiKey_DownArrow;
+			case SDLK_PAGEUP: return ImGuiKey_PageUp;
+			case SDLK_PAGEDOWN: return ImGuiKey_PageDown;
+			case SDLK_HOME: return ImGuiKey_Home;
+			case SDLK_END: return ImGuiKey_End;
+			case SDLK_INSERT: return ImGuiKey_Insert;
+			case SDLK_DELETE: return ImGuiKey_Delete;
+			case SDLK_BACKSPACE: return ImGuiKey_Backspace;
+			case SDLK_SPACE: return ImGuiKey_Space;
+			case SDLK_RETURN: return ImGuiKey_Enter;
+			case SDLK_ESCAPE: return ImGuiKey_Escape;
+			case SDLK_A: return ImGuiKey_A;
+			case SDLK_C: return ImGuiKey_C;
+			case SDLK_V: return ImGuiKey_V;
+			case SDLK_X: return ImGuiKey_X;
+			case SDLK_Y: return ImGuiKey_Y;
+			case SDLK_Z: return ImGuiKey_Z;
+			default: return ImGuiKey_None;
+			}
+		}
+	}
 
 	class Platform {
 	private:
@@ -121,11 +150,48 @@ namespace fyuu_engine {
 				Shutdown();
 				throw error;
 			}
+			if (!SDL_StartTextInput(m_main_window)) {
+				auto error = std::runtime_error(std::format(
+					"Calling SDL_StartTextInput(), SDL reports {}", SDL_GetError()
+				));
+				Shutdown();
+				throw error;
+			}
 		}
 
 		void ProcessEvents(ApplicationDescriptor& application) {
 			SDL_Event event;
 			while (SDL_PollEvent(&event)) {
+				if (ImGui::GetCurrentContext()) {
+					auto& io = ImGui::GetIO();
+					switch (event.type) {
+					case SDL_EVENT_MOUSE_WHEEL:
+						io.AddMouseWheelEvent(event.wheel.x, event.wheel.y);
+						break;
+					case SDL_EVENT_TEXT_INPUT:
+						io.AddInputCharactersUTF8(event.text.text);
+						break;
+					case SDL_EVENT_KEY_DOWN:
+					case SDL_EVENT_KEY_UP: {
+						bool down = event.type == SDL_EVENT_KEY_DOWN;
+						auto key = ImGuiKeyFromSDL(event.key.key);
+						if (key != ImGuiKey_None) io.AddKeyEvent(key, down);
+						io.AddKeyEvent(ImGuiMod_Ctrl, (event.key.mod & SDL_KMOD_CTRL) != 0u);
+						io.AddKeyEvent(ImGuiMod_Shift, (event.key.mod & SDL_KMOD_SHIFT) != 0u);
+						io.AddKeyEvent(ImGuiMod_Alt, (event.key.mod & SDL_KMOD_ALT) != 0u);
+						io.AddKeyEvent(ImGuiMod_Super, (event.key.mod & SDL_KMOD_GUI) != 0u);
+						break;
+					}
+					case SDL_EVENT_WINDOW_FOCUS_GAINED:
+						io.AddFocusEvent(true);
+						break;
+					case SDL_EVENT_WINDOW_FOCUS_LOST:
+						io.AddFocusEvent(false);
+						break;
+					default:
+						break;
+					}
+				}
 				switch (event.type) {
 				case SDL_EVENT_QUIT:
 					m_stop_requested = true;

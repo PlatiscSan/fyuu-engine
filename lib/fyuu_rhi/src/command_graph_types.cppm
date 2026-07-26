@@ -204,6 +204,7 @@ namespace fyuu_rhi::execution {
 		std::int32_t y = 0;
 		std::uint32_t width = 0u;
 		std::uint32_t height = 0u;
+		CoordinateConvention coordinate_convention = CoordinateConvention::Engine;
 	};
 
 	export struct BindIndexBufferCommand {
