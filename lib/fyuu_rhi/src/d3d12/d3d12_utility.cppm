@@ -2,6 +2,7 @@
 module;
 #include <version>
 #if !defined(__cpp_lib_modules)
+#include <cstdint>
 #include <system_error>
 #include <type_traits>
 #include <memory>
@@ -74,6 +75,15 @@ namespace fyuu_rhi::d3d12 {
 
 		return ManagedEvent(std::move(event));
 
+	}
+
+	void WaitForFence(ID3D12Fence* fence, std::uint64_t value) {
+		if (fence->GetCompletedValue() >= value) {
+			return;
+		}
+		auto event = CreateManagedEvent();
+		ThrowIfFailed(fence->SetEventOnCompletion(value, event.impl.get()));
+		event.impl.wait();
 	}
 
 }

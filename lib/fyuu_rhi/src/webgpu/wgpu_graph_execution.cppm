@@ -72,11 +72,13 @@ namespace {
 		Backend::PresentationTarget const& target,
 		wgpu::Texture const& source,
 		bool vertical_sync,
-		std::uint32_t frames_in_flight
+		std::uint32_t frames_in_flight,
+		wgpu::Surface const* previous_surface
 	) {
-		wgpu::InstanceDescriptor instance_descriptor{};
-		auto instance = wgpu::CreateInstance(&instance_descriptor);
-		auto surface = CreateSurface(instance, target);
+		auto instance = scheduler->adapter.GetInstance();
+		auto surface = previous_surface
+			? *previous_surface
+			: CreateSurface(instance, target);
 		wgpu::SurfaceCapabilities capabilities;
 		if (!surface.GetCapabilities(scheduler->adapter, &capabilities)) {
 			throw std::runtime_error("WebGPU could not query presentation capabilities");
@@ -164,6 +166,16 @@ namespace {
 	) noexcept {
 		frame->store(true, std::memory_order::release);
 		frame->notify_all();
+	}
+
+	void WaitForPresentationFrames(
+		Backend::LogicalDevice::PresentationEntry const& entry
+	) {
+		for (auto const& frame : entry.frames->slots) {
+			while (!frame->load(std::memory_order::acquire)) {
+				frame->wait(false, std::memory_order::acquire);
+			}
+		}
 	}
 
 	struct WebGPUCommandRecorder {
@@ -433,13 +445,15 @@ namespace {
 				target,
 				source,
 				command.vertical_sync,
-				command.frames_in_flight
+				command.frames_in_flight,
+				nullptr
 			);
 			if (presentation.Get().width != source.GetWidth() ||
 				presentation.Get().height != source.GetHeight() ||
 				presentation.Get().format != source.GetFormat() ||
 				presentation.Get().frames_in_flight != command.frames_in_flight ||
 				presentation.Get().vertical_sync != command.vertical_sync) {
+				WaitForPresentationFrames(presentation.Get());
 				(*scheduler)->presentation_cache->Recreate(
 					presentation,
 					CreatePresentationEntry,
@@ -447,7 +461,8 @@ namespace {
 					target,
 					source,
 					command.vertical_sync,
-					command.frames_in_flight
+					command.frames_in_flight,
+					&presentation.Get().surface
 				);
 				presentation = (*scheduler)->presentation_cache->Acquire(
 					target,
@@ -456,15 +471,18 @@ namespace {
 					target,
 					source,
 					command.vertical_sync,
-					command.frames_in_flight
+					command.frames_in_flight,
+					nullptr
 				);
 			}
 			auto frame = AcquireFrame(presentation.Get());
 			wgpu::SurfaceTexture surface_texture;
 			presentation.Get().surface.GetCurrentTexture(&surface_texture);
 			if (surface_texture.status == wgpu::SurfaceGetCurrentTextureStatus::Outdated ||
-				surface_texture.status == wgpu::SurfaceGetCurrentTextureStatus::Lost) {
+				surface_texture.status == wgpu::SurfaceGetCurrentTextureStatus::Lost ||
+				surface_texture.status == wgpu::SurfaceGetCurrentTextureStatus::Error) {
 				ReleaseFrame(frame);
+				WaitForPresentationFrames(presentation.Get());
 				(*scheduler)->presentation_cache->Recreate(
 					presentation,
 					CreatePresentationEntry,
@@ -472,7 +490,8 @@ namespace {
 					target,
 					source,
 					command.vertical_sync,
-					command.frames_in_flight
+					command.frames_in_flight,
+					&presentation.Get().surface
 				);
 				presentation = (*scheduler)->presentation_cache->Acquire(
 					target,
@@ -481,7 +500,8 @@ namespace {
 					target,
 					source,
 					command.vertical_sync,
-					command.frames_in_flight
+					command.frames_in_flight,
+					nullptr
 				);
 				frame = AcquireFrame(presentation.Get());
 				presentation.Get().surface.GetCurrentTexture(&surface_texture);
@@ -489,7 +509,10 @@ namespace {
 			if (surface_texture.status != wgpu::SurfaceGetCurrentTextureStatus::SuccessOptimal &&
 				surface_texture.status != wgpu::SurfaceGetCurrentTextureStatus::SuccessSuboptimal) {
 				ReleaseFrame(frame);
-				throw std::runtime_error("WebGPU could not acquire the current surface texture");
+				throw std::runtime_error(std::format(
+					"WebGPU could not acquire the current surface texture: status {}",
+					static_cast<std::uint32_t>(surface_texture.status)
+				));
 			}
 			wgpu::TexelCopyTextureInfo source_copy{ .texture = source };
 			wgpu::TexelCopyTextureInfo destination_copy{ .texture = surface_texture.texture };
@@ -544,7 +567,7 @@ namespace fyuu_rhi::webgpu {
 					wgpu::QueueWorkDoneStatus,
 					char const*
 				) noexcept {
-					frame->store(true, std::memory_order_release);
+					ReleaseFrame(frame);
 				};
 				auto future = batch.queue->impl.OnSubmittedWorkDone(
 					wgpu::CallbackMode::WaitAnyOnly,

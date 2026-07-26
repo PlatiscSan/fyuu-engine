@@ -232,6 +232,7 @@ namespace fyuu_rhi::execution {
 
 	export template <class Backend> class Scheduler {
 	public:
+		using BackendType = Backend;
 		using Implementation = typename Backend::Scheduler;
 
 #if defined(__cpp_lib_senders) && __cpp_lib_senders >= 202406L

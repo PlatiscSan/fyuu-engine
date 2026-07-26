@@ -13,7 +13,7 @@ module;
 #include "api_macro.h"
 #include "fyuu_application.h"
 module fyuu_engine:entry;
-import :app_instance;
+import :runtime;
 #if defined(__cpp_lib_modules)
 import std;
 #endif // defined(__cpp_lib_modules)
@@ -21,29 +21,61 @@ import std;
 extern "C" {
 	LIB_API int LIB_CALL Fyuu_Run(int argc, char** argv, Fyuu_App* app) {
 		static std::mutex s_mutex;
-		static Fyuu_App* s_app = nullptr;
-		std::lock_guard<std::mutex> lock(s_mutex);
-		s_app = app;
+		static fyuu_engine::ApplicationDescriptor* s_application = nullptr;
+		std::unique_lock<std::mutex> lock(s_mutex);
+		if (!app) {
+			return EXIT_FAILURE;
+		}
+		fyuu_engine::ApplicationDescriptor application{
+			.description = app->description ? app->description : "",
+			.name = app->name ? app->name : "FyuuApplication",
+			.title = app->title ? app->title : "FyuuApplication",
+			.surface_width = app->surface_width,
+			.surface_height = app->surface_height,
+			.version = {
+				.variant = app->version.variant,
+				.major = app->version.major,
+				.minor = app->version.minor,
+				.patch = app->version.patch
+			},
+			.user_data = app,
+			.Initialize = [](fyuu_engine::Runtime& runtime) {
+				auto application = static_cast<Fyuu_App*>(runtime.UserData());
+				auto const& descriptor = runtime.Application();
+				application->surface_width = descriptor.surface_width;
+				application->surface_height = descriptor.surface_height;
+				if (application->Init) {
+					application->Init(application);
+				}
+			},
+			.Tick = [](fyuu_engine::Runtime& runtime) {
+				auto application = static_cast<Fyuu_App*>(runtime.UserData());
+				auto const& descriptor = runtime.Application();
+				application->surface_width = descriptor.surface_width;
+				application->surface_height = descriptor.surface_height;
+				if (application->Tick) {
+					application->Tick(application);
+				}
+			},
+			.Shutdown = [](fyuu_engine::Runtime& runtime) {
+				auto application = static_cast<Fyuu_App*>(runtime.UserData());
+				if (application->Shutdown) {
+					application->Shutdown(application);
+				}
+			}
+		};
+		s_application = &application;
 		return SDL_RunApp(
 			argc, argv,
 			[](int argc, char** argv) -> int {
 				try {
-
-					if (!fyuu_engine::application::Initialize(argc, argv, s_app)) {
-						return EXIT_FAILURE;
-					}
-
-					if (fyuu_engine::application::ShowHelp()) {
+					fyuu_engine::Runtime runtime(*s_application);
+					runtime.Initialize(argc, argv);
+					if (runtime.ShowHelp()) {
 						return EXIT_SUCCESS;
 					}
-
-					// Main loop
-					while (fyuu_engine::application::IsRunning()) {
-						fyuu_engine::application::Tick();
-					}
-
-					fyuu_engine::application::Shutdown();
-
+					runtime.Run();
+					runtime.Shutdown();
 					return EXIT_SUCCESS;
 				}
 				catch (std::exception const& ex) {

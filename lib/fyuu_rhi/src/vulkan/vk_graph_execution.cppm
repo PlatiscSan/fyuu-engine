@@ -159,9 +159,12 @@ namespace {
 		Backend::PresentationTarget const& target,
 		Backend::Resource::Texture const& source,
 		bool vertical_sync,
-		std::uint32_t frames_in_flight
+		std::uint32_t frames_in_flight,
+		vk::SharedSurfaceKHR const* previous_surface = nullptr,
+		vk::SwapchainKHR previous_swapchain = {}
 	) {
-		auto surface = CreatePresentationSurface(scheduler.physical_device, target);
+		auto surface = previous_surface ?
+			*previous_surface : CreatePresentationSurface(scheduler.physical_device, target);
 		auto const& dispatcher = *queue.dispatcher;
 		auto physical_device = *scheduler.physical_device.impl;
 		if (!physical_device.getSurfaceSupportKHR(queue.family, *surface, dispatcher)) {
@@ -246,6 +249,7 @@ namespace {
 		info.compositeAlpha = SelectCompositeAlpha(capabilities.supportedCompositeAlpha);
 		info.presentMode = present_mode;
 		info.clipped = true;
+		info.oldSwapchain = previous_swapchain;
 		std::array view_formats{ source_format, MutableViewFormat(source_format) };
 		auto view_format_count = view_formats.back() == vk::Format::eUndefined ? 1u : 2u;
 		vk::ImageFormatListCreateInfo format_list(
@@ -1465,7 +1469,9 @@ namespace fyuu_rhi::vulkan {
 					request.target,
 					*request.source,
 					request.vertical_sync,
-					request.frames_in_flight
+					request.frames_in_flight,
+					nullptr,
+					vk::SwapchainKHR{}
 				);
 				auto supported_modes = graph_execution.scheduler->impl->physical_device.impl
 					->getSurfacePresentModesKHR(
@@ -1490,6 +1496,7 @@ namespace fyuu_rhi::vulkan {
 						requested_mode
 					) == presentation.Get().compatible_present_modes.end() ||
 					presentation.Get().requested_frames_in_flight != request.frames_in_flight) {
+					batch.queue->impl->waitIdle(*batch.queue->dispatcher);
 					graph_execution.scheduler->impl->presentation_cache->Recreate(
 						presentation,
 						CreatePresentationEntry,
@@ -1498,7 +1505,9 @@ namespace fyuu_rhi::vulkan {
 						request.target,
 						*request.source,
 						request.vertical_sync,
-						request.frames_in_flight
+						request.frames_in_flight,
+						&presentation.Get().surface,
+						*presentation.Get().swapchain
 					);
 					presentation = graph_execution.scheduler->impl->presentation_cache->Acquire(
 						request.target,
@@ -1508,7 +1517,9 @@ namespace fyuu_rhi::vulkan {
 						request.target,
 						*request.source,
 						request.vertical_sync,
-						request.frames_in_flight
+						request.frames_in_flight,
+						nullptr,
+						vk::SwapchainKHR{}
 					);
 				}
 
@@ -1536,7 +1547,9 @@ namespace fyuu_rhi::vulkan {
 						request.target,
 						*request.source,
 						request.vertical_sync,
-						request.frames_in_flight
+						request.frames_in_flight,
+						&presentation.Get().surface,
+						*presentation.Get().swapchain
 					);
 					presentation = graph_execution.scheduler->impl->presentation_cache->Acquire(
 						request.target,
@@ -1546,7 +1559,9 @@ namespace fyuu_rhi::vulkan {
 						request.target,
 						*request.source,
 						request.vertical_sync,
-						request.frames_in_flight
+						request.frames_in_flight,
+						nullptr,
+						vk::SwapchainKHR{}
 					);
 					acquire_result = AcquireImage(presentation.Get());
 				}
@@ -1789,7 +1804,9 @@ namespace fyuu_rhi::vulkan {
 						request.target,
 						*request.source,
 						request.vertical_sync,
-						request.frames_in_flight
+						request.frames_in_flight,
+						&presentation.Get().surface,
+						*presentation.Get().swapchain
 					);
 					throw std::runtime_error(std::format("Vulkan presentation failed: {}",static_cast<std::int32_t>(present_result)));
 				}
@@ -1827,7 +1844,9 @@ namespace fyuu_rhi::vulkan {
 						request.target,
 						*request.source,
 						request.vertical_sync,
-						request.frames_in_flight
+						request.frames_in_flight,
+						&presentation.Get().surface,
+						*presentation.Get().swapchain
 					);
 				}
 				batch.in_flight_presentations.push_back(

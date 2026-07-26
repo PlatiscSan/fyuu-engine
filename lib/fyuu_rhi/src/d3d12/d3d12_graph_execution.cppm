@@ -223,6 +223,43 @@ namespace {
 		return result;
 	}
 
+	void ResizePresentationEntry(
+		Backend::LogicalDevice::PresentationEntry& entry,
+		Backend::Scheduler::QueueState const& queue,
+		D3D12_RESOURCE_DESC const& resource_descriptor,
+		std::uint32_t frames_in_flight
+	) {
+		for (auto const& frame : entry.frames) {
+			if (frame.fence_value == 0u) {
+				continue;
+			}
+			WaitForFence(queue.fence.Get(), frame.fence_value);
+		}
+
+		DXGI_SWAP_CHAIN_DESC1 descriptor;
+		ThrowIfFailed(entry.swapchain->GetDesc1(&descriptor));
+		entry.frames.clear();
+		ThrowIfFailed(entry.swapchain->ResizeBuffers(
+			frames_in_flight,
+			static_cast<UINT>(resource_descriptor.Width),
+			resource_descriptor.Height,
+			resource_descriptor.Format,
+			descriptor.Flags
+		));
+		entry.frames.reserve(frames_in_flight);
+		for (UINT index = 0u; index < frames_in_flight; ++index) {
+			Backend::LogicalDevice::PresentationEntry::FrameSlot frame;
+			ThrowIfFailed(entry.swapchain->GetBuffer(
+				index,
+				IID_PPV_ARGS(&frame.back_buffer)
+			));
+			entry.frames.emplace_back(std::move(frame));
+		}
+		entry.format = resource_descriptor.Format;
+		entry.width = static_cast<std::uint32_t>(resource_descriptor.Width);
+		entry.height = resource_descriptor.Height;
+	}
+
 	struct D3D12CommandRecorder {
 		execution::NativeCommandGraphBindings<Backend> const* bindings;
 		ID3D12GraphicsCommandList* commands;
@@ -911,27 +948,21 @@ namespace fyuu_rhi::d3d12 {
 					descriptor,
 					request.frames_in_flight
 				);
-				auto const& entry = presentation.Get();
+				auto& entry = presentation.Get();
 				if (entry.queue.Get() != batch.queue->impl.Get() ||
 					entry.format != descriptor.Format ||
 					entry.width != descriptor.Width ||
 					entry.height != descriptor.Height ||
 					entry.frames.size() != request.frames_in_flight) {
-					graph_execution.scheduler.impl->presentation_cache->Recreate(
-						presentation,
-						CreatePresentationEntry,
-						graph_execution.scheduler.impl->physical_device,
-						batch.queue->impl,
-						request.target,
-						descriptor,
-						request.frames_in_flight
-					);
-					presentation = graph_execution.scheduler.impl->presentation_cache->Acquire(
-						request.target,
-						CreatePresentationEntry,
-						graph_execution.scheduler.impl->physical_device,
-						batch.queue->impl,
-						request.target,
+					if (entry.queue.Get() != batch.queue->impl.Get()) {
+						throw std::invalid_argument(
+							"D3D12 presentation target cannot migrate between queues"
+						);
+					}
+					std::unique_lock<std::mutex> presentation_lock(*entry.mutex);
+					ResizePresentationEntry(
+						entry,
+						*batch.queue,
 						descriptor,
 						request.frames_in_flight
 					);

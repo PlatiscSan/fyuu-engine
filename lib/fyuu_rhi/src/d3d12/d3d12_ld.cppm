@@ -734,6 +734,23 @@ namespace {
 		}
 	}
 
+	D3D12_CLEAR_VALUE OptimizedClearValue(DXGI_FORMAT format) noexcept {
+		D3D12_CLEAR_VALUE result{ .Format = format };
+		if (IsDepthStencilFormat(format)) {
+			result.DepthStencil = {
+				.Depth = 1.0f,
+				.Stencil = 0u
+			};
+		}
+		else {
+			result.Color[0] = 0.0f;
+			result.Color[1] = 0.0f;
+			result.Color[2] = 0.0f;
+			result.Color[3] = 1.0f;
+		}
+		return result;
+	}
+
 	D3D12_DSV_FLAGS ExtractDSVFlags(ResourceFlags const& flags) noexcept {
 		D3D12_DSV_FLAGS dsv_flags = D3D12_DSV_FLAG_NONE;
 		if (flags.Test(ResourceFlagBits::TextureViewAspectDepthOnly) &&
@@ -1126,13 +1143,17 @@ namespace fyuu_rhi::d3d12 {
 			);
 			}();
 		auto init_state = DetermineInitialState(flags);
+		auto clear_value = OptimizedClearValue(format);
+		auto optimized_clear_value = flags.Test(ResourceFlagBits::RenderAttachment)
+			? &clear_value
+			: nullptr;
 		Microsoft::WRL::ComPtr<D3D12MA::Allocation> allocation;
 		Microsoft::WRL::ComPtr<ID3D12Resource> res;
 		HRESULT result = ld.mem_alloc->CreateResource(
 			&alloc_desc,
 			&ResourceDescriptor,
 			init_state,
-			nullptr,
+			optimized_clear_value,
 			&allocation,
 			IID_PPV_ARGS(&res)
 		);

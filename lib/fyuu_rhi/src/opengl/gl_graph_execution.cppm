@@ -451,8 +451,12 @@ namespace {
 
 }
 
-namespace fyuu_rhi::opengl {
-	namespace {
+namespace {
+	using namespace fyuu_rhi::opengl;
+	using fyuu_rhi::ResourceFlagBits;
+	namespace execution = fyuu_rhi::execution;
+	namespace pipeline = fyuu_rhi::pipeline;
+
 		using Bindings = execution::NativeCommandGraphBindings<Backend>;
 
 		struct OpenGLResourceSnapshot {
@@ -572,13 +576,6 @@ namespace fyuu_rhi::opengl {
 					auto attachment = GL_COLOR_ATTACHMENT0 + static_cast<GLenum>(index);
 					AttachView(attachment, bindings->views[command.colors[index].view.value].get());
 					draw_buffers.emplace_back(attachment);
-					if (!command.colors[index].load) {
-						std::array clear{
-							command.colors[index].clear_red, command.colors[index].clear_green,
-							command.colors[index].clear_blue, command.colors[index].clear_alpha
-						};
-						glClearBufferfv(GL_COLOR, static_cast<GLint>(index), clear.data());
-					}
 				}
 				if (!draw_buffers.empty()) {
 					glDrawBuffers(static_cast<GLsizei>(draw_buffers.size()), draw_buffers.data());
@@ -588,6 +585,27 @@ namespace fyuu_rhi::opengl {
 					auto const& view = bindings->views[attachment.view.value].get();
 					auto const& texture = std::get<Backend::GLTextureView>(view);
 					AttachView(OpenGLAttachment(texture.format), view);
+				}
+				auto framebuffer_status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+				if (framebuffer_status != GL_FRAMEBUFFER_COMPLETE) {
+					auto error = glGetError();
+					throw std::runtime_error(std::format(
+						"OpenGL rendering framebuffer is incomplete: status 0x{:x}, error 0x{:x}",
+						framebuffer_status,
+						error
+					));
+				}
+				for (std::size_t index = 0u; index < command.colors.size(); ++index) {
+					if (!command.colors[index].load) {
+						std::array clear{
+							command.colors[index].clear_red, command.colors[index].clear_green,
+							command.colors[index].clear_blue, command.colors[index].clear_alpha
+						};
+						glClearBufferfv(GL_COLOR, static_cast<GLint>(index), clear.data());
+					}
+				}
+				if (command.depth_stencil) {
+					auto const& attachment = *command.depth_stencil;
 					if (!attachment.load_depth && !attachment.load_stencil) {
 						glClearBufferfi(
 							GL_DEPTH_STENCIL, 0, attachment.clear_depth,
@@ -601,9 +619,6 @@ namespace fyuu_rhi::opengl {
 						auto stencil = static_cast<GLint>(attachment.clear_stencil);
 						glClearBufferiv(GL_STENCIL, 0, &stencil);
 					}
-				}
-				if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-					throw std::runtime_error("OpenGL rendering framebuffer is incomplete");
 				}
 				glViewport(command.offset_x, command.offset_y, command.width, command.height);
 				rendering = command;
@@ -1235,6 +1250,8 @@ namespace fyuu_rhi::opengl {
 			return sync;
 		}
 	}
+
+namespace fyuu_rhi::opengl {
 
 	Backend::ExecutableGraph Backend::CompileCommandGraph(Backend::CommandGraph const& graph) {
 		return execution::MakeExecutableGraph<Backend>(graph);

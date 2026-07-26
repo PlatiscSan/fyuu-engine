@@ -328,20 +328,29 @@ namespace fyuu_rhi::opengl {
 			GLuint impl = 0;
 			GLenum target = 0u;
 			GLenum format = 0u;
-			GLTextureView(GLuint impl_, GLenum target_, GLenum format_) noexcept
-				: impl(impl_), target(target_), format(format_) {}
+			bool owned = true;
+			GLTextureView(
+				GLuint impl_,
+				GLenum target_,
+				GLenum format_,
+				bool owned_ = true
+			) noexcept : impl(impl_), target(target_), format(format_), owned(owned_) {}
 			GLTextureView(GLTextureView const&) = delete;
 			GLTextureView& operator=(GLTextureView const&) = delete;
 			GLTextureView(GLTextureView&& other) noexcept
-				: impl(std::exchange(other.impl, 0)), target(other.target), format(other.format) {}
+				: impl(std::exchange(other.impl, 0)), target(other.target), format(other.format),
+				owned(std::exchange(other.owned, false)) {}
 			GLTextureView& operator=(GLTextureView&& other) noexcept {
 				std::swap(impl, other.impl);
 				std::swap(target, other.target);
 				std::swap(format, other.format);
+				std::swap(owned, other.owned);
 				return *this;
 			}
 			~GLTextureView() noexcept {
-				glDeleteTextures(1u, &impl);
+				if (owned) {
+					glDeleteTextures(1u, &impl);
+				}
 			}
 		};
 

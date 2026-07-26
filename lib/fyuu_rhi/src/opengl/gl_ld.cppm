@@ -1256,6 +1256,9 @@ namespace fyuu_rhi::opengl {
 
 		}
 
+		if (!GLAD_GL_ARB_direct_state_access) {
+			glBindTexture(target, tex);
+		}
 		auto SetParam = [&](GLenum pname, GLint value) {
 			if (GLAD_GL_ARB_direct_state_access)
 				glTextureParameteri(tex, pname, value);
@@ -1288,8 +1291,28 @@ namespace fyuu_rhi::opengl {
 			throw std::invalid_argument("CreateTextureView(): source is not a texture");
 		}
 
+		GLenum view_target = ExtractTextureViewTarget(flags);
+		GLenum internal_format = ExtractInternalFormat(flags);
+		if (flags.Test(ResourceFlagBits::RenderAttachment) &&
+			base_mip_lvl == 0u && mip_lvl_cnt == 1u &&
+			base_arr_layer == 0u && arr_layer_cnt == 1u &&
+			view_target == res.target && internal_format == res.format &&
+			res.target == GL_TEXTURE_2D) {
+			return Backend::View(
+				Backend::GLTextureView(res.impl, res.target, res.format, false)
+			);
+		}
 		if (!GLAD_GL_ARB_texture_view) {
-			throw std::runtime_error("CreateTextureView(): Texture views not supported on this version of OpenGL");
+			if (base_mip_lvl == 0u && mip_lvl_cnt == 1u &&
+				base_arr_layer == 0u && arr_layer_cnt == 1u &&
+				view_target == res.target && internal_format == res.format) {
+				return Backend::View(
+					Backend::GLTextureView(res.impl, res.target, res.format, false)
+				);
+			}
+			throw std::runtime_error(
+				"CreateTextureView(): subresource views require GL_ARB_texture_view"
+			);
 		}
 
 		GLuint view = 0u;
@@ -1304,9 +1327,6 @@ namespace fyuu_rhi::opengl {
 			);
 #endif // defined(NDEBUG)
 		}
-
-		GLenum view_target = ExtractTextureViewTarget(flags);
-		GLenum internal_format = ExtractInternalFormat(flags);
 
 		glTextureView(
 			view, view_target, res.impl, internal_format,
