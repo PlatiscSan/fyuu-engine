@@ -8,6 +8,9 @@ export module fyuu_rhi:view;
 #if defined(__cpp_lib_modules)
 import std;
 #endif // defined(__cpp_lib_modules)
+namespace fyuu_rhi::execution {
+	template <class Backend> class CommandGraphBindings;
+}
 namespace fyuu_rhi {
 
 	export template <class Backend> class View {
@@ -24,12 +27,13 @@ namespace fyuu_rhi {
 			);
 
 			template <class U> friend class LogicalDevice;
+			template <class U> friend class execution::CommandGraphBindings;
 
 			ViewType* m_view;
 
 			template <class Self>
 			decltype(auto) GetImplementation(this Self&& self) noexcept {
-				return self.m_view->m_impl;
+				return (self.m_view->m_impl);
 			}
 
 		public:

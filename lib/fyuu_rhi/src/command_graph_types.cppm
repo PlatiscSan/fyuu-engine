@@ -13,6 +13,7 @@ export module fyuu_rhi:command_graph_types;
 #if defined(__cpp_lib_modules)
 import std;
 #endif // defined(__cpp_lib_modules)
+import :resource_types;
 
 namespace fyuu_rhi::execution {
 
@@ -228,6 +229,27 @@ namespace fyuu_rhi::execution {
 		std::size_t size = 0u;
 	};
 
+	export struct CopyBufferToTextureCommand {
+		GraphResourceID source;
+		GraphResourceID destination;
+		TextureDataLayout source_layout;
+		TextureRegion destination_region;
+	};
+
+	export struct CopyTextureToBufferCommand {
+		GraphResourceID source;
+		GraphResourceID destination;
+		TextureRegion source_region;
+		TextureDataLayout destination_layout;
+	};
+
+	export struct CopyTextureCommand {
+		GraphResourceID source;
+		GraphResourceID destination;
+		TextureRegion source_region;
+		TextureRegion destination_region;
+	};
+
 	export struct PresentCommand {
 		GraphResourceID source;
 		GraphPresentationID target;
@@ -248,6 +270,9 @@ namespace fyuu_rhi::execution {
 		DrawIndexedCommand,
 		DispatchCommand,
 		CopyBufferCommand,
+		CopyBufferToTextureCommand,
+		CopyTextureToBufferCommand,
+		CopyTextureCommand,
 		PresentCommand
 	>;
 

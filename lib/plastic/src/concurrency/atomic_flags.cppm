@@ -392,6 +392,29 @@ namespace plastic::concurrency {
 			}
 		}
 
+		bool TestMultipleInRange(
+			Enum from,
+			Enum to,
+			std::memory_order mem_order = std::memory_order::acquire
+		) const noexcept {
+			std::size_t from_idx = static_cast<std::size_t>(from);
+			std::size_t to_idx = static_cast<std::size_t>(to);
+			if (from_idx > to_idx || to_idx >= EnumSize<Enum>) {
+				assert(false && "TestMultipleInRange(): invalid range");
+				return false;
+			}
+			auto words = Snapshot(mem_order);
+			std::size_t count = 0u;
+			for (std::size_t index = from_idx; index <= to_idx; ++index) {
+				auto word = index / kBitsPerWord;
+				auto mask = static_cast<Word>(1) << (index % kBitsPerWord);
+				if ((words[word] & mask) != 0u && ++count > 1u) {
+					return true;
+				}
+			}
+			return false;
+		}
+
 		bool CheckMutualExclusion(std::span<Range const> groups, std::memory_order mem_order = std::memory_order::relaxed) const {
 			auto words = Snapshot(mem_order);
 			std::size_t active = 0;

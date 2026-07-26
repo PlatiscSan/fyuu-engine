@@ -105,22 +105,16 @@ namespace fyuu_rhi::vulkan {
 				return execution::HashNativePointer(target);
 			}
 #elif defined(__linux__)
-			struct HashTarget {
-				std::size_t operator()(X11PresentationTarget const& target) const noexcept {
-					auto display = execution::HashNativePointer(target.display);
-					auto window = std::hash<Window>{}(target.window);
+			std::size_t operator()(PresentationTarget const& target) const noexcept {
+				if (auto value = std::get_if<X11PresentationTarget>(&target)) {
+					auto display = execution::HashNativePointer(value->display);
+					auto window = std::hash<Window>{}(value->window);
 					return execution::CombineHashes(display, window);
 				}
-
-				std::size_t operator()(WaylandPresentationTarget const& target) const noexcept {
-					auto display = execution::HashNativePointer(target.display);
-					auto surface = execution::HashNativePointer(target.surface);
-					return execution::CombineHashes(display, surface);
-				}
-			};
-
-			std::size_t operator()(PresentationTarget const& target) const noexcept {
-				return std::visit(HashTarget{}, target);
+				auto const& value = std::get<WaylandPresentationTarget>(target);
+				auto display = execution::HashNativePointer(value.display);
+				auto surface = execution::HashNativePointer(value.surface);
+				return execution::CombineHashes(display, surface);
 			}
 #endif
 		};
@@ -288,27 +282,24 @@ namespace fyuu_rhi::vulkan {
 				VkBufferCreateInfo buf_info;
 				VkBuffer vk_handle;
 				VmaAllocation alloc;
-				VmaAllocationInfo alloc_info;
 				Buffer(
 					std::shared_ptr<VMAAllocator> const& mem_alloc_,
 					VkBufferCreateInfo buf_info_,
 					VkBuffer vk_handle_,
-					VmaAllocation alloc_,
-					VmaAllocationInfo alloc_info_
+					VmaAllocation alloc_
 				) noexcept : mem_alloc(mem_alloc_), buf_info(buf_info_),
-					vk_handle(vk_handle_), alloc(alloc_), alloc_info(alloc_info_) {}
+					vk_handle(vk_handle_), alloc(alloc_) {}
 				Buffer(Buffer const&) = delete;
 				Buffer& operator=(Buffer const&) = delete;
 				Buffer(Buffer&& other) noexcept
 					: mem_alloc(std::move(other.mem_alloc)), buf_info(other.buf_info),
 					vk_handle(std::exchange(other.vk_handle, nullptr)),
-					alloc(std::exchange(other.alloc, nullptr)), alloc_info(other.alloc_info) {}
+					alloc(std::exchange(other.alloc, nullptr)) {}
 				Buffer& operator=(Buffer&& other) noexcept {
 					std::swap(mem_alloc, other.mem_alloc);
 					std::swap(buf_info, other.buf_info);
 					std::swap(vk_handle, other.vk_handle);
 					std::swap(alloc, other.alloc);
-					std::swap(alloc_info, other.alloc_info);
 					return *this;
 				}
 				~Buffer() noexcept {
@@ -322,35 +313,27 @@ namespace fyuu_rhi::vulkan {
 				VkImageCreateInfo buf_info;
 				VkImage vk_handle;
 				VmaAllocation alloc;
-				VmaAllocationInfo alloc_info;
-				vk::ImageLayout last_layout;
 				mutable std::atomic<vk::ImageLayout> curr_layout;
 				Texture(
 					std::shared_ptr<VMAAllocator> const& mem_alloc_,
 					VkImageCreateInfo buf_info_,
 					VkImage vk_handle_,
 					VmaAllocation alloc_,
-					VmaAllocationInfo alloc_info_,
-					vk::ImageLayout last_layout_,
 					vk::ImageLayout curr_layout_
 				) noexcept : mem_alloc(mem_alloc_), buf_info(buf_info_),
-					vk_handle(vk_handle_), alloc(alloc_), alloc_info(alloc_info_),
-					last_layout(last_layout_), curr_layout(curr_layout_) {}
+					vk_handle(vk_handle_), alloc(alloc_), curr_layout(curr_layout_) {}
 				Texture(Texture const&) = delete;
 				Texture& operator=(Texture const&) = delete;
 				Texture(Texture&& other) noexcept
 					: mem_alloc(std::move(other.mem_alloc)), buf_info(other.buf_info),
 					vk_handle(std::exchange(other.vk_handle, nullptr)),
-					alloc(std::exchange(other.alloc, nullptr)), alloc_info(other.alloc_info),
-					last_layout(other.last_layout),
-					curr_layout(other.curr_layout.load(std::memory_order_relaxed)) {}
+					alloc(std::exchange(other.alloc, nullptr)),
+					curr_layout(other.curr_layout.exchange({}, std::memory_order::relaxed)) {}
 				Texture& operator=(Texture&& other) noexcept {
 					std::swap(mem_alloc, other.mem_alloc);
 					std::swap(buf_info, other.buf_info);
 					std::swap(vk_handle, other.vk_handle);
 					std::swap(alloc, other.alloc);
-					std::swap(alloc_info, other.alloc_info);
-					std::swap(last_layout, other.last_layout);
 					auto layout = curr_layout.exchange(
 						other.curr_layout.load(std::memory_order_relaxed),
 						std::memory_order_relaxed
@@ -462,9 +445,9 @@ namespace fyuu_rhi::vulkan {
 
 		static Scheduler CreateScheduler(LogicalDevice& ld, SchedulerDescriptor const& descriptor);
 		static CommandGraph CreateCommandGraph(
-			execution::CommandGraphDescriptor const& descriptor,
-			execution::NativeCommandGraphBindings<Backend> const& bindings
+			execution::CommandGraphDescriptor const& descriptor
 		);
+		static ExecutableGraph CompileCommandGraph(CommandGraph const& graph);
 
 		static Resource CreateBuffer(LogicalDevice const& ld, std::size_t size_in_bytes, ResourceFlags const& flags);
 
@@ -492,10 +475,27 @@ namespace fyuu_rhi::vulkan {
 		Backend::Scheduler const& scheduler,
 		Backend::ExecutableGraph const& graph
 	);
-	Backend::ExecutableGraph CompileCommandGraph(Backend::CommandGraph const& graph);
 	void StartGraphExecution(
 		Backend::GraphExecution& graph_execution,
 		execution::GraphCompletion const& completion
+	);
+	void StartSchedulerExecution(
+		Backend::Scheduler const& scheduler,
+		execution::SchedulerCompletion const& completion
+	);
+	void StartDeferredDestroy(
+		Backend::Scheduler const& scheduler,
+		execution::DeferredDestroy const& deferred_destroy
+	);
+	void StartMapResource(
+		Backend::Scheduler const& scheduler,
+		Backend::Resource& resource,
+		execution::ResourceMapRequest const& request
+	);
+	void StartUnmapResource(
+		Backend::Scheduler const& scheduler,
+		Backend::Resource& resource,
+		execution::ResourceUnmapRequest const& request
 	);
 }
 #endif // !defined(__APPLE__)

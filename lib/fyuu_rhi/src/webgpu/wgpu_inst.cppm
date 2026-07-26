@@ -2,7 +2,6 @@ module;
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <stdexcept>
-#include <vector>
 #include <format>
 #include <source_location>
 #endif // !defined(__cpp_lib_modules)
@@ -39,21 +38,28 @@ namespace fyuu_rhi::webgpu {
 			, android_app
 #endif // defined(__ANDROID__)
 		);
-		wgpu::InstanceDescriptor desc = {};
+		if (!wgpu::HasInstanceFeature(wgpu::InstanceFeatureName::TimedWaitAny)) {
+			throw std::runtime_error("The WebGPU implementation does not support timed WaitAny");
+		}
+		constexpr wgpu::InstanceFeatureName RequiredFeatures[]{
+			wgpu::InstanceFeatureName::TimedWaitAny
+		};
+		wgpu::InstanceDescriptor desc{
+			.requiredFeatureCount = std::size(RequiredFeatures),
+			.requiredFeatures = RequiredFeatures
+		};
 		return wgpu::CreateInstance(&desc);
 	}
 
 	wgpu::Adapter Backend::EnumeratePhysicalDevices(wgpu::Instance const& instance) {
-
-		std::vector<wgpu::Adapter> adapters;
-
 		wgpu::RequestAdapterOptions options{
-			nullptr,
-			wgpu::FeatureLevel::Compatibility,
-			wgpu::PowerPreference::HighPerformance,
-			false,
-			wgpu::BackendType::Undefined,
-			nullptr
+			.featureLevel = wgpu::FeatureLevel::Compatibility,
+			.powerPreference = wgpu::PowerPreference::HighPerformance,
+#if defined(_WIN32)
+			.backendType = wgpu::BackendType::D3D12
+#else
+			.backendType = wgpu::BackendType::Undefined
+#endif // defined(_WIN32)
 		};
 
 		wgpu::Adapter adapter;
@@ -74,7 +80,13 @@ namespace fyuu_rhi::webgpu {
 		wgpu::WaitStatus status = instance.WaitAny(future, (std::numeric_limits<std::uint64_t>::max)());
 
 		if (status != wgpu::WaitStatus::Success) {
-			throw std::runtime_error(std::format("Calling WaitAny(), but instance waiting failed"));
+			throw std::runtime_error(std::format(
+				"Calling WaitAny(), but instance waiting failed with status {}",
+				static_cast<std::uint32_t>(status)
+			));
+		}
+		if (!adapter) {
+			throw std::runtime_error("RequestAdapter() completed without returning an adapter");
 		}
 
 		return adapter;

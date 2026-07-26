@@ -152,7 +152,8 @@ target_link_libraries(${PROJECT_NAME}
 		spirv-cross-reflect
 		spirv-cross-util
 		spirv-cross-cpp
-		slang::gfx slang::slang slang::slang-llvm slang::slang-glslang
+		slang::gfx
+		slang::slang
 		#-- serialization
 		nlohmann_json::nlohmann_json
 )
@@ -173,3 +174,7 @@ if(WIN32)
 endif()
 
 disable_rtti(${PROJECT_NAME})
+
+if(BUILD_TESTING)
+	add_subdirectory(test)
+endif()

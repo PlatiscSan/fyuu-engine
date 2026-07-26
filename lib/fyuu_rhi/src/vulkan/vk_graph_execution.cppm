@@ -4,6 +4,7 @@ module;
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <concepts>
 #include <cstdint>
 #include <exception>
 #include <format>
@@ -15,6 +16,7 @@ module;
 #include <ranges>
 #include <span>
 #include <stdexcept>
+#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -35,87 +37,6 @@ namespace {
 	using namespace fyuu_rhi;
 	using namespace fyuu_rhi::pipeline;
 	using namespace fyuu_rhi::vulkan;
-	struct CreateBinarySemaphore {
-		Backend::VulkanScheduler::BinarySynchronizationPool const* pool;
-
-		vk::SharedSemaphore operator()() const {
-			auto semaphore = pool->device->createSemaphore(
-				vk::SemaphoreCreateInfo{},
-				nullptr,
-				*pool->dispatcher
-			);
-			return vk::SharedSemaphore(
-				semaphore,
-				pool->device,
-				{ nullptr, *pool->dispatcher }
-			);
-		}
-	};
-
-	struct CreateBinaryFence {
-		Backend::VulkanScheduler::BinarySynchronizationPool const* pool;
-
-		vk::SharedFence operator()() const {
-			auto fence = pool->device->createFence(
-				vk::FenceCreateInfo{},
-				nullptr,
-				*pool->dispatcher
-			);
-			return vk::SharedFence(fence, pool->device, { nullptr, *pool->dispatcher });
-		}
-	};
-
-	struct ResetBinaryFence {
-		Backend::VulkanScheduler::BinarySynchronizationPool const* pool;
-
-		void operator()(vk::SharedFence& fence) const {
-			std::array fences{ *fence };
-			pool->device->resetFences(fences, *pool->dispatcher);
-		}
-	};
-
-	struct CreateVulkanCommandEntry {
-		Backend::VulkanScheduler::QueueState const* queue;
-
-		Backend::VulkanScheduler::CommandEntry operator()() const {
-			vk::CommandPoolCreateInfo pool_info(
-				vk::CommandPoolCreateFlagBits::eResetCommandBuffer,
-				queue->family
-			);
-			auto pool = queue->device->createCommandPool(pool_info, nullptr, *queue->dispatcher);
-			vk::SharedCommandPool shared_pool(
-				pool,
-				queue->device,
-				{ nullptr, *queue->dispatcher }
-			);
-			vk::CommandBufferAllocateInfo allocation_info(
-				*shared_pool,
-				vk::CommandBufferLevel::ePrimary,
-				1u
-			);
-			auto buffers = queue->device->allocateCommandBuffers(allocation_info, *queue->dispatcher);
-			vk::SharedCommandBuffer command_buffer(
-				buffers.front(),
-				queue->device,
-				shared_pool,
-				*queue->dispatcher
-			);
-			command_buffer->begin(vk::CommandBufferBeginInfo{}, *queue->dispatcher);
-			return { shared_pool, command_buffer, true };
-		}
-	};
-
-	struct ResetVulkanCommandEntry {
-		Backend::VulkanScheduler::QueueState const* queue;
-
-		void operator()(Backend::VulkanScheduler::CommandEntry& entry) const {
-			if (entry.recording) entry.impl->end(*queue->dispatcher);
-			queue->device->resetCommandPool(*entry.command_pool, {}, *queue->dispatcher);
-			entry.impl->begin(vk::CommandBufferBeginInfo{}, *queue->dispatcher);
-			entry.recording = true;
-		}
-	};
-
 	vk::SharedSurfaceKHR CreatePresentationSurface(
 		Backend::PhysicalDevice const& physical_device,
 		Backend::PresentationTarget const& target
@@ -123,18 +44,26 @@ namespace {
 #if defined(_WIN32)
 		return Backend::CreateSurface(physical_device.instance, target);
 #elif defined(__linux__)
-		struct CreateSurface {
-			Backend::Instance const* instance;
-
-			vk::SharedSurfaceKHR operator()(Backend::X11PresentationTarget const& value) const {
-				return Backend::CreateSurface(*instance, value.display, value.window);
+		auto CreateSurface = [&physical_device](auto const& value) {
+			if constexpr (std::same_as<
+				std::remove_cvref_t<decltype(value)>,
+				Backend::X11PresentationTarget
+			>) {
+				return Backend::CreateSurface(
+					physical_device.instance,
+					value.display,
+					value.window
+				);
 			}
-
-			vk::SharedSurfaceKHR operator()(Backend::WaylandPresentationTarget const& value) const {
-				return Backend::CreateSurface(*instance, value.display, value.surface);
+			else {
+				return Backend::CreateSurface(
+					physical_device.instance,
+					value.display,
+					value.surface
+				);
 			}
 		};
-		return std::visit(CreateSurface{ &physical_device.instance }, target);
+		return std::visit(CreateSurface, target);
 #elif defined(__ANDROID__)
 		return Backend::CreateSurface(physical_device.instance, target);
 #endif
@@ -967,6 +896,71 @@ namespace {
 			commands.copyBuffer(source.vk_handle, destination.vk_handle, region, **dispatcher);
 		}
 
+		void operator()(execution::CopyBufferToTextureCommand const& command) const {
+			auto const& source = std::get<Backend::Resource::Buffer>(
+				bindings->resources[command.source.value].get().impl);
+			auto const& destination = std::get<Backend::Resource::Texture>(
+				bindings->resources[command.destination.value].get().impl);
+			auto format = static_cast<vk::Format>(destination.buf_info.format);
+			auto block_extent = vk::blockExtent(format);
+			auto row_length = command.source_layout.bytes_per_row /
+				vk::blockSize(format) * block_extent[0];
+			auto const& texture = command.destination_region;
+			vk::BufferImageCopy region(
+				command.source_layout.offset, row_length, command.source_layout.rows_per_image,
+				vk::ImageSubresourceLayers(VulkanImageAspect(format), texture.mip_level,
+					texture.base_array_layer, texture.array_layer_count),
+				vk::Offset3D(texture.offset_x, texture.offset_y, texture.offset_z),
+				vk::Extent3D(texture.width, texture.height, texture.depth)
+			);
+			commands.copyBufferToImage(source.vk_handle, destination.vk_handle,
+				vk::ImageLayout::eTransferDstOptimal, region, **dispatcher);
+		}
+
+		void operator()(execution::CopyTextureToBufferCommand const& command) const {
+			auto const& source = std::get<Backend::Resource::Texture>(
+				bindings->resources[command.source.value].get().impl);
+			auto const& destination = std::get<Backend::Resource::Buffer>(
+				bindings->resources[command.destination.value].get().impl);
+			auto format = static_cast<vk::Format>(source.buf_info.format);
+			auto block_extent = vk::blockExtent(format);
+			auto row_length = command.destination_layout.bytes_per_row /
+				vk::blockSize(format) * block_extent[0];
+			auto const& texture = command.source_region;
+			vk::BufferImageCopy region(
+				command.destination_layout.offset, row_length, command.destination_layout.rows_per_image,
+				vk::ImageSubresourceLayers(VulkanImageAspect(format), texture.mip_level,
+					texture.base_array_layer, texture.array_layer_count),
+				vk::Offset3D(texture.offset_x, texture.offset_y, texture.offset_z),
+				vk::Extent3D(texture.width, texture.height, texture.depth)
+			);
+			commands.copyImageToBuffer(source.vk_handle, vk::ImageLayout::eTransferSrcOptimal,
+				destination.vk_handle, region, **dispatcher);
+		}
+
+		void operator()(execution::CopyTextureCommand const& command) const {
+			auto const& source = std::get<Backend::Resource::Texture>(
+				bindings->resources[command.source.value].get().impl);
+			auto const& destination = std::get<Backend::Resource::Texture>(
+				bindings->resources[command.destination.value].get().impl);
+			auto const& source_region = command.source_region;
+			auto const& destination_region = command.destination_region;
+			vk::ImageCopy region(
+				vk::ImageSubresourceLayers(VulkanImageAspect(static_cast<vk::Format>(source.buf_info.format)),
+					source_region.mip_level, source_region.base_array_layer,
+					source_region.array_layer_count),
+				vk::Offset3D(source_region.offset_x, source_region.offset_y, source_region.offset_z),
+				vk::ImageSubresourceLayers(VulkanImageAspect(static_cast<vk::Format>(destination.buf_info.format)),
+					destination_region.mip_level, destination_region.base_array_layer,
+					destination_region.array_layer_count),
+				vk::Offset3D(destination_region.offset_x, destination_region.offset_y,
+					destination_region.offset_z),
+				vk::Extent3D(source_region.width, source_region.height, source_region.depth)
+			);
+			commands.copyImage(source.vk_handle, vk::ImageLayout::eTransferSrcOptimal,
+				destination.vk_handle, vk::ImageLayout::eTransferDstOptimal, region, **dispatcher);
+		}
+
 		void operator()(execution::PresentCommand const& command) const {
 			if (rendering) {
 				throw std::logic_error("Vulkan Present cannot execute in a rendering scope");
@@ -996,8 +990,10 @@ namespace {
 	struct VulkanCompletionPoll {
 		std::vector<std::pair<std::shared_ptr<Backend::VulkanScheduler::QueueState>, std::uint64_t>> timelines;
 		std::vector<std::pair<std::shared_ptr<Backend::VulkanScheduler::QueueState>, vk::SharedFence>> fences;
+		std::shared_ptr<std::exception_ptr> error;
 
-		bool operator()() const {
+		bool operator()() const noexcept {
+			try {
 			for (auto const& timeline : timelines) {
 				auto const& synchronization = std::get<
 					Backend::VulkanScheduler::TimelineSynchronization
@@ -1018,14 +1014,24 @@ namespace {
 				}
 			}
 			return true;
+			}
+			catch (...) {
+				*error = std::current_exception();
+				return true;
+			}
 		}
 	};
 
 	struct VulkanGraphCompletion {
 		execution::GraphCompletion completion;
 		std::vector<std::shared_ptr<Backend::VulkanScheduler::QueueState>> idle_queues;
+		std::shared_ptr<std::exception_ptr> error;
 
 		void operator()() const noexcept {
+			if (*error) {
+				completion.SetError(completion.operation, *error);
+				return;
+			}
 			try {
 				for (auto const& queue : idle_queues) {
 					std::unique_lock<std::mutex> lock(*queue->submission_mutex);
@@ -1034,8 +1040,49 @@ namespace {
 				completion.SetValue(completion.operation);
 			}
 			catch (...) {
-				auto error = std::current_exception();
-				completion.SetError(completion.operation, error);
+				completion.SetError(completion.operation, std::current_exception());
+			}
+		}
+	};
+
+	struct VulkanSchedulerCompletion {
+		execution::SchedulerCompletion completion;
+		std::shared_ptr<std::exception_ptr> error;
+		std::shared_ptr<
+			Backend::VulkanScheduler::BinarySynchronizationPool::FencePool::Lease
+		> fence;
+
+		void operator()() const noexcept {
+			if (*error) {
+				completion.SetError(completion.operation, *error);
+				return;
+			}
+			completion.SetValue(completion.operation);
+		}
+	};
+
+	struct VulkanSchedulerPoll {
+		std::shared_ptr<Backend::VulkanScheduler::QueueState> queue;
+		std::optional<std::uint64_t> timeline;
+		vk::SharedFence fence;
+		std::shared_ptr<std::exception_ptr> error;
+
+		bool operator()() const noexcept {
+			try {
+				if (timeline) {
+					auto const& synchronization = std::get<
+						Backend::VulkanScheduler::TimelineSynchronization
+					>(queue->synchronization);
+					return queue->device->getSemaphoreCounterValue(
+						*synchronization.semaphore,
+						*queue->dispatcher
+					) >= *timeline;
+				}
+				return queue->device->getFenceStatus(*fence, *queue->dispatcher) == vk::Result::eSuccess;
+			}
+			catch (...) {
+				*error = std::current_exception();
+				return true;
 			}
 		}
 	};
@@ -1043,7 +1090,7 @@ namespace {
 }
 namespace fyuu_rhi::vulkan {
 	using namespace fyuu_rhi::pipeline;
-	Backend::ExecutableGraph CompileCommandGraph(Backend::CommandGraph const& graph) {
+	Backend::ExecutableGraph Backend::CompileCommandGraph(Backend::CommandGraph const& graph) {
 		return execution::MakeExecutableGraph<Backend>(graph);
 	}
 
@@ -1066,12 +1113,36 @@ namespace fyuu_rhi::vulkan {
 
 	Backend::VulkanScheduler::BinarySynchronizationPool::SemaphorePool::Lease
 	Backend::VulkanScheduler::BinarySynchronizationPool::AcquireSemaphore() {
-		return semaphores->Acquire(CreateBinarySemaphore{ this });
+		auto CreateSemaphore = [this]() {
+			auto semaphore = device->createSemaphore(
+				vk::SemaphoreCreateInfo{},
+				nullptr,
+				*dispatcher
+			);
+			return vk::SharedSemaphore(
+				semaphore,
+				device,
+				{ nullptr, *dispatcher }
+			);
+		};
+		return semaphores->Acquire(CreateSemaphore);
 	}
 
 	Backend::VulkanScheduler::BinarySynchronizationPool::FencePool::Lease
 	Backend::VulkanScheduler::BinarySynchronizationPool::AcquireFence() {
-		return fences->Acquire(CreateBinaryFence{ this }, ResetBinaryFence{ this });
+		auto CreateFence = [this]() {
+			auto fence = device->createFence(
+				vk::FenceCreateInfo{},
+				nullptr,
+				*dispatcher
+			);
+			return vk::SharedFence(fence, device, { nullptr, *dispatcher });
+		};
+		auto ResetFence = [this](vk::SharedFence& fence) {
+			std::array fences{ *fence };
+			device->resetFences(fences, *dispatcher);
+		};
+		return fences->Acquire(CreateFence, ResetFence);
 	}
 
 	Backend::GraphExecution CreateGraphExecution(
@@ -1099,9 +1170,59 @@ namespace fyuu_rhi::vulkan {
 		result.batches.reserve(graph->plan.batches.size());
 		for (auto const& plan : graph->plan.batches) {
 			auto const& queue = scheduler->impl->queues.Select(plan.queue_flags);
+			auto CreateCommands = [&queue]() {
+				vk::CommandPoolCreateInfo pool_info(
+					vk::CommandPoolCreateFlagBits::eResetCommandBuffer,
+					queue->family
+				);
+				auto pool = queue->device->createCommandPool(
+					pool_info,
+					nullptr,
+					*queue->dispatcher
+				);
+				vk::SharedCommandPool shared_pool(
+					pool,
+					queue->device,
+					{ nullptr, *queue->dispatcher }
+				);
+				vk::CommandBufferAllocateInfo allocation_info(
+					*shared_pool,
+					vk::CommandBufferLevel::ePrimary,
+					1u
+				);
+				auto buffers = queue->device->allocateCommandBuffers(
+					allocation_info,
+					*queue->dispatcher
+				);
+				vk::SharedCommandBuffer command_buffer(
+					buffers.front(),
+					queue->device,
+					shared_pool,
+					*queue->dispatcher
+				);
+				command_buffer->begin(
+					vk::CommandBufferBeginInfo{},
+					*queue->dispatcher
+				);
+				return Backend::VulkanScheduler::CommandEntry{
+					shared_pool,
+					command_buffer,
+					true
+				};
+			};
+			auto ResetCommands = [&queue](Backend::VulkanScheduler::CommandEntry& entry) {
+				if (entry.recording) entry.impl->end(*queue->dispatcher);
+				queue->device->resetCommandPool(
+					*entry.command_pool,
+					{},
+					*queue->dispatcher
+				);
+				entry.impl->begin(vk::CommandBufferBeginInfo{}, *queue->dispatcher);
+				entry.recording = true;
+			};
 			auto commands = queue->command_pool->Acquire(
-				CreateVulkanCommandEntry{ queue.get() },
-				ResetVulkanCommandEntry{ queue.get() }
+				CreateCommands,
+				ResetCommands
 			);
 			auto command_buffer = *commands.Get().impl;
 			std::vector<vk::SharedRenderPass> render_passes;
@@ -1240,8 +1361,8 @@ namespace fyuu_rhi::vulkan {
 
 		for (auto const& destination : graph->plan.batches) {
 			for (auto source_id : destination.dependencies) {
-				auto const& source = result.batches[source_id.value];
-				auto const& target = result.batches[destination.id.value];
+				auto const& source = result.batches[source_id];
+				auto const& target = result.batches[destination.id];
 				if (source.queue == target.queue || std::holds_alternative<
 					Backend::VulkanScheduler::TimelineSynchronization
 				>(source.queue->synchronization)) {
@@ -1280,7 +1401,7 @@ namespace fyuu_rhi::vulkan {
 					std::memory_order::relaxed
 				);
 				for (auto dependency : plans[index].dependencies) {
-					auto const& source = graph_execution.batches[dependency.value];
+					auto const& source = graph_execution.batches[dependency];
 					if (source.queue == batch.queue) {
 						continue;
 					}
@@ -1296,11 +1417,11 @@ namespace fyuu_rhi::vulkan {
 			}
 			else {
 				for (auto& dependency : graph_execution.binary_dependencies) {
-					if (dependency.destination.value == index) {
+					if (dependency.destination == index) {
 						wait_semaphores.emplace_back(*dependency.semaphore.Get());
 						wait_stages.emplace_back(vk::PipelineStageFlagBits::eAllCommands);
 					}
-					if (dependency.source.value == index) {
+					if (dependency.source == index) {
 						signal_semaphores.emplace_back(*dependency.semaphore.Get());
 					}
 				}
@@ -1336,19 +1457,15 @@ namespace fyuu_rhi::vulkan {
 				auto const& request = batch.presentation_requests[presentation_index];
 				bool final_presentation =
 					presentation_index + 1u == batch.presentation_requests.size();
-				auto CreateEntry = [&]() {
-					return CreatePresentationEntry(
-						*graph_execution.scheduler->impl,
-						*batch.queue,
-						request.target,
-						*request.source,
-						request.vertical_sync,
-						request.frames_in_flight
-					);
-				};
 				auto presentation = graph_execution.scheduler->impl->presentation_cache->Acquire(
 					request.target,
-					CreateEntry
+					CreatePresentationEntry,
+					*graph_execution.scheduler->impl,
+					*batch.queue,
+					request.target,
+					*request.source,
+					request.vertical_sync,
+					request.frames_in_flight
 				);
 				auto supported_modes = graph_execution.scheduler->impl->physical_device.impl
 					->getSurfacePresentModesKHR(
@@ -1375,13 +1492,23 @@ namespace fyuu_rhi::vulkan {
 					presentation.Get().requested_frames_in_flight != request.frames_in_flight) {
 					graph_execution.scheduler->impl->presentation_cache->Recreate(
 						presentation,
-						[&CreateEntry](Backend::LogicalDevice::PresentationEntry const&) {
-							return CreateEntry();
-						}
+						CreatePresentationEntry,
+						*graph_execution.scheduler->impl,
+						*batch.queue,
+						request.target,
+						*request.source,
+						request.vertical_sync,
+						request.frames_in_flight
 					);
 					presentation = graph_execution.scheduler->impl->presentation_cache->Acquire(
 						request.target,
-						CreateEntry
+						CreatePresentationEntry,
+						*graph_execution.scheduler->impl,
+						*batch.queue,
+						request.target,
+						*request.source,
+						request.vertical_sync,
+						request.frames_in_flight
 					);
 				}
 
@@ -1403,13 +1530,23 @@ namespace fyuu_rhi::vulkan {
 					batch.queue->impl->waitIdle(*batch.queue->dispatcher);
 					graph_execution.scheduler->impl->presentation_cache->Recreate(
 						presentation,
-						[&CreateEntry](Backend::LogicalDevice::PresentationEntry const&) {
-							return CreateEntry();
-						}
+						CreatePresentationEntry,
+						*graph_execution.scheduler->impl,
+						*batch.queue,
+						request.target,
+						*request.source,
+						request.vertical_sync,
+						request.frames_in_flight
 					);
 					presentation = graph_execution.scheduler->impl->presentation_cache->Acquire(
 						request.target,
-						CreateEntry
+						CreatePresentationEntry,
+						*graph_execution.scheduler->impl,
+						*batch.queue,
+						request.target,
+						*request.source,
+						request.vertical_sync,
+						request.frames_in_flight
 					);
 					acquire_result = AcquireImage(presentation.Get());
 				}
@@ -1426,9 +1563,64 @@ namespace fyuu_rhi::vulkan {
 					throw std::out_of_range("Vulkan swapchain returned an invalid image index");
 				}
 				auto& frame = presentation_entry.frames[frame_index];
+				auto CreateCommands = [&batch]() {
+					auto const& queue = batch.queue;
+					vk::CommandPoolCreateInfo pool_info(
+						vk::CommandPoolCreateFlagBits::eResetCommandBuffer,
+						queue->family
+					);
+					auto pool = queue->device->createCommandPool(
+						pool_info,
+						nullptr,
+						*queue->dispatcher
+					);
+					vk::SharedCommandPool shared_pool(
+						pool,
+						queue->device,
+						{ nullptr, *queue->dispatcher }
+					);
+					vk::CommandBufferAllocateInfo allocation_info(
+						*shared_pool,
+						vk::CommandBufferLevel::ePrimary,
+						1u
+					);
+					auto buffers = queue->device->allocateCommandBuffers(
+						allocation_info,
+						*queue->dispatcher
+					);
+					vk::SharedCommandBuffer command_buffer(
+						buffers.front(),
+						queue->device,
+						shared_pool,
+						*queue->dispatcher
+					);
+					command_buffer->begin(
+						vk::CommandBufferBeginInfo{},
+						*queue->dispatcher
+					);
+					return Backend::VulkanScheduler::CommandEntry{
+						shared_pool,
+						command_buffer,
+						true
+					};
+				};
+				auto ResetCommands = [&batch](Backend::VulkanScheduler::CommandEntry& entry) {
+					auto const& queue = batch.queue;
+					if (entry.recording) entry.impl->end(*queue->dispatcher);
+					queue->device->resetCommandPool(
+						*entry.command_pool,
+						{},
+						*queue->dispatcher
+					);
+					entry.impl->begin(
+						vk::CommandBufferBeginInfo{},
+						*queue->dispatcher
+					);
+					entry.recording = true;
+				};
 				auto commands = batch.queue->command_pool->Acquire(
-					CreateVulkanCommandEntry{ batch.queue.get() },
-					ResetVulkanCommandEntry{ batch.queue.get() }
+					CreateCommands,
+					ResetCommands
 				);
 				auto presentation_command_buffer = *commands.Get().impl;
 				std::array barriers{
@@ -1591,9 +1783,13 @@ namespace fyuu_rhi::vulkan {
 					present_fence.reset();
 					graph_execution.scheduler->impl->presentation_cache->Recreate(
 						presentation,
-						[&CreateEntry](Backend::LogicalDevice::PresentationEntry const&) {
-							return CreateEntry();
-						}
+						CreatePresentationEntry,
+						*graph_execution.scheduler->impl,
+						*batch.queue,
+						request.target,
+						*request.source,
+						request.vertical_sync,
+						request.frames_in_flight
 					);
 					throw std::runtime_error(std::format("Vulkan presentation failed: {}",static_cast<std::int32_t>(present_result)));
 				}
@@ -1625,9 +1821,13 @@ namespace fyuu_rhi::vulkan {
 					}
 					graph_execution.scheduler->impl->presentation_cache->Recreate(
 						presentation,
-						[&CreateEntry](Backend::LogicalDevice::PresentationEntry const&) {
-							return CreateEntry();
-						}
+						CreatePresentationEntry,
+						*graph_execution.scheduler->impl,
+						*batch.queue,
+						request.target,
+						*request.source,
+						request.vertical_sync,
+						request.frames_in_flight
 					);
 				}
 				batch.in_flight_presentations.push_back(
@@ -1641,8 +1841,12 @@ namespace fyuu_rhi::vulkan {
 			}
 		}
 
-		VulkanCompletionPoll poll;
-		VulkanGraphCompletion graph_completion{ completion };
+		auto error = std::make_shared<std::exception_ptr>();
+		VulkanCompletionPoll poll{ .error = error };
+		VulkanGraphCompletion graph_completion{
+			.completion = completion,
+			.error = error
+		};
 		for (auto const& batch : graph_execution.batches) {
 			for (auto const& presentation : batch.in_flight_presentations) {
 				if (presentation.present_fence) {
@@ -1666,6 +1870,137 @@ namespace fyuu_rhi::vulkan {
 			std::move(poll),
 			std::move(graph_completion)
 		);
+	}
+
+	void StartSchedulerExecution(
+		Backend::Scheduler const& scheduler,
+		execution::SchedulerCompletion const& completion
+	) {
+		auto queue = scheduler->impl->queues.graphics;
+		if (!queue) queue = scheduler->impl->queues.compute;
+		if (!queue) queue = scheduler->impl->queues.copy;
+		if (!queue) {
+			throw std::logic_error("Vulkan scheduler has no execution queue");
+		}
+
+		auto error = std::make_shared<std::exception_ptr>();
+		VulkanSchedulerPoll poll{
+			.queue = queue,
+			.error = error
+		};
+		VulkanSchedulerCompletion schedule_completion{
+			.completion = completion,
+			.error = error
+		};
+		{
+			std::unique_lock<std::mutex> lock(*queue->submission_mutex);
+			if (auto synchronization = std::get_if<
+				Backend::VulkanScheduler::TimelineSynchronization
+			>(&queue->synchronization)) {
+				auto value = synchronization->next_value.fetch_add(
+					1u,
+					std::memory_order::relaxed
+				);
+				auto semaphore = *synchronization->semaphore;
+				vk::TimelineSemaphoreSubmitInfo timeline_info;
+				timeline_info.signalSemaphoreValueCount = 1u;
+				timeline_info.pSignalSemaphoreValues = &value;
+				vk::SubmitInfo submit_info;
+				submit_info.pNext = &timeline_info;
+				submit_info.signalSemaphoreCount = 1u;
+				submit_info.pSignalSemaphores = &semaphore;
+				queue->impl->submit(submit_info, vk::Fence{}, *queue->dispatcher);
+				poll.timeline = value;
+			}
+			else {
+				auto const& pool = std::get<
+					std::shared_ptr<Backend::VulkanScheduler::BinarySynchronizationPool>
+				>(queue->synchronization);
+				schedule_completion.fence = std::make_shared<
+					Backend::VulkanScheduler::BinarySynchronizationPool::FencePool::Lease
+				>(pool->AcquireFence());
+				vk::SubmitInfo submit_info;
+				queue->impl->submit(
+					submit_info,
+					*schedule_completion.fence->Get(),
+					*queue->dispatcher
+				);
+				poll.fence = schedule_completion.fence->Get();
+			}
+		}
+		scheduler->impl->completion_service->Enqueue(
+			std::move(poll),
+			std::move(schedule_completion)
+		);
+	}
+
+	void StartDeferredDestroy(
+		Backend::Scheduler const&,
+		execution::DeferredDestroy const& deferred_destroy
+	) {
+		deferred_destroy.Destroy(deferred_destroy.object);
+		deferred_destroy.completion.SetValue(deferred_destroy.completion.operation);
+	}
+
+	void StartMapResource(
+		Backend::Scheduler const&,
+		Backend::Resource& resource,
+		execution::ResourceMapRequest const& request
+	) {
+		auto* buffer = std::get_if<Backend::Resource::Buffer>(&resource.impl);
+		if (!buffer) {
+			throw std::invalid_argument("Vulkan texture resources cannot be mapped directly");
+		}
+		void* mapped = nullptr;
+		auto result = static_cast<vk::Result>(vmaMapMemory(
+			buffer->mem_alloc->impl,
+			buffer->alloc,
+			&mapped
+		));
+		if (result != vk::Result::eSuccess) {
+			throw vk::SystemError(result, "vmaMapMemory failed");
+		}
+		if (request.read) {
+			result = static_cast<vk::Result>(vmaInvalidateAllocation(
+				buffer->mem_alloc->impl,
+				buffer->alloc,
+				request.offset,
+				request.size
+			));
+			if (result != vk::Result::eSuccess) {
+				vmaUnmapMemory(buffer->mem_alloc->impl, buffer->alloc);
+				throw vk::SystemError(result, "vmaInvalidateAllocation failed");
+			}
+		}
+		request.completion.SetValue(
+			request.completion.operation,
+			static_cast<std::byte*>(mapped) + request.offset
+		);
+	}
+
+	void StartUnmapResource(
+		Backend::Scheduler const&,
+		Backend::Resource& resource,
+		execution::ResourceUnmapRequest const& request
+	) {
+		auto* buffer = std::get_if<Backend::Resource::Buffer>(&resource.impl);
+		if (!buffer) {
+			throw std::invalid_argument("Vulkan texture resources cannot be unmapped directly");
+		}
+		if (request.write) {
+			auto result = static_cast<vk::Result>(vmaFlushAllocation(
+				buffer->mem_alloc->impl,
+				buffer->alloc,
+				request.offset,
+				request.size
+			));
+			if (result != vk::Result::eSuccess) {
+				vmaUnmapMemory(buffer->mem_alloc->impl, buffer->alloc);
+				throw vk::SystemError(result, "vmaFlushAllocation failed");
+			}
+		}
+		vmaUnmapMemory(buffer->mem_alloc->impl, buffer->alloc);
+		request.completion.SetValue(request.completion.operation);
 	}
 
 }

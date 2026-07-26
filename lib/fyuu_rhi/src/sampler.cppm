@@ -29,7 +29,7 @@ namespace fyuu_rhi {
 
 			template <class Self>
 			decltype(auto) GetImplementation(this Self&& self) noexcept {
-				return self.m_sampler->m_impl;
+				return (self.m_sampler->m_impl);
 			}
 
 		public:

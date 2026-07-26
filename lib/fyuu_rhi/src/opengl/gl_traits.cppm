@@ -120,22 +120,16 @@ namespace fyuu_rhi::opengl {
 				return execution::HashNativePointer(target);
 			}
 #elif defined(__linux__)
-			struct HashTarget {
-				std::size_t operator()(X11PresentationTarget const& target) const noexcept {
-					auto display = execution::HashNativePointer(target.display);
-					auto window = std::hash<Window>{}(target.window);
+			std::size_t operator()(PresentationTarget const& target) const noexcept {
+				if (auto value = std::get_if<X11PresentationTarget>(&target)) {
+					auto display = execution::HashNativePointer(value->display);
+					auto window = std::hash<Window>{}(value->window);
 					return execution::CombineHashes(display, window);
 				}
-
-				std::size_t operator()(WaylandPresentationTarget const& target) const noexcept {
-					auto display = execution::HashNativePointer(target.display);
-					auto surface = execution::HashNativePointer(target.surface);
-					return execution::CombineHashes(display, surface);
-				}
-			};
-
-			std::size_t operator()(PresentationTarget const& target) const noexcept {
-				return std::visit(HashTarget{}, target);
+				auto const& value = std::get<WaylandPresentationTarget>(target);
+				auto display = execution::HashNativePointer(value.display);
+				auto surface = execution::HashNativePointer(value.surface);
+				return execution::CombineHashes(display, surface);
 			}
 #endif
 		};
@@ -144,13 +138,14 @@ namespace fyuu_rhi::opengl {
 #if defined(_WIN32)
 			HDC dc;
 			HGLRC rc;
+			HGLRC shared_rc;
 #else
 #if defined(__linux__)
 			struct GLX {
 				Display* dpy;
 				GLXDrawable drawable;
 				GLXContext ctx;
-				GLXFBConfig fbconfig;   // added for shared context creation
+				GLXFBConfig fbconfig;
 			};
 #endif // defined(__linux__)
 			struct EGL {
@@ -158,8 +153,8 @@ namespace fyuu_rhi::opengl {
 				EGLSurface draw;
 				EGLSurface read;
 				EGLContext context;
-				EGLConfig config;       // added for shared context creation
-				void* native_window;   	// wl_egl_window* for Wayland, ANativeWindow* for Android
+				EGLConfig config;
+				void* native_window;
 			};
 			std::variant<
 				std::monostate
@@ -173,7 +168,14 @@ namespace fyuu_rhi::opengl {
 
 		using PhysicalDevice = Instance const*;
 		struct PresentationEntry {
+			struct FrameState {
+				std::vector<GLsync> slots;
+				std::size_t next_slot = 0u;
+				int swap_interval = -1;
+			};
+
 			PresentationTarget target;
+			std::shared_ptr<FrameState> frames;
 #if defined(_WIN32)
 			HDC dc = nullptr;
 
@@ -182,11 +184,13 @@ namespace fyuu_rhi::opengl {
 			PresentationEntry& operator=(PresentationEntry const&) = delete;
 			PresentationEntry(PresentationEntry&& other) noexcept
 				: target(std::exchange(other.target, nullptr)),
+				frames(other.frames),
 				dc(std::exchange(other.dc, nullptr)) {
 
 			}
 			PresentationEntry& operator=(PresentationEntry&& other) noexcept {
 				std::swap(target, other.target);
+				std::swap(frames, other.frames);
 				std::swap(dc, other.dc);
 				return *this;
 			}
@@ -224,14 +228,21 @@ namespace fyuu_rhi::opengl {
 			struct QueueState {
 				struct Submission {
 					void* operation_state = nullptr;
-					void (*Execute)(void*) = nullptr;
+					GLsync (*Execute)(void*) = nullptr;
 					execution::GraphCompletion completion;
-					std::shared_ptr<QueueState> keep_alive;
+					std::shared_ptr<void> keep_alive;
+				};
+
+				struct PendingCompletion {
+					GLsync sync = nullptr;
+					execution::GraphCompletion completion;
+					std::shared_ptr<void> keep_alive;
 				};
 
 				LogicalDevice impl;
 				std::shared_ptr<CommandPool> command_pool;
 				std::deque<Submission> submissions;
+				std::deque<PendingCompletion> pending_completions;
 				std::mutex mutex;
 				std::condition_variable condition;
 				bool ready = false;
@@ -270,9 +281,6 @@ namespace fyuu_rhi::opengl {
 			std::size_t size = 0u;
 			std::uint32_t width = 0u;
 			std::uint32_t height = 0u;
-			std::uint32_t depth_or_layers = 0u;
-			std::uint32_t mip_level_count = 0u;
-			std::uint32_t sample_count = 1u;
 			enum class Type : std::uint8_t {
 				Buffer,
 				Texture
@@ -282,19 +290,14 @@ namespace fyuu_rhi::opengl {
 				: impl(impl_), size(size_), type(type_) {}
 			GLResource(
 				GLuint impl_, GLenum target_, GLenum format_, std::uint32_t width_,
-				std::uint32_t height_, std::uint32_t depth_or_layers_,
-				std::uint32_t mip_level_count_, std::uint32_t sample_count_
+				std::uint32_t height_
 			) noexcept : impl(impl_), target(target_), format(format_), width(width_),
-				height(height_), depth_or_layers(depth_or_layers_),
-				mip_level_count(mip_level_count_), sample_count(sample_count_),
-				type(Type::Texture) {}
+				height(height_), type(Type::Texture) {}
 			GLResource(GLResource const&) = delete;
 			GLResource& operator=(GLResource const&) = delete;
 			GLResource(GLResource&& other) noexcept
 				: impl(std::exchange(other.impl, 0)), target(other.target), format(other.format),
-				size(other.size), width(other.width), height(other.height),
-				depth_or_layers(other.depth_or_layers), mip_level_count(other.mip_level_count),
-				sample_count(other.sample_count), type(other.type) {}
+				size(other.size), width(other.width), height(other.height), type(other.type) {}
 			GLResource& operator=(GLResource&& other) noexcept {
 				std::swap(impl, other.impl);
 				std::swap(target, other.target);
@@ -302,9 +305,6 @@ namespace fyuu_rhi::opengl {
 				std::swap(size, other.size);
 				std::swap(width, other.width);
 				std::swap(height, other.height);
-				std::swap(depth_or_layers, other.depth_or_layers);
-				std::swap(mip_level_count, other.mip_level_count);
-				std::swap(sample_count, other.sample_count);
 				type = other.type;
 				return *this;
 			}
@@ -328,31 +328,16 @@ namespace fyuu_rhi::opengl {
 			GLuint impl = 0;
 			GLenum target = 0u;
 			GLenum format = 0u;
-			std::uint32_t base_mip_level = 0u;
-			std::uint32_t mip_level_count = 0u;
-			std::uint32_t base_array_layer = 0u;
-			std::uint32_t array_layer_count = 0u;
-			GLTextureView(
-				GLuint impl_, GLenum target_, GLenum format_, std::uint32_t base_mip_level_,
-				std::uint32_t mip_level_count_, std::uint32_t base_array_layer_,
-				std::uint32_t array_layer_count_
-			) noexcept : impl(impl_), target(target_), format(format_),
-				base_mip_level(base_mip_level_), mip_level_count(mip_level_count_),
-				base_array_layer(base_array_layer_), array_layer_count(array_layer_count_) {}
+			GLTextureView(GLuint impl_, GLenum target_, GLenum format_) noexcept
+				: impl(impl_), target(target_), format(format_) {}
 			GLTextureView(GLTextureView const&) = delete;
 			GLTextureView& operator=(GLTextureView const&) = delete;
 			GLTextureView(GLTextureView&& other) noexcept
-				: impl(std::exchange(other.impl, 0)), target(other.target), format(other.format),
-				base_mip_level(other.base_mip_level), mip_level_count(other.mip_level_count),
-				base_array_layer(other.base_array_layer), array_layer_count(other.array_layer_count) {}
+				: impl(std::exchange(other.impl, 0)), target(other.target), format(other.format) {}
 			GLTextureView& operator=(GLTextureView&& other) noexcept {
 				std::swap(impl, other.impl);
 				std::swap(target, other.target);
 				std::swap(format, other.format);
-				std::swap(base_mip_level, other.base_mip_level);
-				std::swap(mip_level_count, other.mip_level_count);
-				std::swap(base_array_layer, other.base_array_layer);
-				std::swap(array_layer_count, other.array_layer_count);
 				return *this;
 			}
 			~GLTextureView() noexcept {
@@ -384,9 +369,7 @@ namespace fyuu_rhi::opengl {
 			}
 		};
 
-		struct View {
-			std::variant<std::monostate, GLTextureView, GLBufferView> impl;
-		};
+		using View = std::variant<std::monostate, GLTextureView, GLBufferView>;
 
 		struct GLSampler {
 			GLuint impl = 0;
@@ -496,6 +479,7 @@ namespace fyuu_rhi::opengl {
 
 			Scheduler scheduler;
 			ExecutableGraph graph;
+			std::shared_ptr<void const> binding_snapshot;
 			std::vector<Batch> batches;
 		};
 
@@ -520,9 +504,9 @@ namespace fyuu_rhi::opengl {
 
 		static Scheduler CreateScheduler(LogicalDevice const& ld, SchedulerDescriptor const& descriptor);
 		static CommandGraph CreateCommandGraph(
-			execution::CommandGraphDescriptor const& descriptor,
-			execution::NativeCommandGraphBindings<Backend> const& bindings
+			execution::CommandGraphDescriptor const& descriptor
 		);
+		static ExecutableGraph CompileCommandGraph(CommandGraph const& graph);
 
 		static Resource CreateBuffer(LogicalDevice const& ld, std::size_t size_in_bytes, ResourceFlags const& flags);
 
@@ -550,10 +534,27 @@ namespace fyuu_rhi::opengl {
 		Backend::Scheduler const& scheduler,
 		Backend::ExecutableGraph const& graph
 	);
-	Backend::ExecutableGraph CompileCommandGraph(Backend::CommandGraph const& graph);
 	void StartGraphExecution(
 		Backend::GraphExecution& graph_execution,
 		execution::GraphCompletion const& completion
+	);
+	void StartSchedulerExecution(
+		Backend::Scheduler const& scheduler,
+		execution::SchedulerCompletion const& completion
+	);
+	void StartDeferredDestroy(
+		Backend::Scheduler const& scheduler,
+		execution::DeferredDestroy const& deferred_destroy
+	);
+	void StartMapResource(
+		Backend::Scheduler const& scheduler,
+		Backend::Resource& resource,
+		execution::ResourceMapRequest const& request
+	);
+	void StartUnmapResource(
+		Backend::Scheduler const& scheduler,
+		Backend::Resource& resource,
+		execution::ResourceUnmapRequest const& request
 	);
 }
 #endif // !defined(__APPLE__)

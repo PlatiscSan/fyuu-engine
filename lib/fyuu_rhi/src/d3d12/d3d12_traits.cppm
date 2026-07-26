@@ -117,6 +117,7 @@ namespace fyuu_rhi::d3d12 {
 			struct CommandEntry {
 				Microsoft::WRL::ComPtr<ID3D12CommandAllocator> allocator;
 				Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> impl;
+				bool closed = false;
 			};
 
 			using CommandPool = execution::ExecutionPool<CommandEntry>;
@@ -152,8 +153,7 @@ namespace fyuu_rhi::d3d12 {
 
 		struct Resource {
 			Microsoft::WRL::ComPtr<D3D12MA::Allocation> impl;
-			D3D12_RESOURCE_STATES last_state = D3D12_RESOURCE_STATE_COMMON;
-			D3D12_RESOURCE_STATES curr_state = D3D12_RESOURCE_STATE_COMMON;
+			D3D12_RESOURCE_STATES stable_state = D3D12_RESOURCE_STATE_COMMON;
 		};
 
 		struct View {
@@ -274,9 +274,9 @@ namespace fyuu_rhi::d3d12 {
 
 		static Scheduler CreateScheduler(LogicalDevice const& ld, SchedulerDescriptor const& descriptor);
 		static CommandGraph CreateCommandGraph(
-			execution::CommandGraphDescriptor const& descriptor,
-			execution::NativeCommandGraphBindings<Backend> const& bindings
+			execution::CommandGraphDescriptor const& descriptor
 		);
+		static ExecutableGraph CompileCommandGraph(CommandGraph const& graph);
 
 		static Resource CreateBuffer(LogicalDevice const& ld, std::size_t size_in_bytes, ResourceFlags const& flags);
 
@@ -304,10 +304,27 @@ namespace fyuu_rhi::d3d12 {
 		Backend::Scheduler const& scheduler,
 		Backend::ExecutableGraph const& graph
 	);
-	Backend::ExecutableGraph CompileCommandGraph(Backend::CommandGraph const& graph);
 	void StartGraphExecution(
 		Backend::GraphExecution& graph_execution,
 		execution::GraphCompletion const& completion
+	);
+	void StartSchedulerExecution(
+		Backend::Scheduler const& scheduler,
+		execution::SchedulerCompletion const& completion
+	);
+	void StartDeferredDestroy(
+		Backend::Scheduler const& scheduler,
+		execution::DeferredDestroy const& deferred_destroy
+	);
+	void StartMapResource(
+		Backend::Scheduler const& scheduler,
+		Backend::Resource& resource,
+		execution::ResourceMapRequest const& request
+	);
+	void StartUnmapResource(
+		Backend::Scheduler const& scheduler,
+		Backend::Resource& resource,
+		execution::ResourceUnmapRequest const& request
 	);
 
 }

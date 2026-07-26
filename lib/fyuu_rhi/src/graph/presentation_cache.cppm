@@ -67,11 +67,9 @@ namespace fyuu_rhi::execution {
 		using Table = std::unordered_map<Key, typename List::iterator, Hash>;
 		using Cache = plastic::ds::LRUCache<Table, List, Capacity>;
 
-		struct CanEvict {
-			bool operator()(typename Cache::value_type const& value) const noexcept {
-				return value.second->active_leases.load(std::memory_order_acquire) == 0u;
-			}
-		};
+		static bool CanEvict(typename Cache::value_type const& value) noexcept {
+			return value.second->active_leases.load(std::memory_order_acquire) == 0u;
+		}
 
 		Cache m_cache;
 		std::mutex m_mutex;
@@ -123,8 +121,12 @@ namespace fyuu_rhi::execution {
 			}
 		};
 
-		template <class Create>
-		[[nodiscard]] Lease Acquire(Key const& key, Create const& create) {
+		template <class Create, class... Args>
+		[[nodiscard]] Lease Acquire(
+			Key const& key,
+			Create const& create,
+			Args const&... args
+		) {
 			{
 				std::unique_lock<std::mutex> lock(m_mutex);
 				if (m_cache.Contains(key)) {
@@ -132,18 +134,22 @@ namespace fyuu_rhi::execution {
 				}
 			}
 
-			auto created = std::make_shared<Entry>(create());
+			auto created = std::make_shared<Entry>(std::invoke(create, args...));
 		std::unique_lock<std::mutex> lock(m_mutex);
 		if (m_cache.Contains(key)) {
 			return Lease(m_cache.Get(key));
 		}
-		m_cache.TryPut(key, created, CanEvict{}, true);
+		m_cache.TryPut(key, created, CanEvict, true);
 		return Lease(m_cache.Get(key));
 	}
 
-		template <class Recreate>
-		void Recreate(Lease const& lease, Recreate const& recreate) {
-			auto value = recreate(lease.Get());
+		template <class Recreate, class... Args>
+		void Recreate(
+			Lease const& lease,
+			Recreate const& recreate,
+			Args const&... args
+		) {
+			auto value = std::invoke(recreate, args...);
 			lease.m_entry->Replace(std::move(value));
 		}
 	};

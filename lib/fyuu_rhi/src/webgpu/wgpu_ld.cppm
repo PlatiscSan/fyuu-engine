@@ -58,7 +58,7 @@ namespace {
 			wgpu_flags |= wgpu::BufferUsage::Indirect;
 		}
 
-		bool is_conflicting = flags.TestSingleInRange(ResourceFlagBits::DeviceLocal, ResourceFlagBits::DeviceReadback);
+		bool is_conflicting = flags.TestMultipleInRange(ResourceFlagBits::DeviceLocal, ResourceFlagBits::DeviceReadback);
 		if (is_conflicting) {
 			throw std::invalid_argument("DeviceLocal HostVisible or DeviceReadback are set simultaneously");
 		}
@@ -108,7 +108,7 @@ namespace {
 	}
 
 	wgpu::TextureDimension ExtractTextureDimension(ResourceFlags const& flags) {
-		bool is_conflicting = flags.TestSingleInRange(ResourceFlagBits::Texture1D, ResourceFlagBits::Texture3D);
+		bool is_conflicting = flags.TestMultipleInRange(ResourceFlagBits::Texture1D, ResourceFlagBits::Texture3D);
 		if (is_conflicting) {
 			throw std::invalid_argument("Texture1D Texture2D or Texture3D are set simultaneously");
 		}
@@ -128,7 +128,7 @@ namespace {
 
 	wgpu::TextureFormat ExtractFormat(ResourceFlags const& flags) {
 
-		bool is_conflicting = flags.TestSingleInRange(ResourceFlagBits::R8Unorm, ResourceFlagBits::Bc7UnormSrgb);
+		bool is_conflicting = flags.TestMultipleInRange(ResourceFlagBits::R8Unorm, ResourceFlagBits::Bc7UnormSrgb);
 		if (is_conflicting) {
 			throw std::invalid_argument("Only one format can be set");
 		}
@@ -222,7 +222,7 @@ namespace {
 	}
 
 	std::uint32_t ExtractSampleCount(ResourceFlags const& flags) {
-		bool is_conflicting = flags.TestSingleInRange(ResourceFlagBits::Sample1, ResourceFlagBits::Sample64);
+		bool is_conflicting = flags.TestMultipleInRange(ResourceFlagBits::Sample1, ResourceFlagBits::Sample64);
 		if (is_conflicting) {
 			throw std::invalid_argument("Only one sample count can be set");
 		}
@@ -237,7 +237,7 @@ namespace {
 	}
 
 	wgpu::TextureViewDimension ExtractTextureViewDimension(ResourceFlags const& flags) {
-		bool is_conflicting = flags.TestSingleInRange(ResourceFlagBits::TextureView1D, ResourceFlagBits::TextureView3D);
+		bool is_conflicting = flags.TestMultipleInRange(ResourceFlagBits::TextureView1D, ResourceFlagBits::TextureView3D);
 		if (is_conflicting) {
 			throw std::invalid_argument("Only one tex view type can be set");
 		}
@@ -418,7 +418,7 @@ namespace fyuu_rhi::webgpu {
 			size_in_bytes,
 			false
 		};
-		return { ld.impl.CreateBuffer(&desc) };
+		return Backend::Resource(ld.impl.CreateBuffer(&desc));
 	}
 
 	Backend::Resource Backend::CreateTexture(LogicalDevice const& ld, std::size_t width, std::size_t height, std::size_t depth_arr_layers, std::size_t mip_lvl_cnt, ResourceFlags const& flags) {
@@ -434,12 +434,12 @@ namespace fyuu_rhi::webgpu {
 			0,
 			nullptr
 		};
-		return { ld.impl.CreateTexture(&desc) };
+		return Backend::Resource(ld.impl.CreateTexture(&desc));
 	}
 
 	Backend::View Backend::CreateTextureView(LogicalDevice const& ld, Backend::Resource const& res, std::size_t base_mip_lvl, std::size_t mip_lvl_cnt, std::size_t base_arr_layer, std::size_t arr_layer_cnt, ResourceFlags const& flags) {
 		if (!ld.impl) throw std::invalid_argument("WebGPU logical device must not be empty");
-		wgpu::Texture const& tex = std::get<wgpu::Texture>(res.impl);
+		wgpu::Texture const& tex = std::get<wgpu::Texture>(res);
 
 		wgpu::TextureViewDescriptor view_desc = {
 			.format = ExtractFormat(flags),
@@ -451,17 +451,17 @@ namespace fyuu_rhi::webgpu {
 			.aspect = ExtractTextureViewAspect(flags)
 		};
 	
-		return { tex.CreateView(&view_desc) };
+		return Backend::View(tex.CreateView(&view_desc));
 
 	}
 
 	Backend::View Backend::CreateBufferView(LogicalDevice const& ld, Backend::Resource const& buf, std::size_t offset, std::size_t range, ResourceFlags const& flags) {
 		if (!ld.impl) throw std::invalid_argument("WebGPU logical device must not be empty");
-		auto const& buffer = std::get<wgpu::Buffer>(buf.impl);
+		auto const& buffer = std::get<wgpu::Buffer>(buf);
 		if (offset + range > buffer.GetSize()) {
 			throw std::out_of_range("WebGPU buffer view exceeds the source buffer");
 		}
-		return { Backend::View::BufferView{ buffer, offset, range } };
+		return Backend::View(Backend::BufferView{ buffer, offset, range });
 	}
 
 	wgpu::Sampler Backend::CreateSampler(LogicalDevice const& ld, SamplerDescriptor const& desc) {
@@ -740,15 +740,15 @@ namespace fyuu_rhi::webgpu {
 			}
 			wgpu::BindGroupEntry entry{ .binding = resource_binding.slot };
 			if (auto buffer = std::get_if<NativePipelineBufferBinding<Backend>>(&resource_binding.value)) {
-				entry.buffer = std::get<wgpu::Buffer>(buffer->impl.get().impl);
+				entry.buffer = std::get<wgpu::Buffer>(buffer->impl.get());
 				entry.offset = buffer->offset;
 				entry.size = buffer->size == PipelineWholeBuffer ? wgpu::kWholeSize : buffer->size;
 			}
 			else if (auto view = std::get_if<NativePipelineViewBinding<Backend>>(&resource_binding.value)) {
-				if (auto texture = std::get_if<wgpu::TextureView>(&view->impl.get().impl)) {
+				if (auto texture = std::get_if<wgpu::TextureView>(&view->get())) {
 					entry.textureView = *texture;
 				}
-				else if (auto buffer_view = std::get_if<View::BufferView>(&view->impl.get().impl)) {
+				else if (auto buffer_view = std::get_if<Backend::BufferView>(&view->get())) {
 					entry.buffer = buffer_view->buf;
 					entry.offset = buffer_view->offset;
 					entry.size = buffer_view->range;
@@ -756,7 +756,7 @@ namespace fyuu_rhi::webgpu {
 				else throw std::invalid_argument("WebGPU resource binding has an empty view");
 			}
 			else if (auto sampler = std::get_if<NativePipelineSamplerBinding<Backend>>(&resource_binding.value)) {
-				entry.sampler = sampler->impl.get();
+				entry.sampler = sampler->get();
 			}
 			else if (std::holds_alternative<NativePipelineCombinedBinding<Backend>>(resource_binding.value)) {
 				throw std::invalid_argument("WebGPU requires separate texture and sampler bindings");
@@ -802,10 +802,9 @@ namespace fyuu_rhi::webgpu {
 	}
 
 	Backend::CommandGraph Backend::CreateCommandGraph(
-		execution::CommandGraphDescriptor const& descriptor,
-		execution::NativeCommandGraphBindings<Backend> const& bindings
+		execution::CommandGraphDescriptor const& descriptor
 	) {
-		return execution::MakeCommandGraph<Backend>(descriptor, bindings);
+		return execution::MakeCommandGraph<Backend>(descriptor);
 	}
 
 }

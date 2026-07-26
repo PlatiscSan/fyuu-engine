@@ -26,11 +26,9 @@ namespace fyuu_rhi::execution {
 			std::mutex mutex;
 		};
 
-		struct NoReset {
-			void operator()(Value&) const noexcept {
+		static void NoReset(Value&) noexcept {
 
-			}
-		};
+		}
 
 		std::shared_ptr<State> m_state = std::make_shared<State>();
 
@@ -101,7 +99,7 @@ namespace fyuu_rhi::execution {
 
 		template <class Create>
 		[[nodiscard]] Lease Acquire(Create const& create) {
-			return Acquire(create, NoReset{});
+			return Acquire(create, NoReset);
 		}
 	};
 

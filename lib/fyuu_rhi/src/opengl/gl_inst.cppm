@@ -41,6 +41,7 @@ namespace {
 #if defined(_WIN32)
 	thread_local HGLRC s_thread_context = nullptr;
 	thread_local HDC s_thread_device_context = nullptr;
+	thread_local HWND s_thread_window = nullptr;
 
 	void CleanupSharedContext() {
 		if (s_thread_context) {
@@ -48,6 +49,68 @@ namespace {
 			wglDeleteContext(s_thread_context);
 			s_thread_context = nullptr;
 		}
+		if (s_thread_window && s_thread_device_context) {
+			ReleaseDC(s_thread_window, s_thread_device_context);
+			s_thread_device_context = nullptr;
+		}
+		if (s_thread_window) {
+			DestroyWindow(s_thread_window);
+			s_thread_window = nullptr;
+		}
+	}
+
+	HDC CreateThreadDeviceContext(HDC source) {
+		s_thread_window = CreateWindowExW(
+			0u,
+			L"STATIC",
+			L"FyuuEngine OpenGL Worker",
+			WS_POPUP,
+			0,
+			0,
+			1,
+			1,
+			nullptr,
+			nullptr,
+			GetModuleHandleW(nullptr),
+			nullptr
+		);
+		if (!s_thread_window) {
+			throw std::system_error(
+				GetLastError(),
+				std::system_category(),
+				"Failed to create the OpenGL worker window"
+			);
+		}
+		auto device_context = GetDC(s_thread_window);
+		if (!device_context) {
+			auto error = GetLastError();
+			DestroyWindow(s_thread_window);
+			s_thread_window = nullptr;
+			throw std::system_error(
+				error,
+				std::system_category(),
+				"Failed to get the OpenGL worker device context"
+			);
+		}
+		auto pixel_format = GetPixelFormat(source);
+		PIXELFORMATDESCRIPTOR descriptor;
+		if (pixel_format == 0 || !DescribePixelFormat(
+			source,
+			pixel_format,
+			sizeof(descriptor),
+			&descriptor
+		) || !SetPixelFormat(device_context, pixel_format, &descriptor)) {
+			auto error = GetLastError();
+			ReleaseDC(s_thread_window, device_context);
+			DestroyWindow(s_thread_window);
+			s_thread_window = nullptr;
+			throw std::system_error(
+				error,
+				std::system_category(),
+				"Failed to configure the OpenGL worker pixel format"
+			);
+		}
+		return device_context;
 	}
 #endif // defined(_WIN32)
 
@@ -157,13 +220,32 @@ namespace fyuu_rhi::opengl {
 			DWORD ec = GetLastError();
 			throw std::system_error(ec, std::system_category(), "Failed to create rendering context");
 		}
+		HGLRC shared_rc = wglCreateContext(dc);
+		if (!shared_rc) {
+			DWORD ec = GetLastError();
+			wglDeleteContext(rc);
+			throw std::system_error(ec, std::system_category(), "Failed to create the OpenGL shared root context");
+		}
+		if (!wglShareLists(rc, shared_rc)) {
+			DWORD ec = GetLastError();
+			wglDeleteContext(shared_rc);
+			wglDeleteContext(rc);
+			throw std::system_error(ec, std::system_category(), "Failed to initialize the OpenGL context share group");
+		}
 		if (!wglMakeCurrent(dc, rc)) {
 			DWORD ec = GetLastError();
+			wglDeleteContext(shared_rc);
 			wglDeleteContext(rc);
 			throw std::system_error(ec, std::system_category(), "Failed to make context current");
 		}
+		if (!gladLoadWGL(dc)) {
+			wglMakeCurrent(nullptr, nullptr);
+			wglDeleteContext(shared_rc);
+			wglDeleteContext(rc);
+			throw std::runtime_error("Failed to load WGL extensions");
+		}
 		InitializeGL();
-		return { dc, rc };
+		return { dc, rc, shared_rc };
 	}
 #elif defined(__linux__)
 	Backend::Instance Backend::CreateInstance(std::string_view app_name, Version const& app_ver, std::string_view engine_name, Version const& engine_ver, Display* x11_dpy, Window x11_window) {
@@ -334,15 +416,16 @@ namespace fyuu_rhi::opengl {
 #if defined(_WIN32)
 		thread_local boost::scope::defer_guard ThreadCleanup(CleanupSharedContext);
 		if (!s_thread_context) {
-			s_thread_device_context = instance.dc;
+			s_thread_device_context = CreateThreadDeviceContext(instance.dc);
 			s_thread_context = wglCreateContext(s_thread_device_context);
 			if (!s_thread_context) {
 				DWORD ec = GetLastError();
 				throw std::system_error(ec, std::system_category(), "Failed to create shared GL context");
 			}
-			if (!wglShareLists(instance.rc, s_thread_context)) {
+			if (!wglShareLists(instance.shared_rc, s_thread_context)) {
 				DWORD ec = GetLastError();
 				wglDeleteContext(s_thread_context);
+				s_thread_context = nullptr;
 				throw std::system_error(ec, std::system_category(), "Failed to share GL lists");
 			}
 		}
@@ -412,6 +495,9 @@ namespace fyuu_rhi::opengl {
 		wglMakeCurrent(nullptr, nullptr);
 		if (instance.rc) {
 			wglDeleteContext(instance.rc);
+		}
+		if (instance.shared_rc) {
+			wglDeleteContext(instance.shared_rc);
 		}
 #else
 		std::visit(

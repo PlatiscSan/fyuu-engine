@@ -99,7 +99,7 @@ namespace {
 		
 		VmaAllocationCreateFlags vma_flags{};
 		
-		bool is_conflicting = flags.TestSingleInRange(ResourceFlagBits::UndedicatedAllocation, ResourceFlagBits::DedicatedAllocation);
+		bool is_conflicting = flags.TestMultipleInRange(ResourceFlagBits::UndedicatedAllocation, ResourceFlagBits::DedicatedAllocation);
 		if (is_conflicting) {
 			throw std::invalid_argument("ExtractAllocationFlags(): UndedicatedAllocation and DedicatedAllocation are set simultaneously");
 		}
@@ -123,7 +123,7 @@ namespace {
 			vma_flags |= VmaAllocationCreateFlagBits::VMA_ALLOCATION_CREATE_CAN_ALIAS_BIT;
 		}
 
-		is_conflicting = flags.TestSingleInRange(ResourceFlagBits::MinOffsetAllocation, ResourceFlagBits::FirstFitAllocation);
+		is_conflicting = flags.TestMultipleInRange(ResourceFlagBits::MinOffsetAllocation, ResourceFlagBits::FirstFitAllocation);
 		if (is_conflicting) {
 			throw std::invalid_argument("ExtractAllocationFlags(): MinOffsetAllocation BestFitAllocation or FirstFitAllocation are set simultaneously");
 		}
@@ -140,7 +140,7 @@ namespace {
 
 		}
 
-		is_conflicting = flags.TestSingleInRange(ResourceFlagBits::DeviceLocal, ResourceFlagBits::DeviceReadback);
+		is_conflicting = flags.TestMultipleInRange(ResourceFlagBits::DeviceLocal, ResourceFlagBits::DeviceReadback);
 		if (is_conflicting) {
 			throw std::invalid_argument("ExtractAllocationFlags(): DeviceLocal HostVisible or DeviceReadback are set simultaneously");
 		}
@@ -159,7 +159,7 @@ namespace {
 	}
 
 	VmaMemoryUsage ExtractMemoryUsage(ResourceFlags const& flags) {
-		bool is_conflicting = flags.TestSingleInRange(ResourceFlagBits::DeviceLocal, ResourceFlagBits::DeviceReadback);
+		bool is_conflicting = flags.TestMultipleInRange(ResourceFlagBits::DeviceLocal, ResourceFlagBits::DeviceReadback);
 		if (is_conflicting) {
 			throw std::invalid_argument("ExtractMemoryUsage(): DeviceLocal HostVisible or DeviceReadback are set simultaneously");
 		}
@@ -210,7 +210,7 @@ namespace {
 	}
 
 	vk::ImageType ExtractTextureDimension(ResourceFlags const& flags) {
-		bool is_conflicting = flags.TestSingleInRange(ResourceFlagBits::Texture1D, ResourceFlagBits::Texture3D);
+		bool is_conflicting = flags.TestMultipleInRange(ResourceFlagBits::Texture1D, ResourceFlagBits::Texture3D);
 		if (is_conflicting) {
 			throw std::invalid_argument("ExtractTextureDimension(): Texture1D Texture2D or Texture3D are set simultaneously");
 		}
@@ -230,7 +230,7 @@ namespace {
 
 	vk::Format ExtractFormat(ResourceFlags const& flags) {
 
-		bool is_conflicting = flags.TestSingleInRange(ResourceFlagBits::R8Unorm, ResourceFlagBits::Bc7UnormSrgb);
+		bool is_conflicting = flags.TestMultipleInRange(ResourceFlagBits::R8Unorm, ResourceFlagBits::Bc7UnormSrgb);
 		if (is_conflicting) {
 			throw std::invalid_argument("ExtractFormat(): Only one format can be set");
 		}
@@ -315,7 +315,7 @@ namespace {
 	}
 
 	vk::SampleCountFlagBits ExtractSampleCount(ResourceFlags const& flags) {
-		bool is_conflicting = flags.TestSingleInRange(ResourceFlagBits::Sample1, ResourceFlagBits::Sample64);
+		bool is_conflicting = flags.TestMultipleInRange(ResourceFlagBits::Sample1, ResourceFlagBits::Sample64);
 		if (is_conflicting) {
 			throw std::invalid_argument("ExtractSampleCount(): Only sample count can be set");
 		}
@@ -347,7 +347,7 @@ namespace {
 	}
 
 	vk::ImageTiling ExtractTiling(ResourceFlags const& flags) {
-		bool is_conflicting = flags.TestSingleInRange(ResourceFlagBits::DeviceLocal, ResourceFlagBits::DeviceReadback);
+		bool is_conflicting = flags.TestMultipleInRange(ResourceFlagBits::DeviceLocal, ResourceFlagBits::DeviceReadback);
 		if (is_conflicting) {
 			throw std::invalid_argument("ExtractTiling(): DeviceLocal HostVisible or DeviceReadback are set simultaneously");
 		}
@@ -407,7 +407,7 @@ namespace {
 	}
 
 	vk::ImageViewType ExtractTextureViewType(ResourceFlags const& flags) {
-		bool is_conflicting = flags.TestSingleInRange(ResourceFlagBits::TextureView1D, ResourceFlagBits::TextureView3D);
+		bool is_conflicting = flags.TestMultipleInRange(ResourceFlagBits::TextureView1D, ResourceFlagBits::TextureView3D);
 		if (is_conflicting) {
 			throw std::invalid_argument("ExtractTextureViewType(): Only one texture view type can be set");
 		}
@@ -860,7 +860,6 @@ namespace fyuu_rhi::vulkan {
 
 		VkBuffer buf;
 		VmaAllocation alloc;
-		VmaAllocationInfo alloc_info;
 
 		auto result = static_cast<vk::Result>(
 			vmaCreateBuffer(
@@ -869,14 +868,14 @@ namespace fyuu_rhi::vulkan {
 				&alloc_create_info,
 				&buf,
 				&alloc,
-				&alloc_info
+				nullptr
 			));
 
 		if (result != vk::Result::eSuccess) {
 			throw std::runtime_error(std::format("Calling vmaCreateBuffer() failed, VMA reported: {}", vk::to_string(result)));
 		}
 
-		return { Backend::Resource::Buffer(ld.mem_alloc, buf_info, buf, alloc, alloc_info) };
+		return { Backend::Resource::Buffer(ld.mem_alloc, buf_info, buf, alloc) };
 
 	}
 
@@ -911,7 +910,6 @@ namespace fyuu_rhi::vulkan {
 
 		VkImage tex;
 		VmaAllocation alloc;
-		VmaAllocationInfo alloc_info;
 
 		auto result = static_cast<vk::Result>(
 			vmaCreateImage(
@@ -920,7 +918,7 @@ namespace fyuu_rhi::vulkan {
 				&alloc_create_info,
 				&tex,
 				&alloc,
-				&alloc_info
+				nullptr
 			));
 
 		if (result != vk::Result::eSuccess) {
@@ -933,8 +931,6 @@ namespace fyuu_rhi::vulkan {
 				tex_info,
 				tex,
 				alloc,
-				alloc_info,
-				vk::ImageLayout::eUndefined,
 				vk::ImageLayout::eUndefined
 			)
 		};
@@ -1347,7 +1343,7 @@ namespace fyuu_rhi::vulkan {
 				write.pBufferInfo = &buffer_infos.back();
 			}
 			else if (auto view = std::get_if<NativePipelineViewBinding<Backend>>(&resource_binding.value)) {
-				auto const& texture = std::get<Backend::View::Texture>(view->impl.get().impl);
+				auto const& texture = std::get<Backend::View::Texture>(view->get().impl);
 				auto layout = type == vk::DescriptorType::eStorageImage
 					? vk::ImageLayout::eGeneral
 					: vk::ImageLayout::eShaderReadOnlyOptimal;
@@ -1355,7 +1351,7 @@ namespace fyuu_rhi::vulkan {
 				write.pImageInfo = &image_infos.back();
 			}
 			else if (auto sampler = std::get_if<NativePipelineSamplerBinding<Backend>>(&resource_binding.value)) {
-				image_infos.emplace_back(*sampler->impl.get(), vk::ImageView{}, vk::ImageLayout::eUndefined);
+				image_infos.emplace_back(*sampler->get(), vk::ImageView{}, vk::ImageLayout::eUndefined);
 				write.pImageInfo = &image_infos.back();
 			}
 			else if (auto combined = std::get_if<NativePipelineCombinedBinding<Backend>>(&resource_binding.value)) {
@@ -1433,10 +1429,9 @@ namespace fyuu_rhi::vulkan {
 	}
 
 	Backend::CommandGraph Backend::CreateCommandGraph(
-		execution::CommandGraphDescriptor const& descriptor,
-		execution::NativeCommandGraphBindings<Backend> const& bindings
+		execution::CommandGraphDescriptor const& descriptor
 	) {
-		return execution::MakeCommandGraph<Backend>(descriptor, bindings);
+		return execution::MakeCommandGraph<Backend>(descriptor);
 	}
 
 }

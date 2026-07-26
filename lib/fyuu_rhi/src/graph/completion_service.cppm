@@ -32,15 +32,6 @@ namespace fyuu_rhi::execution {
 			std::function<void()> Complete;
 		};
 
-		struct HasTasksOrStopped {
-			std::deque<Task> const* tasks;
-			std::stop_token stop_token;
-
-			bool operator()() const noexcept {
-				return stop_token.stop_requested() || !tasks->empty();
-			}
-		};
-
 		std::atomic<std::deque<Task>*> m_tasks = nullptr;
 		std::atomic<std::mutex*> m_mutex = nullptr;
 		std::atomic<std::condition_variable*> m_condition = nullptr;
@@ -68,10 +59,13 @@ namespace fyuu_rhi::execution {
 			while (!stop_token.stop_requested()) {
 				{
 					std::unique_lock<std::mutex> lock(mutex);
+					auto HasTasksOrStopped = [&tasks, stop_token]() noexcept {
+						return stop_token.stop_requested() || !tasks.empty();
+					};
 					condition.wait_for(
 						lock,
 						std::chrono::milliseconds(1u),
-						HasTasksOrStopped{ &tasks, stop_token }
+						HasTasksOrStopped
 					);
 					current.swap(tasks);
 				}

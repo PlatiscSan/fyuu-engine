@@ -390,7 +390,7 @@ namespace {
 
 		D3D12MA::ALLOCATION_FLAGS d3d12ma_flags{};
 
-		bool is_conflicting = flags.TestSingleInRange(ResourceFlagBits::UndedicatedAllocation, ResourceFlagBits::DedicatedAllocation);
+		bool is_conflicting = flags.TestMultipleInRange(ResourceFlagBits::UndedicatedAllocation, ResourceFlagBits::DedicatedAllocation);
 		if (is_conflicting) {
 			throw std::invalid_argument("ExtractAllocationFlags(): UndedicatedAllocation and DedicatedAllocation are set simultaneously");
 		}
@@ -415,7 +415,7 @@ namespace {
 			d3d12ma_flags |= D3D12MA::ALLOCATION_FLAGS::ALLOCATION_FLAG_CAN_ALIAS;
 		}
 
-		is_conflicting = flags.TestSingleInRange(ResourceFlagBits::MinOffsetAllocation, ResourceFlagBits::FirstFitAllocation);
+		is_conflicting = flags.TestMultipleInRange(ResourceFlagBits::MinOffsetAllocation, ResourceFlagBits::FirstFitAllocation);
 		if (is_conflicting) {
 			throw std::invalid_argument("ExtractAllocationFlags(): MinOffsetAllocation BestFitAllocation or FirstFitAllocation are set simultaneously");
 		}
@@ -437,7 +437,7 @@ namespace {
 	}
 
 	D3D12_HEAP_TYPE ExtractHeapType(ResourceFlags const& flags) {
-		bool is_conflicting = flags.TestSingleInRange(ResourceFlagBits::DeviceLocal, ResourceFlagBits::DeviceReadback);
+		bool is_conflicting = flags.TestMultipleInRange(ResourceFlagBits::DeviceLocal, ResourceFlagBits::DeviceReadback);
 		if (is_conflicting) {
 			throw std::invalid_argument("ExtractHeapType(): DeviceLocal HostVisible or DeviceReadback are set simultaneously");
 		}
@@ -488,7 +488,7 @@ namespace {
 	}
 
 	D3D12_RESOURCE_STATES DetermineInitialState(ResourceFlags const& flags) {
-		bool is_conflicting = flags.TestSingleInRange(ResourceFlagBits::DeviceLocal, ResourceFlagBits::DeviceReadback);
+		bool is_conflicting = flags.TestMultipleInRange(ResourceFlagBits::DeviceLocal, ResourceFlagBits::DeviceReadback);
 		if (is_conflicting) {
 			throw std::invalid_argument("DetermineInitialState(): DeviceLocal HostVisible or DeviceReadback are set simultaneously");
 		}
@@ -508,7 +508,7 @@ namespace {
 
 	DXGI_FORMAT ExtractFormat(ResourceFlags const& flags) {
 
-		bool is_conflicting = flags.TestSingleInRange(ResourceFlagBits::R8Unorm, ResourceFlagBits::Bc7UnormSrgb);
+		bool is_conflicting = flags.TestMultipleInRange(ResourceFlagBits::R8Unorm, ResourceFlagBits::Bc7UnormSrgb);
 		if (is_conflicting) {
 			throw std::invalid_argument("ExtractFormat(): Only one format can be set");
 		}
@@ -602,7 +602,7 @@ namespace {
 	}
 
 	UINT ExtractSampleCount(ResourceFlags const& flags) {
-		bool is_conflicting = flags.TestSingleInRange(ResourceFlagBits::Sample1, ResourceFlagBits::Sample64);
+		bool is_conflicting = flags.TestMultipleInRange(ResourceFlagBits::Sample1, ResourceFlagBits::Sample64);
 		if (is_conflicting) {
 			throw std::invalid_argument("ExtractSampleCount(): Only sample count can be set");
 		}
@@ -634,7 +634,7 @@ namespace {
 	}
 
 	D3D12_TEXTURE_LAYOUT ExtractTextureLayout(ResourceFlags const& flags) {
-		bool is_conflicting = flags.TestSingleInRange(ResourceFlagBits::DeviceLocal, ResourceFlagBits::DeviceReadback);
+		bool is_conflicting = flags.TestMultipleInRange(ResourceFlagBits::DeviceLocal, ResourceFlagBits::DeviceReadback);
 		if (is_conflicting) {
 			throw std::invalid_argument("ExtractTextureLayout(): DeviceLocal HostVisible or DeviceReadback are set simultaneously");
 		}
@@ -653,7 +653,7 @@ namespace {
 	}
 
 	D3D12_SRV_DIMENSION ExtractSRVDimension(ResourceFlags const& flags) {
-		bool is_conflicting = flags.TestSingleInRange(ResourceFlagBits::TextureView1D, ResourceFlagBits::TextureView3D);
+		bool is_conflicting = flags.TestMultipleInRange(ResourceFlagBits::TextureView1D, ResourceFlagBits::TextureView3D);
 		if (is_conflicting) {
 			throw std::invalid_argument("ExtractSRVDimension(): Only one texture view type can be set");
 		}
@@ -674,7 +674,7 @@ namespace {
 	}
 
 	D3D12_UAV_DIMENSION ExtractUAVDimension(ResourceFlags const& flags) {
-		bool is_conflicting = flags.TestSingleInRange(ResourceFlagBits::TextureView1D, ResourceFlagBits::TextureView3D);
+		bool is_conflicting = flags.TestMultipleInRange(ResourceFlagBits::TextureView1D, ResourceFlagBits::TextureView3D);
 		if (is_conflicting) {
 			throw std::invalid_argument("ExtractUAVDimension(): Only one texture view type can be set");
 		}
@@ -691,7 +691,7 @@ namespace {
 	}
 
 	D3D12_RTV_DIMENSION ExtractRTVDimension(ResourceFlags const& flags) {
-		bool is_conflicting = flags.TestSingleInRange(ResourceFlagBits::TextureView1D, ResourceFlagBits::TextureView3D);
+		bool is_conflicting = flags.TestMultipleInRange(ResourceFlagBits::TextureView1D, ResourceFlagBits::TextureView3D);
 		if (is_conflicting) {
 			throw std::invalid_argument("ExtractRTVDimension(): Only one texture view type can be set");
 		}
@@ -708,7 +708,7 @@ namespace {
 	}
 
 	D3D12_DSV_DIMENSION ExtractDSVDimension(ResourceFlags const& flags) {
-		bool is_conflicting = flags.TestSingleInRange(ResourceFlagBits::TextureView1D, ResourceFlagBits::TextureView3D);
+		bool is_conflicting = flags.TestMultipleInRange(ResourceFlagBits::TextureView1D, ResourceFlagBits::TextureView3D);
 		if (is_conflicting) {
 			throw std::invalid_argument("ExtractDSVDimension(): Only one texture view type can be set");
 		}
@@ -1078,7 +1078,7 @@ namespace fyuu_rhi::d3d12 {
 			IID_PPV_ARGS(&res)
 		);
 		ThrowIfFailed(result);
-		return { std::move(allocation), init_state, init_state };
+		return { std::move(allocation), init_state };
 	}
 
 	Backend::Resource Backend::CreateTexture(Backend::LogicalDevice const& ld, std::size_t width, std::size_t height, std::size_t depth_arr_layers, std::size_t mip_lvl_cnt, ResourceFlags const& flags) {
@@ -1094,7 +1094,7 @@ namespace fyuu_rhi::d3d12 {
 		D3D12_RESOURCE_FLAGS res_flags = ExtractResourceFlags(flags);
 		D3D12_TEXTURE_LAYOUT tex_layout = ExtractTextureLayout(flags);
 		auto ResourceDescriptor = [&]() {
-			bool is_conflicting = flags.TestSingleInRange(ResourceFlagBits::Texture1D, ResourceFlagBits::Texture3D);
+			bool is_conflicting = flags.TestMultipleInRange(ResourceFlagBits::Texture1D, ResourceFlagBits::Texture3D);
 			if (is_conflicting) {
 				throw std::invalid_argument("CreateTexture(): Texture1D Texture2D or Texture3D are set simultaneously");
 			}
@@ -1138,7 +1138,7 @@ namespace fyuu_rhi::d3d12 {
 		);
 		ThrowIfFailed(result);
 
-		return { std::move(allocation), init_state, init_state };
+		return { std::move(allocation), init_state };
 	}
 	
 	Backend::View Backend::CreateTextureView(Backend::LogicalDevice& ld, Backend::Resource const& res, std::size_t base_mip_lvl, std::size_t mip_lvl_cnt, std::size_t base_arr_layer, std::size_t arr_layer_cnt, ResourceFlags const& flags) {
@@ -1812,13 +1812,13 @@ namespace fyuu_rhi::d3d12 {
 				auto destination = descriptors.CPU(element);
 				if (auto view_binding = std::get_if<NativePipelineViewBinding<Backend>>(&source->value)) {
 					ld.impl->CopyDescriptorsSimple(
-						1u, destination, view_binding->impl.get().CPU(),
+						1u, destination, view_binding->get().CPU(),
 						D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV
 					);
 				}
 				else if (auto sampler_binding = std::get_if<NativePipelineSamplerBinding<Backend>>(&source->value)) {
 					ld.impl->CopyDescriptorsSimple(
-						1u, destination, sampler_binding->impl.get().CPU(),
+						1u, destination, sampler_binding->get().CPU(),
 						D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER
 					);
 				}
@@ -1912,10 +1912,9 @@ namespace fyuu_rhi::d3d12 {
 	}
 
 	Backend::CommandGraph Backend::CreateCommandGraph(
-		execution::CommandGraphDescriptor const& descriptor,
-		execution::NativeCommandGraphBindings<Backend> const& bindings
+		execution::CommandGraphDescriptor const& descriptor
 	) {
-		return execution::MakeCommandGraph<Backend>(descriptor, bindings);
+		return execution::MakeCommandGraph<Backend>(descriptor);
 	}
 
 }

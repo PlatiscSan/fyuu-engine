@@ -2,7 +2,6 @@ module;
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <algorithm>
-#include <compare>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -25,11 +24,7 @@ namespace {
 }
 
 namespace fyuu_rhi::execution {
-	struct SubmissionBatchID {
-		std::uint32_t value;
-
-		std::strong_ordering operator<=>(SubmissionBatchID const&) const noexcept = default;
-	};
+	using SubmissionBatchID = std::uint32_t;
 
 	struct GraphBarrierPlan {
 		GraphResourceID resource;
@@ -90,6 +85,9 @@ namespace fyuu_rhi::execution {
 					}
 					else if ((std::holds_alternative<DispatchCommand>(command) ||
 						std::holds_alternative<CopyBufferCommand>(command) ||
+						std::holds_alternative<CopyBufferToTextureCommand>(command) ||
+						std::holds_alternative<CopyTextureToBufferCommand>(command) ||
+						std::holds_alternative<CopyTextureCommand>(command) ||
 						std::holds_alternative<PresentCommand>(command)) && rendering) {
 						throw std::invalid_argument(
 							"Dispatch, copy, and presentation commands cannot execute in a rendering scope"
@@ -121,7 +119,7 @@ namespace fyuu_rhi::execution {
 		for (auto node_id : plan.topological_order) {
 			auto const& node = descriptor.nodes[node_id.value];
 			if (plan.batches.empty() || plan.batches.back().queue_flags != node.flags) {
-				auto batch_id = SubmissionBatchID{ static_cast<std::uint32_t>(plan.batches.size()) };
+				auto batch_id = static_cast<SubmissionBatchID>(plan.batches.size());
 				plan.batches.push_back({
 					.id = batch_id,
 					.queue_flags = node.flags
@@ -133,7 +131,7 @@ namespace fyuu_rhi::execution {
 
 		for (auto const& node : descriptor.nodes) {
 			auto destination_batch = node_batches[node.id.value];
-			auto& dependencies = plan.batches[destination_batch.value].dependencies;
+			auto& dependencies = plan.batches[destination_batch].dependencies;
 			for (auto dependency : node.dependencies) {
 				auto source_batch = node_batches[dependency.value];
 				if (source_batch != destination_batch &&
@@ -166,16 +164,16 @@ namespace fyuu_rhi::execution {
 						.destination = node_id,
 						.source_batch = source_batch,
 						.destination_batch = destination_batch,
-						.source_queue = plan.batches[source_batch.value].queue_flags,
-						.destination_queue = plan.batches[destination_batch.value].queue_flags,
+						.source_queue = plan.batches[source_batch].queue_flags,
+						.destination_queue = plan.batches[destination_batch].queue_flags,
 						.source_access = previous.access.flags,
 						.destination_access = access.flags,
 						.source_range = previous.access.range,
 						.destination_range = access.range
 					};
-					plan.batches[destination_batch.value].barriers.emplace_back(barrier);
+					plan.batches[destination_batch].barriers.emplace_back(barrier);
 					if (barrier.CrossCapability()) {
-						plan.batches[source_batch.value].release_barriers.emplace_back(barrier);
+						plan.batches[source_batch].release_barriers.emplace_back(barrier);
 					}
 				}
 				auto& resource_accesses = previous_accesses[access.resource.value];

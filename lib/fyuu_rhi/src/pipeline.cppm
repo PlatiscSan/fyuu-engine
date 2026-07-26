@@ -24,6 +24,10 @@ namespace fyuu_rhi {
 	template <class Backend> class LogicalDevice;
 }
 
+namespace fyuu_rhi::execution {
+	template <class Backend> class CommandGraphBindings;
+}
+
 namespace fyuu_rhi::pipeline {
 
 	export template <class Backend> class Pipeline {
@@ -43,12 +47,13 @@ namespace fyuu_rhi::pipeline {
 
 			template <class U> friend class fyuu_rhi::LogicalDevice;
 			template <class U> friend class PipelineResourceGroup;
+			template <class U> friend class fyuu_rhi::execution::CommandGraphBindings;
 
 			PipelineType* m_pipeline;
 
 			template <class Self>
 			decltype(auto) GetImplementation(this Self&& self) noexcept {
-				return self.m_pipeline->m_impl;
+				return (self.m_pipeline->m_impl);
 			}
 
 		public:
@@ -85,13 +90,8 @@ namespace fyuu_rhi::pipeline {
 			std::size_t size = PipelineWholeBuffer;
 		};
 
-		struct ViewBinding {
-			std::reference_wrapper<View<Backend> const> view;
-		};
-
-		struct SamplerBinding {
-			std::reference_wrapper<Sampler<Backend> const> sampler;
-		};
+		using ViewBinding = std::reference_wrapper<View<Backend> const>;
+		using SamplerBinding = std::reference_wrapper<Sampler<Backend> const>;
 
 		struct CombinedBinding {
 			std::reference_wrapper<View<Backend> const> view;
@@ -138,7 +138,7 @@ namespace fyuu_rhi::pipeline {
 
 		View<Backend> const* BoundView() const noexcept {
 			if (auto binding = std::get_if<ViewBinding>(&m_value)) {
-				return &binding->impl.get();
+				return &binding->get();
 			}
 			if (auto binding = std::get_if<CombinedBinding>(&m_value)) {
 				return &binding->view.get();
@@ -148,7 +148,7 @@ namespace fyuu_rhi::pipeline {
 
 		Sampler<Backend> const* BoundSampler() const noexcept {
 			if (auto binding = std::get_if<SamplerBinding>(&m_value)) {
-				return &binding->impl.get();
+				return &binding->get();
 			}
 			if (auto binding = std::get_if<CombinedBinding>(&m_value)) {
 				return &binding->sampler.get();
@@ -189,12 +189,13 @@ namespace fyuu_rhi::pipeline {
 			);
 
 			template <class U> friend class fyuu_rhi::LogicalDevice;
+			template <class U> friend class fyuu_rhi::execution::CommandGraphBindings;
 
 			ResourceGroupType* m_resource_group;
 
 			template <class Self>
 			decltype(auto) GetImplementation(this Self&& self) noexcept {
-				return self.m_resource_group->m_impl;
+				return (self.m_resource_group->m_impl);
 			}
 
 		public:

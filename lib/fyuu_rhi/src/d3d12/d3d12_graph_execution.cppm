@@ -56,33 +56,54 @@ namespace {
 		result.UAV.pResource = resource;
 		return result;
 	}
-	struct CreateCommandEntry {
-		Backend::Scheduler::QueueState const* queue;
 
-		Backend::Scheduler::CommandEntry operator()() const {
-			Backend::Scheduler::CommandEntry entry;
-			ThrowIfFailed(queue->device->CreateCommandAllocator(
-				queue->type,
-				IID_PPV_ARGS(&entry.allocator)
-			));
-			ThrowIfFailed(queue->device->CreateCommandList(
-				0u,
-				queue->type,
-				entry.allocator.Get(),
-				nullptr,
-				IID_PPV_ARGS(&entry.impl)
-			));
-			return entry;
+	bool ResourceStateContains(
+		D3D12_RESOURCE_STATES state,
+		D3D12_RESOURCE_STATES required
+	) noexcept {
+		if (required == D3D12_RESOURCE_STATE_COMMON) {
+			return state == D3D12_RESOURCE_STATE_COMMON;
 		}
-	};
+		return (state & required) == required;
+	}
 
-	struct ResetCommandEntry {
-		void operator()(Backend::Scheduler::CommandEntry& entry) const {
-			entry.impl->Close();
-			ThrowIfFailed(entry.allocator->Reset());
-			ThrowIfFailed(entry.impl->Reset(entry.allocator.Get(), nullptr));
+	std::uint32_t D3D12TextureBlockHeight(DXGI_FORMAT format) noexcept {
+		switch (format) {
+		case DXGI_FORMAT_BC1_TYPELESS:
+		case DXGI_FORMAT_BC1_UNORM:
+		case DXGI_FORMAT_BC1_UNORM_SRGB:
+		case DXGI_FORMAT_BC2_TYPELESS:
+		case DXGI_FORMAT_BC2_UNORM:
+		case DXGI_FORMAT_BC2_UNORM_SRGB:
+		case DXGI_FORMAT_BC3_TYPELESS:
+		case DXGI_FORMAT_BC3_UNORM:
+		case DXGI_FORMAT_BC3_UNORM_SRGB:
+		case DXGI_FORMAT_BC4_TYPELESS:
+		case DXGI_FORMAT_BC4_UNORM:
+		case DXGI_FORMAT_BC4_SNORM:
+		case DXGI_FORMAT_BC5_TYPELESS:
+		case DXGI_FORMAT_BC5_UNORM:
+		case DXGI_FORMAT_BC5_SNORM:
+		case DXGI_FORMAT_BC6H_TYPELESS:
+		case DXGI_FORMAT_BC6H_UF16:
+		case DXGI_FORMAT_BC6H_SF16:
+		case DXGI_FORMAT_BC7_TYPELESS:
+		case DXGI_FORMAT_BC7_UNORM:
+		case DXGI_FORMAT_BC7_UNORM_SRGB:
+			return 4u;
+		default:
+			return 1u;
 		}
-	};
+	}
+
+	void ResetCommandEntry(Backend::Scheduler::CommandEntry& entry) {
+		if (!entry.closed) {
+			ThrowIfFailed(entry.impl->Close());
+		}
+		ThrowIfFailed(entry.allocator->Reset());
+		ThrowIfFailed(entry.impl->Reset(entry.allocator.Get(), nullptr));
+		entry.closed = false;
+	}
 
 	D3D12_RESOURCE_STATES D3D12ResourceState(execution::GraphAccessFlagBits access) noexcept {
 		using Flag = execution::GraphAccessFlagBits;
@@ -108,6 +129,17 @@ namespace {
 				D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 		}
 		return state;
+	}
+
+	bool UsesCopyQueueCommonLayout(
+		D3D12_COMMAND_LIST_TYPE queue_type,
+		D3D12_RESOURCE_STATES current,
+		D3D12_RESOURCE_STATES desired
+	) noexcept {
+		return queue_type == D3D12_COMMAND_LIST_TYPE_COPY &&
+			current == D3D12_RESOURCE_STATE_COMMON &&
+			(desired == D3D12_RESOURCE_STATE_COPY_SOURCE ||
+				desired == D3D12_RESOURCE_STATE_COPY_DEST);
 	}
 
 	bool IsTearingSupported(
@@ -499,6 +531,118 @@ namespace {
 			);
 		}
 
+		void operator()(execution::CopyBufferToTextureCommand const& command) const {
+			auto source = bindings->resources[command.source.value].get().impl->GetResource();
+			auto destination = bindings->resources[command.destination.value].get().impl->GetResource();
+			auto descriptor = destination->GetDesc();
+			auto const& region = command.destination_region;
+			auto layers = descriptor.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D
+				? 1u : region.array_layer_count;
+			auto block_height = D3D12TextureBlockHeight(descriptor.Format);
+			auto rows_per_image = (command.source_layout.rows_per_image + block_height - 1u) /
+				block_height;
+			auto layer_stride = static_cast<std::size_t>(command.source_layout.bytes_per_row) *
+				rows_per_image;
+			if (command.source_layout.offset % D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT != 0u ||
+				command.source_layout.bytes_per_row % D3D12_TEXTURE_DATA_PITCH_ALIGNMENT != 0u ||
+				(layers > 1u && layer_stride % D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT != 0u)) {
+				throw std::invalid_argument("D3D12 buffer-to-texture layout is not aligned");
+			}
+			for (std::uint32_t layer = 0u; layer < layers; ++layer) {
+				D3D12_TEXTURE_COPY_LOCATION source_location{
+					.pResource = source,
+					.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
+					.PlacedFootprint = {
+						.Offset = command.source_layout.offset + static_cast<std::size_t>(layer) *
+							layer_stride,
+						.Footprint = {
+							.Format = descriptor.Format,
+							.Width = region.width,
+							.Height = region.height,
+							.Depth = region.depth,
+							.RowPitch = command.source_layout.bytes_per_row
+						}
+					}
+				};
+				D3D12_TEXTURE_COPY_LOCATION destination_location{
+					.pResource = destination,
+					.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+					.SubresourceIndex = region.mip_level +
+						(region.base_array_layer + layer) * descriptor.MipLevels
+				};
+				commands->CopyTextureRegion(&destination_location, region.offset_x, region.offset_y,
+					region.offset_z, &source_location, nullptr);
+			}
+		}
+
+		void operator()(execution::CopyTextureToBufferCommand const& command) const {
+			auto source = bindings->resources[command.source.value].get().impl->GetResource();
+			auto destination = bindings->resources[command.destination.value].get().impl->GetResource();
+			auto descriptor = source->GetDesc();
+			auto const& region = command.source_region;
+			auto layers = descriptor.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D
+				? 1u : region.array_layer_count;
+			auto block_height = D3D12TextureBlockHeight(descriptor.Format);
+			auto rows_per_image = (command.destination_layout.rows_per_image + block_height - 1u) /
+				block_height;
+			auto layer_stride = static_cast<std::size_t>(command.destination_layout.bytes_per_row) *
+				rows_per_image;
+			if (command.destination_layout.offset % D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT != 0u ||
+				command.destination_layout.bytes_per_row % D3D12_TEXTURE_DATA_PITCH_ALIGNMENT != 0u ||
+				(layers > 1u && layer_stride % D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT != 0u)) {
+				throw std::invalid_argument("D3D12 texture-to-buffer layout is not aligned");
+			}
+			for (std::uint32_t layer = 0u; layer < layers; ++layer) {
+				D3D12_TEXTURE_COPY_LOCATION source_location{
+					.pResource = source,
+					.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+					.SubresourceIndex = region.mip_level +
+						(region.base_array_layer + layer) * descriptor.MipLevels
+				};
+				D3D12_TEXTURE_COPY_LOCATION destination_location{
+					.pResource = destination,
+					.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
+					.PlacedFootprint = {
+						.Offset = command.destination_layout.offset + static_cast<std::size_t>(layer) *
+							layer_stride,
+						.Footprint = { descriptor.Format, region.width, region.height, region.depth,
+							command.destination_layout.bytes_per_row }
+					}
+				};
+				D3D12_BOX box{ region.offset_x, region.offset_y, region.offset_z,
+					region.offset_x + region.width, region.offset_y + region.height,
+					region.offset_z + region.depth };
+				commands->CopyTextureRegion(&destination_location, 0u, 0u, 0u, &source_location, &box);
+			}
+		}
+
+		void operator()(execution::CopyTextureCommand const& command) const {
+			auto source = bindings->resources[command.source.value].get().impl->GetResource();
+			auto destination = bindings->resources[command.destination.value].get().impl->GetResource();
+			auto source_descriptor = source->GetDesc();
+			auto destination_descriptor = destination->GetDesc();
+			auto const& source_region = command.source_region;
+			auto const& destination_region = command.destination_region;
+			auto layers = source_descriptor.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D
+				? 1u : source_region.array_layer_count;
+			for (std::uint32_t layer = 0u; layer < layers; ++layer) {
+				D3D12_TEXTURE_COPY_LOCATION source_location{ source,
+					D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+					{ source_region.mip_level + (source_region.base_array_layer + layer) *
+						source_descriptor.MipLevels } };
+				D3D12_TEXTURE_COPY_LOCATION destination_location{ destination,
+					D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+					{ destination_region.mip_level + (destination_region.base_array_layer + layer) *
+						destination_descriptor.MipLevels } };
+				D3D12_BOX box{ source_region.offset_x, source_region.offset_y, source_region.offset_z,
+					source_region.offset_x + source_region.width,
+					source_region.offset_y + source_region.height,
+					source_region.offset_z + source_region.depth };
+				commands->CopyTextureRegion(&destination_location, destination_region.offset_x,
+					destination_region.offset_y, destination_region.offset_z, &source_location, &box);
+			}
+		}
+
 		void operator()(execution::PresentCommand const& command) const {
 			if (rendering) {
 				throw std::logic_error("D3D12 Present cannot execute in a rendering scope");
@@ -586,7 +730,7 @@ namespace {
 
 }
 namespace fyuu_rhi::d3d12 {
-	Backend::ExecutableGraph CompileCommandGraph(Backend::CommandGraph const& graph) {
+	Backend::ExecutableGraph Backend::CompileCommandGraph(Backend::CommandGraph const& graph) {
 		return execution::MakeExecutableGraph<Backend>(graph);
 	}
 
@@ -611,17 +755,34 @@ namespace fyuu_rhi::d3d12 {
 	) {
 		Backend::GraphExecution result{ scheduler, graph };
 		auto const& native_graph = *graph->impl;
-		std::vector<D3D12_RESOURCE_STATES> states(
-			native_graph.bindings.resources.size(),
-			D3D12_RESOURCE_STATE_COMMON
-		);
+		std::vector<D3D12_RESOURCE_STATES> stable_states;
+		stable_states.reserve(native_graph.bindings.resources.size());
+		for (auto const& resource : native_graph.bindings.resources) {
+			stable_states.push_back(resource.get().stable_state);
+		}
+		auto states = stable_states;
 		auto const& last_users = graph->plan.last_resource_users;
 		result.batches.reserve(graph->plan.batches.size());
 		for (auto const& batch : graph->plan.batches) {
 			auto const& queue = scheduler.impl->queues.Select(batch.queue_flags);
+			auto CreateCommands = [&queue]() {
+				Backend::Scheduler::CommandEntry entry;
+				ThrowIfFailed(queue->device->CreateCommandAllocator(
+					queue->type,
+					IID_PPV_ARGS(&entry.allocator)
+				));
+				ThrowIfFailed(queue->device->CreateCommandList(
+					0u,
+					queue->type,
+					entry.allocator.Get(),
+					nullptr,
+					IID_PPV_ARGS(&entry.impl)
+				));
+				return entry;
+			};
 			auto commands = queue->command_pool->Acquire(
-				CreateCommandEntry{ queue.get() },
-				ResetCommandEntry{}
+				CreateCommands,
+				ResetCommandEntry
 			);
 			auto* command_list = commands.Get().impl.Get();
 			std::vector<Backend::GraphExecution::Batch::PresentationRequest> presentations;
@@ -638,7 +799,14 @@ namespace fyuu_rhi::d3d12 {
 					auto desired = D3D12ResourceState(access.flags);
 					auto resource = native_graph.bindings.resources[access.resource.value]
 						.get().impl->GetResource();
-					if (states[access.resource.value] != desired) {
+					if (UsesCopyQueueCommonLayout(
+						queue->type,
+						states[access.resource.value],
+						desired
+					)) {
+						continue;
+					}
+					if (!ResourceStateContains(states[access.resource.value], desired)) {
 						auto barrier = TransitionBarrier(
 							resource,
 							states[access.resource.value],
@@ -676,7 +844,7 @@ namespace fyuu_rhi::d3d12 {
 				}
 				for (auto const& access : node.accesses) {
 					if (last_users[access.resource.value].value != node_id.value ||
-						states[access.resource.value] == D3D12_RESOURCE_STATE_COMMON) {
+						states[access.resource.value] == stable_states[access.resource.value]) {
 						continue;
 					}
 					auto resource = native_graph.bindings.resources[access.resource.value]
@@ -684,16 +852,17 @@ namespace fyuu_rhi::d3d12 {
 					auto barrier = TransitionBarrier(
 						resource,
 						states[access.resource.value],
-						D3D12_RESOURCE_STATE_COMMON
+						stable_states[access.resource.value]
 					);
 					command_list->ResourceBarrier(1u, &barrier);
-					states[access.resource.value] = D3D12_RESOURCE_STATE_COMMON;
+					states[access.resource.value] = stable_states[access.resource.value];
 				}
 			}
 			if (recorder.rendering) {
 				throw std::logic_error("D3D12 rendering scope must end in the batch where it begins");
 			}
 			ThrowIfFailed(command_list->Close());
+			commands.Get().closed = true;
 			for (auto& presentation : presentations) {
 				presentation.source_state = states[presentation.source_id.value];
 			}
@@ -720,7 +889,7 @@ namespace fyuu_rhi::d3d12 {
 			auto& batch = graph_execution.batches[index];
 			std::unique_lock<std::mutex> lock(batch.queue->submission_mutex);
 			for (auto dependency : plans[index].dependencies) {
-				auto const& source = graph_execution.batches[dependency.value];
+				auto const& source = graph_execution.batches[dependency];
 				if (source.queue != batch.queue) {
 					ThrowIfFailed(batch.queue->impl->Wait(
 						source.queue->fence.Get(),
@@ -733,18 +902,14 @@ namespace fyuu_rhi::d3d12 {
 			AddSubmittedQueue(submitted_queues, batch.queue);
 			for (auto const& request : batch.presentation_requests) {
 				auto descriptor = request.source->GetDesc();
-				auto CreateEntry = [&]() {
-					return CreatePresentationEntry(
-						graph_execution.scheduler.impl->physical_device,
-						batch.queue->impl,
-						request.target,
-						descriptor,
-						request.frames_in_flight
-					);
-					};
 				auto presentation = graph_execution.scheduler.impl->presentation_cache->Acquire(
 					request.target,
-					CreateEntry
+					CreatePresentationEntry,
+					graph_execution.scheduler.impl->physical_device,
+					batch.queue->impl,
+					request.target,
+					descriptor,
+					request.frames_in_flight
 				);
 				auto const& entry = presentation.Get();
 				if (entry.queue.Get() != batch.queue->impl.Get() ||
@@ -754,13 +919,21 @@ namespace fyuu_rhi::d3d12 {
 					entry.frames.size() != request.frames_in_flight) {
 					graph_execution.scheduler.impl->presentation_cache->Recreate(
 						presentation,
-						[&CreateEntry](Backend::LogicalDevice::PresentationEntry const&) {
-							return CreateEntry();
-						}
+						CreatePresentationEntry,
+						graph_execution.scheduler.impl->physical_device,
+						batch.queue->impl,
+						request.target,
+						descriptor,
+						request.frames_in_flight
 					);
 					presentation = graph_execution.scheduler.impl->presentation_cache->Acquire(
 						request.target,
-						CreateEntry
+						CreatePresentationEntry,
+						graph_execution.scheduler.impl->physical_device,
+						batch.queue->impl,
+						request.target,
+						descriptor,
+						request.frames_in_flight
 					);
 				}
 
@@ -778,12 +951,31 @@ namespace fyuu_rhi::d3d12 {
 							frame.fence_value
 						));
 					}
+					auto CreateCommands = [&batch]() {
+						Backend::Scheduler::CommandEntry entry;
+						ThrowIfFailed(batch.queue->device->CreateCommandAllocator(
+							batch.queue->type,
+							IID_PPV_ARGS(&entry.allocator)
+						));
+						ThrowIfFailed(batch.queue->device->CreateCommandList(
+							0u,
+							batch.queue->type,
+							entry.allocator.Get(),
+							nullptr,
+							IID_PPV_ARGS(&entry.impl)
+						));
+						return entry;
+					};
 					auto present_commands = batch.queue->command_pool->Acquire(
-						CreateCommandEntry{ batch.queue.get() },
-						ResetCommandEntry{}
+						CreateCommands,
+						ResetCommandEntry
 					);
 					auto command_list = present_commands.Get().impl.Get();
-					if (request.source_state != D3D12_RESOURCE_STATE_COPY_SOURCE) {
+					bool transition_source = !ResourceStateContains(
+						request.source_state,
+						D3D12_RESOURCE_STATE_COPY_SOURCE
+					);
+					if (transition_source) {
 						auto source = TransitionBarrier(
 							request.source.Get(),
 							request.source_state,
@@ -804,7 +996,7 @@ namespace fyuu_rhi::d3d12 {
 						D3D12_RESOURCE_STATE_PRESENT
 					);
 					command_list->ResourceBarrier(1u, &present);
-					if (request.source_state != D3D12_RESOURCE_STATE_COPY_SOURCE) {
+					if (transition_source) {
 						auto source = TransitionBarrier(
 							request.source.Get(),
 							D3D12_RESOURCE_STATE_COPY_SOURCE,
@@ -813,6 +1005,7 @@ namespace fyuu_rhi::d3d12 {
 						command_list->ResourceBarrier(1u, &source);
 					}
 					ThrowIfFailed(command_list->Close());
+					present_commands.Get().closed = true;
 					ID3D12CommandList* presentation_commands[] = { command_list };
 					batch.queue->impl->ExecuteCommandLists(1u, presentation_commands);
 					DXGI_SWAP_CHAIN_DESC1 swapchain_descriptor;
@@ -878,6 +1071,80 @@ namespace fyuu_rhi::d3d12 {
 			std::move(poll),
 			std::move(graph_completion)
 		);
+	}
+
+	void StartSchedulerExecution(
+		Backend::Scheduler const& scheduler,
+		execution::SchedulerCompletion const& completion
+	) {
+		auto queue = scheduler.impl->queues.graphics;
+		if (!queue) queue = scheduler.impl->queues.compute;
+		if (!queue) queue = scheduler.impl->queues.copy;
+		if (!queue) {
+			throw std::logic_error("D3D12 scheduler has no execution queue");
+		}
+
+		auto device_error = std::make_shared<std::atomic<HRESULT>>(S_OK);
+		std::uint64_t value;
+		{
+			std::unique_lock<std::mutex> lock(queue->submission_mutex);
+			value = queue->next_fence_value.fetch_add(1u, std::memory_order::relaxed);
+			auto result = queue->impl->Signal(queue->fence.Get(), value);
+			if (FAILED(result)) {
+				auto reason = queue->device->GetDeviceRemovedReason();
+				ThrowIfFailed(FAILED(reason) ? reason : result);
+			}
+		}
+		D3D12CompletionPoll poll{
+			.fences = { { queue, value } },
+			.device_error = device_error
+		};
+		D3D12GraphCompletion schedule_completion{
+			.completion = completion,
+			.device_error = device_error
+		};
+		scheduler.impl->completion_service->Enqueue(
+			std::move(poll),
+			std::move(schedule_completion)
+		);
+	}
+
+	void StartDeferredDestroy(
+		Backend::Scheduler const&,
+		execution::DeferredDestroy const& deferred_destroy
+	) {
+		deferred_destroy.Destroy(deferred_destroy.object);
+		deferred_destroy.completion.SetValue(deferred_destroy.completion.operation);
+	}
+
+	void StartMapResource(
+		Backend::Scheduler const&,
+		Backend::Resource& resource,
+		execution::ResourceMapRequest const& request
+	) {
+		D3D12_RANGE read_range{
+			request.read ? request.offset : 0u,
+			request.read ? request.offset + request.size : 0u
+		};
+		void* mapped = nullptr;
+		ThrowIfFailed(resource.impl->GetResource()->Map(0u, &read_range, &mapped));
+		request.completion.SetValue(
+			request.completion.operation,
+			static_cast<std::byte*>(mapped) + request.offset
+		);
+	}
+
+	void StartUnmapResource(
+		Backend::Scheduler const&,
+		Backend::Resource& resource,
+		execution::ResourceUnmapRequest const& request
+	) {
+		D3D12_RANGE written_range{
+			request.write ? request.offset : 0u,
+			request.write ? request.offset + request.size : 0u
+		};
+		resource.impl->GetResource()->Unmap(0u, &written_range);
+		request.completion.SetValue(request.completion.operation);
 	}
 
 }

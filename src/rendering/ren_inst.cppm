@@ -145,7 +145,7 @@ namespace {
 		std::vector<fyuu_rhi::D3D12PhysicalDevice> phys_devs = instance->EnumeratePhysicalDevices();
 		fyuu_rhi::D3D12PhysicalDevice best_phys_dev = fyuu_rhi::BestPerformance(phys_devs);
 		LogPhysicalDevice(best_phys_dev);
-		fyuu_rhi::D3D12Surface surface = instance->CreateSurface(GetNativeWindowHandle(window));
+
 		fyuu_rhi::D3D12LogicalDevice logical_dev = best_phys_dev.CreateLogicalDevice();
 	}
 #endif // defined(_WIN32)
@@ -224,23 +224,7 @@ namespace {
 		std::vector<fyuu_rhi::VulkanPhysicalDevice> phys_devs = instance->EnumeratePhysicalDevices();
 		fyuu_rhi::VulkanPhysicalDevice best_phys_dev = fyuu_rhi::BestPerformance(phys_devs);
 		LogPhysicalDevice(best_phys_dev);
-#if defined(_WIN32)
-		fyuu_rhi::VulkanSurface surface = instance->CreateSurface(GetNativeWindowHandle(window));
-#elif defined(__linux__)
-		fyuu_rhi::VulkanSurface surface = [&instance]() {
-			try {
-				auto [display, window_id] = GetX11NativeHandle(window);
-				return instance->CreateSurface(display, window_id);
-			}
-			catch (NotX11 const&) {
-				log::Warning(std::format("Failed to get X11 native handle: {}, trying Wayland...", ex.what()));
-				auto [display, surface] = GetWaylandNativeHandle(window);
-				return instance->CreateSurface(display, surface);
-			}
-			}();
-#elif defined(__ANDROID__)
-		fyuu_rhi::VulkanSurface surface = instance->CreateSurface(GetAndroidNativeWindow(window));
-#endif // defined(__WIN32)
+
 		fyuu_rhi::VulkanLogicalDevice logical_dev = best_phys_dev.CreateLogicalDevice();
 	}
 
@@ -272,23 +256,7 @@ namespace {
 		fyuu_rhi::WebGPUInstance* instance = fyuu_rhi::WebGPUInstance::Get();
 		fyuu_rhi::WebGPUPhysicalDevice phys_dev = instance->EnumeratePhysicalDevices();
 		LogPhysicalDevice(phys_dev);
-		#if defined(_WIN32)
-		fyuu_rhi::WebGPUSurface surface = instance->CreateSurface(GetNativeWindowHandle(window));
-#elif defined(__linux__)
-		fyuu_rhi::WebGPUSurface surface = [&instance]() {
-			try {
-				auto [display, window_id] = GetX11NativeHandle(window);
-				return instance->CreateSurface(display, window_id);
-			}
-			catch (NotX11 const&) {
-				log::Warning(std::format("Failed to get X11 native handle: {}, trying Wayland...", ex.what()));
-				auto [display, surface] = GetWaylandNativeHandle(window);
-				return instance->CreateSurface(display, surface);
-			}
-			}();
-#elif defined(__ANDROID__)
-		fyuu_rhi::WebGPUSurface surface = instance->CreateSurface(GetAndroidNativeWindow(window));
-#endif // defined(__WIN32)
+
 		fyuu_rhi::WebGPULogicalDevice logical_dev = phys_dev.CreateLogicalDevice();
 	}
 

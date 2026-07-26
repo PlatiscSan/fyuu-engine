@@ -19,6 +19,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 project(FyuuEngine)
+include(CTest)
 
 # set(CMAKE_CXX_MODULE_STD 1)
 
@@ -103,8 +104,6 @@ file(GLOB_RECURSE MODULE_INTERFACES
 )
 
 add_subdirectory(src)
-
-set(BUILD_TESTING ON)
 
 if(BUILD_TESTING)
     add_subdirectory("test/hello_triangle")

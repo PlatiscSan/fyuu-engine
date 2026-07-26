@@ -31,14 +31,10 @@ namespace fyuu_rhi::pipeline {
 	};
 
 	template <class Backend>
-	struct NativePipelineViewBinding {
-		std::reference_wrapper<typename Backend::View const> impl;
-	};
+	using NativePipelineViewBinding = std::reference_wrapper<typename Backend::View const>;
 
 	template <class Backend>
-	struct NativePipelineSamplerBinding {
-		std::reference_wrapper<typename Backend::Sampler const> impl;
-	};
+	using NativePipelineSamplerBinding = std::reference_wrapper<typename Backend::Sampler const>;
 
 	template <class Backend>
 	struct NativePipelineCombinedBinding {

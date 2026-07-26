@@ -6,6 +6,7 @@ module;
 #include <vector>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <span>
 #include <stdexcept>
 #endif // !defined(__cpp_lib_modules)
@@ -26,6 +27,11 @@ import :command_graph_validation;
 import :pipeline_types;
 import :pipeline;
 import :native_pipeline_binding;
+import :staging_resource_pool;
+
+namespace fyuu_rhi::execution {
+	template <class Backend> class StagingResourcePoolAccess;
+}
 
 namespace fyuu_rhi {
 
@@ -34,12 +40,18 @@ namespace fyuu_rhi {
 		using Implementation = typename Backend::LogicalDevice;
 
 	private:
+		template <class U> friend class execution::StagingResourcePoolAccess;
+
 		Implementation m_impl;
+		std::shared_ptr<execution::StagingResourcePool<Backend>> m_staging_resource_pool;
 
 	public:
 		template <std::convertible_to<Implementation> I>
 		LogicalDevice(I&& impl)
-			: m_impl(std::forward<I>(impl)) {
+			: m_impl(std::forward<I>(impl)),
+			m_staging_resource_pool(
+				std::make_shared<execution::StagingResourcePool<Backend>>()
+			) {
 
 		}
 
@@ -47,14 +59,38 @@ namespace fyuu_rhi {
 			using Ret = decltype(Backend::CreateBuffer(m_impl, size_in_bytes, flags));
 			static_assert(std::constructible_from<Resource<Backend>, Ret>,
 				"Resource<Backend> must be constructible from buffer returned by CreateBuffer()");
-			return Backend::CreateBuffer(m_impl, size_in_bytes, flags);
+			return Resource<Backend>(
+				Backend::CreateBuffer(m_impl, size_in_bytes, flags),
+				size_in_bytes,
+				flags
+			);
 		}
 
 		Resource<Backend> CreateTexture(std::size_t width, std::size_t height, std::size_t depth_arr_layers, std::size_t mip_lvl_cnt, ResourceFlags const& flags) {
+			if (width == 0u || height == 0u || depth_arr_layers == 0u || mip_lvl_cnt == 0u) {
+				throw std::invalid_argument("CreateTexture(): dimensions and mip count must be non-zero");
+			}
 			using Ret = decltype(Backend::CreateTexture(m_impl, width, height, depth_arr_layers, mip_lvl_cnt, flags));
 			static_assert(std::constructible_from<Resource<Backend>, Ret>,
 				"Resource<Backend> must be constructible from texture returned by CreateTexture()");
-			return Backend::CreateTexture(m_impl, width, height, depth_arr_layers, mip_lvl_cnt, flags);
+			return Resource<Backend>(
+				Backend::CreateTexture(
+					m_impl,
+					width,
+					height,
+					depth_arr_layers,
+					mip_lvl_cnt,
+					flags
+				),
+				0u,
+				flags,
+				{
+					.width = static_cast<std::uint32_t>(width),
+					.height = static_cast<std::uint32_t>(height),
+					.depth_or_array_layers = static_cast<std::uint32_t>(depth_arr_layers),
+					.mip_levels = static_cast<std::uint32_t>(mip_lvl_cnt)
+				}
+			);
 		}
 
 		View<Backend> CreateBufferView(Resource<Backend> const& buf, std::size_t offset, std::size_t range, ResourceFlags const& flags) {
@@ -106,74 +142,15 @@ namespace fyuu_rhi {
 		execution::ExecutableGraph<Backend> CompileCommandGraph(
 			execution::CommandGraph<Backend> const& graph
 		) {
-			auto impl = CompileCommandGraph(graph.GetImplementation());
+			auto impl = Backend::CompileCommandGraph(graph.GetImplementation());
 			return execution::ExecutableGraph<Backend>(impl);
 		}
 
 		execution::CommandGraph<Backend> CreateCommandGraph(
-			execution::CommandGraphDescriptor const& descriptor,
-			execution::CommandGraphBindings<Backend> const& bindings
+			execution::CommandGraphDescriptor const& descriptor
 		) {
 			execution::ValidateCommandGraphDescriptor(descriptor);
-			if (bindings.Resources().size() != descriptor.resource_count ||
-				bindings.Pipelines().size() != descriptor.pipeline_count ||
-				bindings.Views().size() != descriptor.view_count ||
-				bindings.ResourceGroups().size() != descriptor.resource_group_count ||
-				bindings.PresentationTargets().size() != descriptor.presentation_target_count) {
-				throw std::invalid_argument(
-					"CreateCommandGraph(): binding counts do not match the graph descriptor"
-				);
-			}
-			execution::NativeCommandGraphBindings<Backend> native_bindings;
-			native_bindings.resources.reserve(bindings.Resources().size());
-			for (auto resource : bindings.Resources()) {
-				if (!resource) {
-					throw std::invalid_argument("CreateCommandGraph(): graph resource is not bound");
-				}
-				native_bindings.resources.emplace_back(
-					resource->GetLogicalDevicePassKey().GetImplementation()
-				);
-			}
-
-			native_bindings.pipelines.reserve(bindings.Pipelines().size());
-			for (auto pipeline : bindings.Pipelines()) {
-				if (!pipeline) {
-					throw std::invalid_argument("CreateCommandGraph(): graph pipeline is not bound");
-				}
-				native_bindings.pipelines.emplace_back(
-					pipeline->GetPassKey().GetImplementation()
-				);
-			}
-
-			native_bindings.views.reserve(bindings.Views().size());
-			for (auto view : bindings.Views()) {
-				if (!view) {
-					throw std::invalid_argument("CreateCommandGraph(): graph view is not bound");
-				}
-				native_bindings.views.emplace_back(
-					view->GetPassKey().GetImplementation()
-				);
-			}
-
-			native_bindings.resource_groups.reserve(bindings.ResourceGroups().size());
-			for (auto resource_group : bindings.ResourceGroups()) {
-				if (!resource_group) {
-					throw std::invalid_argument("CreateCommandGraph(): graph resource group is not bound");
-				}
-				native_bindings.resource_groups.emplace_back(
-					resource_group->GetPassKey().GetImplementation()
-				);
-			}
-
-			native_bindings.presentation_targets.reserve(bindings.PresentationTargets().size());
-			for (auto const& presentation_target : bindings.PresentationTargets()) {
-				if (!presentation_target) {
-					throw std::invalid_argument("CreateCommandGraph(): presentation target is not bound");
-				}
-				native_bindings.presentation_targets.emplace_back(*presentation_target);
-			}
-
-			auto impl = Backend::CreateCommandGraph(descriptor, native_bindings);
+			auto impl = Backend::CreateCommandGraph(descriptor);
 			return execution::CommandGraph<Backend>(impl);
 		}
 
@@ -226,14 +203,10 @@ namespace fyuu_rhi {
 					};
 				}
 				else if (view) {
-					native_value = pipeline::NativePipelineViewBinding<Backend>{
-						.impl = std::cref(view->GetPassKey().GetImplementation())
-					};
+					native_value = std::cref(view->GetPassKey().GetImplementation());
 				}
 				else if (sampler) {
-					native_value = pipeline::NativePipelineSamplerBinding<Backend>{
-						.impl = std::cref(sampler->GetPassKey().GetImplementation())
-					};
+					native_value = std::cref(sampler->GetPassKey().GetImplementation());
 				}
 				native_bindings.push_back(
 					{
@@ -254,4 +227,15 @@ namespace fyuu_rhi {
 
 	};
 
+}
+
+namespace fyuu_rhi::execution {
+	template <class Backend> class StagingResourcePoolAccess {
+	public:
+		[[nodiscard]] static std::shared_ptr<StagingResourcePool<Backend>> const& Get(
+			LogicalDevice<Backend> const& logical_device
+		) noexcept {
+			return logical_device.m_staging_resource_pool;
+		}
+	};
 }

@@ -19,8 +19,10 @@ namespace fyuu_rhi::webgpu {
 module;
 #include <version>
 #if !defined(__cpp_lib_modules)
+#include <atomic>
 #include <string>
 #include <memory>
+#include <mutex>
 #include <vector>
 #include <variant>
 #include <format>
@@ -85,22 +87,16 @@ namespace fyuu_rhi::webgpu {
 				return execution::HashNativePointer(target);
 			}
 #elif defined(__linux__)
-			struct HashTarget {
-				std::size_t operator()(X11PresentationTarget const& target) const noexcept {
-					auto display = execution::HashNativePointer(target.display);
-					auto window = std::hash<Window>{}(target.window);
+			std::size_t operator()(PresentationTarget const& target) const noexcept {
+				if (auto value = std::get_if<X11PresentationTarget>(&target)) {
+					auto display = execution::HashNativePointer(value->display);
+					auto window = std::hash<Window>{}(value->window);
 					return execution::CombineHashes(display, window);
 				}
-
-				std::size_t operator()(WaylandPresentationTarget const& target) const noexcept {
-					auto display = execution::HashNativePointer(target.display);
-					auto surface = execution::HashNativePointer(target.surface);
-					return execution::CombineHashes(display, surface);
-				}
-			};
-
-			std::size_t operator()(PresentationTarget const& target) const noexcept {
-				return std::visit(HashTarget{}, target);
+				auto const& value = std::get<WaylandPresentationTarget>(target);
+				auto display = execution::HashNativePointer(value.display);
+				auto surface = execution::HashNativePointer(value.surface);
+				return execution::CombineHashes(display, surface);
 			}
 #endif
 		};
@@ -109,12 +105,23 @@ namespace fyuu_rhi::webgpu {
 		using Surface = wgpu::Surface;
 		struct LogicalDevice {
 			struct PresentationEntry {
+				using FrameSlot = std::atomic_bool;
+
+				struct FrameState {
+					std::vector<std::shared_ptr<FrameSlot>> slots;
+					std::size_t next_slot = 0u;
+					std::mutex mutex;
+				};
+
 				wgpu::Instance instance;
 				wgpu::Surface surface;
 				wgpu::TextureFormat format = wgpu::TextureFormat::Undefined;
 				wgpu::PresentMode present_mode = wgpu::PresentMode::Fifo;
 				std::uint32_t width = 0u;
 				std::uint32_t height = 0u;
+				bool vertical_sync = true;
+				std::uint32_t frames_in_flight = 0u;
+				std::shared_ptr<FrameState> frames;
 			};
 
 			using PresentationCache = execution::PresentationCache<
@@ -157,18 +164,14 @@ namespace fyuu_rhi::webgpu {
 
 		using Scheduler = std::shared_ptr<WebGPUScheduler>;
 
-		struct Resource {
-			std::variant<std::monostate, wgpu::Buffer, wgpu::Texture> impl;
-		};
+		using Resource = std::variant<std::monostate, wgpu::Buffer, wgpu::Texture>;
 
-		struct View {
-			struct BufferView {
-				wgpu::Buffer buf;
-				std::size_t offset;
-				std::size_t range;
-			};
-			std::variant<std::monostate, wgpu::TextureView, BufferView> impl;
+		struct BufferView {
+			wgpu::Buffer buf;
+			std::size_t offset;
+			std::size_t range;
 		};
+		using View = std::variant<std::monostate, wgpu::TextureView, BufferView>;
 
 		using Sampler = wgpu::Sampler;
 
@@ -187,15 +190,20 @@ namespace fyuu_rhi::webgpu {
 		using CommandGraph = std::shared_ptr<execution::NativeCommandGraph<Backend>>;
 		using ExecutableGraph = std::shared_ptr<execution::NativeExecutableGraph<Backend>>;
 		struct GraphExecution {
+			struct InFlightPresentation {
+				LogicalDevice::PresentationCache::Lease entry;
+				std::shared_ptr<LogicalDevice::PresentationEntry::FrameSlot> frame;
+			};
+
 			struct Batch {
 				std::shared_ptr<WebGPUScheduler::QueueState> queue;
 				wgpu::CommandBuffer commands;
-				std::vector<LogicalDevice::PresentationCache::Lease> presentations;
+				std::vector<InFlightPresentation> presentations;
 
 				Batch(
 					std::shared_ptr<WebGPUScheduler::QueueState> const& queue_,
 					wgpu::CommandBuffer const& commands_,
-					std::vector<LogicalDevice::PresentationCache::Lease>&& presentations_
+					std::vector<InFlightPresentation>&& presentations_
 				) noexcept : queue(queue_), commands(commands_),
 					presentations(std::move(presentations_)) {
 
@@ -243,9 +251,9 @@ namespace fyuu_rhi::webgpu {
 
 		static Scheduler CreateScheduler(LogicalDevice const& ld, SchedulerDescriptor const& descriptor);
 		static CommandGraph CreateCommandGraph(
-			execution::CommandGraphDescriptor const& descriptor,
-			execution::NativeCommandGraphBindings<Backend> const& bindings
+			execution::CommandGraphDescriptor const& descriptor
 		);
+		static ExecutableGraph CompileCommandGraph(CommandGraph const& graph);
 
 		static Resource CreateBuffer(LogicalDevice const& ld, std::size_t size_in_bytes, ResourceFlags const& flags);
 
@@ -273,9 +281,26 @@ namespace fyuu_rhi::webgpu {
 		Backend::Scheduler const& scheduler,
 		Backend::ExecutableGraph const& graph
 	);
-	Backend::ExecutableGraph CompileCommandGraph(Backend::CommandGraph const& graph);
 	void StartGraphExecution(
 		Backend::GraphExecution& graph_execution,
 		execution::GraphCompletion const& completion
+	);
+	void StartSchedulerExecution(
+		Backend::Scheduler const& scheduler,
+		execution::SchedulerCompletion const& completion
+	);
+	void StartDeferredDestroy(
+		Backend::Scheduler const& scheduler,
+		execution::DeferredDestroy const& deferred_destroy
+	);
+	void StartMapResource(
+		Backend::Scheduler const& scheduler,
+		Backend::Resource& resource,
+		execution::ResourceMapRequest const& request
+	);
+	void StartUnmapResource(
+		Backend::Scheduler const& scheduler,
+		Backend::Resource& resource,
+		execution::ResourceUnmapRequest const& request
 	);
 }

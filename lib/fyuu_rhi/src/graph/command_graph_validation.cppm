@@ -121,9 +121,35 @@ namespace fyuu_rhi::execution {
 		throw std::invalid_argument(message);
 	}
 
+	void ValidateTextureRegion(TextureRegion const& region, char const* message) {
+		if (region.width == 0u || region.height == 0u || region.depth == 0u ||
+			region.array_layer_count == 0u) {
+			throw std::invalid_argument(message);
+		}
+	}
+
+	void ValidateTextureDataLayout(TextureDataLayout const& layout, char const* message) {
+		if (layout.bytes_per_row == 0u || layout.rows_per_image == 0u) {
+			throw std::invalid_argument(message);
+		}
+	}
+
 	struct ValidateGraphCommand {
 		CommandGraphDescriptor const& descriptor;
 		GraphNodeDescriptor const& node;
+
+		void ValidateCopyResources(GraphResourceID source, GraphResourceID destination) const {
+			ValidateNodeCapability(node, GraphNodeFlagBits::Copy,
+				"Copy command requires a copy node");
+			ValidateResourceID(descriptor, source);
+			ValidateResourceID(descriptor, destination);
+			ValidateResourceAccess(node, source,
+				GraphAccessFlagBits::Read | GraphAccessFlagBits::CopySource,
+				"Copy source is missing its read copy-source access");
+			ValidateResourceAccess(node, destination,
+				GraphAccessFlagBits::Write | GraphAccessFlagBits::CopyDestination,
+				"Copy destination is missing its write copy-destination access");
+		}
 
 		void operator()(BeginRenderingCommand const& command) const {
 			ValidateNodeCapability(node, GraphNodeFlagBits::Graphics,
@@ -247,19 +273,41 @@ namespace fyuu_rhi::execution {
 		}
 
 		void operator()(CopyBufferCommand const& command) const {
-			ValidateNodeCapability(node, GraphNodeFlagBits::Copy,
-				"CopyBuffer requires a copy node");
-			ValidateResourceID(descriptor, command.source);
-			ValidateResourceID(descriptor, command.destination);
+			ValidateCopyResources(command.source, command.destination);
 			if (command.size == 0u) {
 				throw std::invalid_argument("CopyBuffer size must be non-zero");
 			}
-			ValidateResourceAccess(node, command.source,
-				GraphAccessFlagBits::Read | GraphAccessFlagBits::CopySource,
-				"Copy source is missing its read copy-source access");
-			ValidateResourceAccess(node, command.destination,
-				GraphAccessFlagBits::Write | GraphAccessFlagBits::CopyDestination,
-				"Copy destination is missing its write copy-destination access");
+		}
+
+		void operator()(CopyBufferToTextureCommand const& command) const {
+			ValidateCopyResources(command.source, command.destination);
+			ValidateTextureDataLayout(command.source_layout,
+				"CopyBufferToTexture contains an invalid buffer layout");
+			ValidateTextureRegion(command.destination_region,
+				"CopyBufferToTexture contains an invalid texture region");
+		}
+
+		void operator()(CopyTextureToBufferCommand const& command) const {
+			ValidateCopyResources(command.source, command.destination);
+			ValidateTextureRegion(command.source_region,
+				"CopyTextureToBuffer contains an invalid texture region");
+			ValidateTextureDataLayout(command.destination_layout,
+				"CopyTextureToBuffer contains an invalid buffer layout");
+		}
+
+		void operator()(CopyTextureCommand const& command) const {
+			ValidateCopyResources(command.source, command.destination);
+			ValidateTextureRegion(command.source_region,
+				"CopyTexture contains an invalid source region");
+			ValidateTextureRegion(command.destination_region,
+				"CopyTexture contains an invalid destination region");
+			if (command.source_region.width != command.destination_region.width ||
+				command.source_region.height != command.destination_region.height ||
+				command.source_region.depth != command.destination_region.depth ||
+				command.source_region.array_layer_count !=
+				command.destination_region.array_layer_count) {
+				throw std::invalid_argument("CopyTexture source and destination extents differ");
+			}
 		}
 
 		void operator()(PresentCommand const& command) const {

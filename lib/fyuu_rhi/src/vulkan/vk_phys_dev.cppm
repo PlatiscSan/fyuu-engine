@@ -207,7 +207,8 @@ namespace fyuu_rhi::vulkan {
 
 		auto&& [instance, phys_dev_impl] = phys_dev;
 
-		std::vector<vk::ExtensionProperties> extension_properties = phys_dev_impl->enumerateDeviceExtensionProperties();
+		std::vector<vk::ExtensionProperties> extension_properties =
+			phys_dev_impl->enumerateDeviceExtensionProperties(nullptr, instance.dispatcher);
 		std::unordered_set<std::string_view> device_extensions;
 		for (auto const& extension_property : extension_properties) {
 			device_extensions.insert(extension_property.extensionName);

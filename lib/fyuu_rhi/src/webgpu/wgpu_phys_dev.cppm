@@ -100,9 +100,15 @@ namespace fyuu_rhi::webgpu {
 		desc.SetUncapturedErrorCallback(
 			OnUncapturedError
 		);
+		auto device = adapter.CreateDevice(&desc);
+		if (!device) {
+			throw std::runtime_error(
+				"CreateDevice() failed; verify that the selected WebGPU backend runtime is installed"
+			);
+		}
 
 		return {
-			adapter.CreateDevice(&desc),
+			device,
 			adapter,
 			std::make_shared<LogicalDevice::PresentationCache>(),
 			execution::CompletionService::Instance()

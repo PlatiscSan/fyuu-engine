@@ -1,6 +1,8 @@
 module;
 #include <version>
 #if !defined(__cpp_lib_modules)
+#include <algorithm>
+#include <cmath>
 #include <stdexcept>
 #include <memory>
 #include <random>
@@ -190,7 +192,7 @@ namespace fyuu_rhi::vulkan {
 		options.max_copy = 3u;
 
 		// high, medium, low
-		static constexpr std::array priorities = { 1.00f, 0.33f, 0.67f };
+		static constexpr std::array priorities = { 1.00f, 0.67f, 0.33f };
 
 		options.graphics_priorities = priorities;
 		options.compute_priorities = priorities;
@@ -299,30 +301,32 @@ namespace fyuu_rhi::vulkan {
 
 		auto& queue_set = m_queue_sets.at(type);
 		auto const& priorities = queue_set->priorities;
-		std::vector<std::uint32_t> candidates;
-
-		auto length = static_cast<std::uint32_t>(priorities.size());
+		float requested_priority;
 		switch (priority) {
 		case QueuePriority::Low:
-			for (std::uint32_t i = 0; i < length; ++i)
-				if (priorities[i] <= 0.33f) candidates.emplace_back(i);
+			requested_priority = 0.0f;
 			break;
 		case QueuePriority::Medium:
-			for (std::uint32_t i = 0; i < length; ++i)
-				if (priorities[i] > 0.33f && priorities[i] <= 0.67f) candidates.emplace_back(i);
+			requested_priority = 0.5f;
 			break;
 		case QueuePriority::High:
 		default:
-			for (std::uint32_t i = 0; i < length; ++i)
-				if (priorities[i] > 0.67f) candidates.emplace_back(i);
+			requested_priority = 1.0f;
 			break;
 		}
-
-		if (candidates.empty())
-			throw std::runtime_error("No queue satisfies the priorities");
+		std::vector<std::pair<float, std::uint32_t>> candidates;
+		candidates.reserve(priorities.size());
+		for (std::size_t index = 0u; index < priorities.size(); ++index) {
+			candidates.emplace_back(
+				std::abs(priorities[index] - requested_priority),
+				static_cast<std::uint32_t>(index)
+			);
+		}
+		std::ranges::sort(candidates);
 
 		std::unique_lock<std::mutex> lock(queue_set->allocated_queue_mutex);
-		for (std::uint32_t index : candidates) {
+		for (auto const& [distance, index] : candidates) {
+			(void)distance;
 			auto& allocated_queue = queue_set->allocated_queue;
 			if (allocated_queue.find(index) == allocated_queue.end()) {
 				allocated_queue.insert(index);

@@ -1,6 +1,7 @@
 module;
 #include <version>
 #if !defined(__cpp_lib_modules)
+#include <cstddef>
 #include <cstdint>
 #endif // !defined(__cpp_lib_modules)
 
@@ -160,5 +161,43 @@ namespace fyuu_rhi {
 	};
 
 	export using ResourceFlags = plastic::concurrency::AtomicFlags<ResourceFlagBits>;
+
+	export enum class ResourceMapFlagBits : std::uint8_t {
+		Read,
+		Write,
+		Count
+	};
+
+	export using ResourceMapFlags = plastic::concurrency::AtomicFlags<ResourceMapFlagBits>;
+
+	export struct ResourceDataRange {
+		std::size_t offset = 0u;
+		std::size_t size = 0u;
+	};
+
+	export struct ResourceTextureExtent {
+		std::uint32_t width = 0u;
+		std::uint32_t height = 0u;
+		std::uint32_t depth_or_array_layers = 0u;
+		std::uint32_t mip_levels = 0u;
+	};
+
+	export struct TextureDataLayout {
+		std::size_t offset = 0u;
+		std::uint32_t bytes_per_row = 0u;
+		std::uint32_t rows_per_image = 0u;
+	};
+
+	export struct TextureRegion {
+		std::uint32_t mip_level = 0u;
+		std::uint32_t base_array_layer = 0u;
+		std::uint32_t array_layer_count = 1u;
+		std::uint32_t offset_x = 0u;
+		std::uint32_t offset_y = 0u;
+		std::uint32_t offset_z = 0u;
+		std::uint32_t width = 0u;
+		std::uint32_t height = 0u;
+		std::uint32_t depth = 1u;
+	};
 
 }

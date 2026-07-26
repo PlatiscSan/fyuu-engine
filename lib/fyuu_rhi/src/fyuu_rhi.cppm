@@ -23,7 +23,11 @@ import :opengl_traits;
 #endif // defined(__APPLE__)
 import :webgpu_traits;
 
-import :resource;
+export import :resource_types;
+export import :resource;
+export import :resource_mapping;
+export import :resource_retirement;
+export import :resource_transfer;
 import :view;
 import :sampler;
 export import :scheduler_types;
@@ -31,7 +35,7 @@ export import :scheduler;
 export import :command_graph;
 export import :pipeline_types;
 export import :pipeline;
-import :logical_device;
+export import :logical_device;
 import :physical_device;
 import :instance;
 

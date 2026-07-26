@@ -2,6 +2,7 @@ module;
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <array>
+#include <stdexcept>
 #endif // !defined(__cpp_lib_modules)
 #if defined(_WIN32)
 #include <dxgi1_3.h>
@@ -30,13 +31,29 @@ namespace {
 		return Type::IntegratedGPU;
 	}
 
-	Microsoft::WRL::ComPtr<ID3D12CommandSignature> CreateCommandSignature(ID3D12Device* device, D3D12_INDIRECT_ARGUMENT_TYPE argument_type) {
+	UINT CommandSignatureStride(D3D12_INDIRECT_ARGUMENT_TYPE argument_type) {
+		switch (argument_type) {
+		case D3D12_INDIRECT_ARGUMENT_TYPE_DRAW:
+			return sizeof(D3D12_DRAW_ARGUMENTS);
+		case D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED:
+			return sizeof(D3D12_DRAW_INDEXED_ARGUMENTS);
+		case D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH:
+			return sizeof(D3D12_DISPATCH_ARGUMENTS);
+		default:
+			throw std::invalid_argument("Unsupported D3D12 command signature argument type");
+		}
+	}
+
+	Microsoft::WRL::ComPtr<ID3D12CommandSignature> CreateCommandSignature(
+		ID3D12Device* device,
+		D3D12_INDIRECT_ARGUMENT_TYPE argument_type
+	) {
 		Microsoft::WRL::ComPtr<ID3D12CommandSignature> cmd_sgn;
 		std::array argument_descs = {
 			D3D12_INDIRECT_ARGUMENT_DESC{.Type = argument_type }
 		};
 		D3D12_COMMAND_SIGNATURE_DESC signature{
-			.ByteStride = sizeof(D3D12_DRAW_ARGUMENTS),
+			.ByteStride = CommandSignatureStride(argument_type),
 			.NumArgumentDescs = static_cast<UINT>(argument_descs.size()),
 			.pArgumentDescs = argument_descs.data(),
 			.NodeMask = 0u

@@ -77,41 +77,20 @@ namespace {
 	using namespace fyuu_rhi::pipeline;
 	using namespace fyuu_rhi::opengl;
 
-	GLbitfield ExtractBufferFlags(ResourceFlags const& flags) noexcept {
+	GLbitfield ExtractBufferStorageFlags(ResourceFlags const& flags) noexcept {
 		GLbitfield gl_flags = 0;
-		if (flags.Test(ResourceFlagBits::CopySRC)) {
-			gl_flags |= GL_COPY_READ_BUFFER;
+		if (flags.Test(ResourceFlagBits::HostVisible)) {
+			gl_flags |= GL_MAP_WRITE_BIT | GL_DYNAMIC_STORAGE_BIT;
 		}
-		if (flags.Test(ResourceFlagBits::CopyDST)) {
-			gl_flags |= GL_COPY_WRITE_BUFFER;
-		}
-		if (flags.Test(ResourceFlagBits::UniformTexelBuffer)) {
-			gl_flags |= GL_TEXTURE_BUFFER;
-		}
-		if (flags.Test(ResourceFlagBits::StorageTexelBuffer)) {
-			gl_flags |= GL_TEXTURE_BUFFER;
-		}
-		if (flags.Test(ResourceFlagBits::UniformBuffer)) {
-			gl_flags |= GL_UNIFORM_BUFFER;
-		}
-		if (flags.Test(ResourceFlagBits::StorageBuffer)) {
-			gl_flags |= GL_SHADER_STORAGE_BUFFER;
-		}
-		if (flags.Test(ResourceFlagBits::IndexBuffer)) {
-			gl_flags |= GL_ELEMENT_ARRAY_BUFFER;
-		}
-		if (flags.Test(ResourceFlagBits::VertexBuffer)) {
-			gl_flags |= GL_ARRAY_BUFFER;
-		}
-		if (flags.Test(ResourceFlagBits::IndirectBuffer)) {
-			gl_flags |= GL_DRAW_INDIRECT_BUFFER;
+		if (flags.Test(ResourceFlagBits::DeviceReadback)) {
+			gl_flags |= GL_MAP_READ_BIT;
 		}
 		return gl_flags;
 	}
 
 	GLenum ExtractTextureTarget(ResourceFlags const& flags, std::size_t depth_arr_layers, GLsizei sample_cnt) {
 		
-		bool is_conflicting = flags.TestSingleInRange(ResourceFlagBits::Texture1D, ResourceFlagBits::Texture3D);
+		bool is_conflicting = flags.TestMultipleInRange(ResourceFlagBits::Texture1D, ResourceFlagBits::Texture3D);
 		if (is_conflicting) {
 			throw std::invalid_argument("Texture1D Texture2D or Texture3D are set simultaneously");
 		}
@@ -161,7 +140,7 @@ namespace {
 	}
 
 	GLsizei ExtractSampleCount(ResourceFlags const& flags) {
-		bool is_conflicting = flags.TestSingleInRange(ResourceFlagBits::Sample1, ResourceFlagBits::Sample64);
+		bool is_conflicting = flags.TestMultipleInRange(ResourceFlagBits::Sample1, ResourceFlagBits::Sample64);
 		if (is_conflicting) {
 			throw std::invalid_argument("Only one sample count can be set");
 		}
@@ -177,7 +156,7 @@ namespace {
 
 	GLenum ExtractInternalFormat(ResourceFlags const& flags) {
 
-		bool is_conflicting = flags.TestSingleInRange(ResourceFlagBits::R8Unorm, ResourceFlagBits::Bc7UnormSrgb);
+		bool is_conflicting = flags.TestMultipleInRange(ResourceFlagBits::R8Unorm, ResourceFlagBits::Bc7UnormSrgb);
 		if (is_conflicting) {
 			throw std::invalid_argument("Only one format can be set");
 		}
@@ -271,7 +250,7 @@ namespace {
 
 	GLenum ExtractTextureViewTarget(ResourceFlags const& flags) {
 
-		bool is_conflicting = flags.TestSingleInRange(ResourceFlagBits::TextureView1D, ResourceFlagBits::TextureView3D);
+		bool is_conflicting = flags.TestMultipleInRange(ResourceFlagBits::TextureView1D, ResourceFlagBits::TextureView3D);
 		if (is_conflicting) {
 			throw std::invalid_argument("Only one texture view type can be set");
 		}
@@ -1089,7 +1068,7 @@ namespace fyuu_rhi::opengl {
 	Backend::Resource Backend::CreateBuffer(Backend::LogicalDevice const& ld, std::size_t size_in_bytes, ResourceFlags const& flags) {
 
 		GLuint buf = 0u;
-		GLbitfield buffer_flags = ExtractBufferFlags(flags);
+		GLbitfield buffer_flags = ExtractBufferStorageFlags(flags);
 
 		if (GLAD_GL_ARB_direct_state_access) {
 			// modern OpenGL
@@ -1119,28 +1098,7 @@ namespace fyuu_rhi::opengl {
 #endif // defined(NDEBUG)
 			}
 
-			GLenum bind_target = GL_COPY_READ_BUFFER;
-			if (buffer_flags & GL_ARRAY_BUFFER) {
-				bind_target = GL_ARRAY_BUFFER;
-			}
-			else if (buffer_flags & GL_ELEMENT_ARRAY_BUFFER) {
-				bind_target = GL_ELEMENT_ARRAY_BUFFER;
-			}
-			else if (buffer_flags & GL_UNIFORM_BUFFER) {
-				bind_target = GL_UNIFORM_BUFFER;
-			}
-			else if (buffer_flags & GL_SHADER_STORAGE_BUFFER) {
-				bind_target = GL_SHADER_STORAGE_BUFFER;
-			}
-			else if (buffer_flags & GL_TEXTURE_BUFFER) {
-				bind_target = GL_TEXTURE_BUFFER;
-			}
-			else if (buffer_flags & GL_DRAW_INDIRECT_BUFFER) {
-				bind_target = GL_DRAW_INDIRECT_BUFFER;
-			}
-			else {
-				bind_target = GL_COPY_WRITE_BUFFER;
-			}
+			GLenum bind_target = GL_COPY_WRITE_BUFFER;
 
 			glBindBuffer(bind_target, buf);
 			if (GLAD_GL_ARB_buffer_storage) {
@@ -1159,6 +1117,7 @@ namespace fyuu_rhi::opengl {
 			glBindBuffer(bind_target, 0);
 
 		}
+		glFlush();
 
 		return Backend::GLResource(buf, Backend::GLResource::Type::Buffer, size_in_bytes);
 
@@ -1314,11 +1273,11 @@ namespace fyuu_rhi::opengl {
 		}
 
 		glBindTexture(target, 0);
+		glFlush();
 
 		return Backend::GLResource(
 			tex, target, internal_format, static_cast<std::uint32_t>(width),
-			static_cast<std::uint32_t>(height), static_cast<std::uint32_t>(depth_arr_layers),
-			static_cast<std::uint32_t>(mip_lvl_cnt), static_cast<std::uint32_t>(sample_cnt)
+			static_cast<std::uint32_t>(height)
 		);
 
 	}
@@ -1355,13 +1314,9 @@ namespace fyuu_rhi::opengl {
 			static_cast<GLuint>(base_arr_layer), static_cast<GLuint>(arr_layer_cnt)
 		);
 
-		return {
-			Backend::GLTextureView(
-				view, view_target, internal_format,
-				static_cast<std::uint32_t>(base_mip_lvl), static_cast<std::uint32_t>(mip_lvl_cnt),
-				static_cast<std::uint32_t>(base_arr_layer), static_cast<std::uint32_t>(arr_layer_cnt)
-			)
-		};
+		return Backend::View(
+			Backend::GLTextureView(view, view_target, internal_format)
+		);
 			
 	}
 
@@ -1400,14 +1355,14 @@ namespace fyuu_rhi::opengl {
 			}
 			glBindTexture(target, 0u);
 		}
-		return {
+		return Backend::View(
 			Backend::GLBufferView(
 				view,
 				GLAD_GL_ARB_texture_buffer_range
 					? std::nullopt
 					: std::optional(Backend::GLBufferView::Range{ offset, range })
 			)
-		};
+		);
 
 	}
 
@@ -1719,10 +1674,9 @@ namespace fyuu_rhi::opengl {
 	}
 
 	Backend::CommandGraph Backend::CreateCommandGraph(
-		execution::CommandGraphDescriptor const& descriptor,
-		execution::NativeCommandGraphBindings<Backend> const& bindings
+		execution::CommandGraphDescriptor const& descriptor
 	) {
-		return execution::MakeCommandGraph<Backend>(descriptor, bindings);
+		return execution::MakeCommandGraph<Backend>(descriptor);
 	}
 
 }
