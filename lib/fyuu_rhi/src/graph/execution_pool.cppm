@@ -4,6 +4,7 @@ module;
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <type_traits>
 #include <utility>
 #endif // !defined(__cpp_lib_modules)
 
@@ -25,10 +26,6 @@ namespace fyuu_rhi::execution {
 			std::deque<Slot> slots;
 			std::mutex mutex;
 		};
-
-		static void NoReset(Value&) noexcept {
-
-		}
 
 		std::shared_ptr<State> m_state = std::make_shared<State>();
 
@@ -79,12 +76,14 @@ namespace fyuu_rhi::execution {
 			}
 	};
 
-		template <class Create, class Reset>
-		[[nodiscard]] Lease Acquire(Create const& create, Reset const& reset) {
+		template <class Create, class Reset = std::nullptr_t>
+		[[nodiscard]] Lease Acquire(Create const& create, Reset const& reset = nullptr) {
 			std::unique_lock<std::mutex> lock(m_state->mutex);
 			for (auto& slot : m_state->slots) {
 				if (!slot.acquired) {
-					reset(slot.value);
+					if constexpr (!std::is_same_v<Reset, std::nullptr_t>) {
+						reset(slot.value);
+					}
 					slot.acquired = true;
 					return Lease(m_state, &slot);
 				}
@@ -95,11 +94,6 @@ namespace fyuu_rhi::execution {
 				.acquired = true
 			});
 			return Lease(m_state, &m_state->slots.back());
-		}
-
-		template <class Create>
-		[[nodiscard]] Lease Acquire(Create const& create) {
-			return Acquire(create, NoReset);
 		}
 	};
 

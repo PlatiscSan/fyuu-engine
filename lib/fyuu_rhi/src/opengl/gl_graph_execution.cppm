@@ -322,10 +322,6 @@ namespace {
 		return nullptr;
 	}
 
-	void IgnoreCompletion(void*) noexcept {
-
-	}
-
 	void CompleteMapError(void* operation, std::exception_ptr const& error) noexcept {
 		auto const& map = *static_cast<OpenGLMapOperation const*>(operation);
 		map.request->completion.SetError(map.request->completion.operation, error);
@@ -1345,9 +1341,9 @@ namespace fyuu_rhi::opengl {
 			.Execute = ExecuteMapResource,
 			.completion = {
 				.operation = operation.get(),
-				.SetValue = IgnoreCompletion,
+				.SetValue = nullptr,
 				.SetError = CompleteMapError,
-				.SetStopped = IgnoreCompletion
+				.SetStopped = nullptr
 			},
 			.keep_alive = operation
 		});
@@ -1458,7 +1454,9 @@ namespace fyuu_rhi::opengl {
 				else if (stop_token.stop_requested()) {
 					for (auto& pending : self->pending_completions) {
 						glDeleteSync(pending.sync);
-						pending.completion.SetStopped(pending.completion.operation);
+						if (pending.completion.SetStopped) {
+							pending.completion.SetStopped(pending.completion.operation);
+						}
 					}
 					self->pending_completions.clear();
 					break;
@@ -1480,7 +1478,9 @@ namespace fyuu_rhi::opengl {
 							keep_alive = submission->keep_alive
 						]() noexcept {
 							(void)keep_alive;
-							completion.SetValue(completion.operation);
+							if (completion.SetValue) {
+								completion.SetValue(completion.operation);
+							}
 						};
 						self->impl.completion_service->Enqueue(PollCompleted, CompleteValue);
 					}
@@ -1530,7 +1530,9 @@ namespace fyuu_rhi::opengl {
 						keep_alive = pending.keep_alive
 					]() noexcept {
 						(void)keep_alive;
-						completion.SetValue(completion.operation);
+						if (completion.SetValue) {
+							completion.SetValue(completion.operation);
+						}
 					};
 					self->impl.completion_service->Enqueue(PollCompleted, CompleteValue);
 				}

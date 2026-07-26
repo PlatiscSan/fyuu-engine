@@ -72,10 +72,6 @@ namespace fyuu_rhi::shader {
 		SlangPipelineInterface m_interface;
 		std::string m_reflection_json;
 
-		static Slang::ComPtr<slang::IGlobalSession> GlobalSession() {
-			return SlangGlobalSession();
-		}
-
 		static std::string Diagnostics(slang::IBlob* blob) {
 			if (!blob || !blob->getBufferPointer() || blob->getBufferSize() == 0) {
 				return {};
@@ -135,7 +131,7 @@ namespace fyuu_rhi::shader {
 			boost::hash2::xxhash_64 hash;
 			HashString(hash, "fyuu-rhi-slang-program");
 			hash.update(&CACHE_SCHEMA_VERSION, sizeof(CACHE_SCHEMA_VERSION));
-			HashString(hash, GlobalSession()->getBuildTagString());
+			HashString(hash, SlangGlobalSession()->getBuildTagString());
 			HashString(hash, cache_tag);
 			hash.update(&target.format, sizeof(target.format));
 			hash.update(&target.profile, sizeof(target.profile));
@@ -245,7 +241,7 @@ namespace fyuu_rhi::shader {
 				: SLANG_MATRIX_LAYOUT_COLUMN_MAJOR;
 
 			Slang::ComPtr<slang::ISession> created;
-			auto result = GlobalSession()->createSession(session_desc, created.writeRef());
+			auto result = SlangGlobalSession()->createSession(session_desc, created.writeRef());
 			Check(result, nullptr, "Creating Slang session");
 
 			std::unique_lock lock(mutex);
@@ -604,7 +600,7 @@ namespace fyuu_rhi::shader {
 				if (
 					manifest.at("schema").get<std::uint32_t>() != CACHE_SCHEMA_VERSION ||
 					manifest.at("key").get<std::string>() != key ||
-					manifest.at("slang").get<std::string>() != GlobalSession()->getBuildTagString() ||
+					manifest.at("slang").get<std::string>() != SlangGlobalSession()->getBuildTagString() ||
 					!ValidateDependencies(manifest)
 				) {
 					return false;
@@ -704,7 +700,7 @@ namespace fyuu_rhi::shader {
 				nlohmann::json manifest{
 					{ "schema", CACHE_SCHEMA_VERSION },
 					{ "key", key },
-					{ "slang", GlobalSession()->getBuildTagString() },
+					{ "slang", SlangGlobalSession()->getBuildTagString() },
 					{ "interface", "interface.json" },
 					{ "reflection", "reflection.json" },
 					{ "reflection_size", m_reflection_json.size() },

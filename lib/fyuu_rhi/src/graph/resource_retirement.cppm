@@ -9,7 +9,7 @@ module;
 #include <utility>
 #endif // !defined(__cpp_lib_modules)
 
-export module fyuu_rhi:resource_retirement;
+module fyuu_rhi:resource_retirement;
 #if defined(__cpp_lib_modules)
 import std;
 #endif // defined(__cpp_lib_modules)
@@ -98,7 +98,7 @@ namespace fyuu_rhi::execution {
 		}
 	};
 
-	export template <class Backend> void Retire(
+	template <class Backend> void Retire(
 		Scheduler<Backend> const& scheduler,
 		Resource<Backend>&& resource
 	) {

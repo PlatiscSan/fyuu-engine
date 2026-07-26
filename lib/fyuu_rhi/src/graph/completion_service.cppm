@@ -10,6 +10,7 @@ module;
 #include <mutex>
 #include <stop_token>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #endif // !defined(__cpp_lib_modules)
 #include <boost/smart_ptr/intrusive_ptr.hpp>
@@ -78,7 +79,9 @@ namespace fyuu_rhi::execution {
 					current.pop_front();
 					bool completed = task.Poll();
 					if (completed) {
-						task.Complete();
+						if (task.Complete) {
+							task.Complete();
+						}
 					}
 					else {
 						pending.emplace_back(std::move(task));
@@ -120,17 +123,20 @@ namespace fyuu_rhi::execution {
 			return service;
 		}
 
-		template <class Poll, class Complete>
-		void Enqueue(Poll&& poll, Complete&& complete) {
+		template <class Poll, class Complete = std::nullptr_t>
+		void Enqueue(Poll&& poll, Complete&& complete = nullptr) {
 			auto tasks = m_tasks.load(std::memory_order::acquire);
 			auto mutex = m_mutex.load(std::memory_order::acquire);
 			auto condition = m_condition.load(std::memory_order::acquire);
+			Task task{
+				.Poll = std::forward<Poll>(poll)
+			};
+			if constexpr (!std::is_same_v<Complete, std::nullptr_t>) {
+				task.Complete = std::forward<Complete>(complete);
+			}
 			{
 				std::unique_lock<std::mutex> lock(*mutex);
-				tasks->push_back({
-					.Poll = std::forward<Poll>(poll),
-					.Complete = std::forward<Complete>(complete)
-				});
+				tasks->emplace_back(std::move(task));
 			}
 			condition->notify_one();
 		}

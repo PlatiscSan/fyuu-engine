@@ -210,7 +210,7 @@ namespace fyuu_rhi::execution {
 		}
 	};
 
-	export using GraphCompletion = SchedulerCompletion;
+	using GraphCompletion = SchedulerCompletion;
 
 	template <class Backend> class CommandGraphSender;
 

@@ -27,7 +27,7 @@ namespace fyuu_rhi::execution {
 		float priority = 0.5f;
 	};
 
-	export struct SchedulerCompletion {
+	struct SchedulerCompletion {
 		void* operation;
 		void (*SetValue)(void*) noexcept;
 		void (*SetError)(void*, std::exception_ptr const&) noexcept;

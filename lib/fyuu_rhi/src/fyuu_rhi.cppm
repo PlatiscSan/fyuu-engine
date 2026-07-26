@@ -26,7 +26,6 @@ import :webgpu_traits;
 export import :resource_types;
 export import :resource;
 export import :resource_mapping;
-export import :resource_retirement;
 export import :resource_transfer;
 import :view;
 import :sampler;
