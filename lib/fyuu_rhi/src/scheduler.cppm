@@ -102,43 +102,43 @@ namespace fyuu_rhi::execution {
 		}
 
 		static void CompleteValue(void* operation) noexcept {
-			auto& self = *static_cast<ScheduleOperationState*>(operation);
-			if (self.m_stop_requested.load(std::memory_order::acquire)) {
+			auto self = static_cast<ScheduleOperationState*>(operation);
+			if (self->m_stop_requested.load(std::memory_order::acquire)) {
 				CompleteStopped(operation);
 				return;
 			}
-			if (self.m_completed.exchange(true, std::memory_order::acq_rel)) {
+			if (self->m_completed.exchange(true, std::memory_order::acq_rel)) {
 				return;
 			}
 #if defined(__cpp_lib_senders) && __cpp_lib_senders >= 202406L
-			std::execution::set_value(std::move(self.m_receiver));
+			std::execution::set_value(std::move(self->m_receiver));
 #else
-			std::move(self.m_receiver).set_value();
+			std::move(self->m_receiver).set_value();
 #endif
 		}
 
 		static void CompleteError(void* operation, std::exception_ptr const& error) noexcept {
-			auto& self = *static_cast<ScheduleOperationState*>(operation);
-			self.m_scheduler.m_failure_state->Fail(error);
-			if (self.m_completed.exchange(true, std::memory_order::acq_rel)) {
+			auto self = static_cast<ScheduleOperationState*>(operation);
+			self->m_scheduler.m_failure_state->Fail(error);
+			if (self->m_completed.exchange(true, std::memory_order::acq_rel)) {
 				return;
 			}
 #if defined(__cpp_lib_senders) && __cpp_lib_senders >= 202406L
-			std::execution::set_error(std::move(self.m_receiver), error);
+			std::execution::set_error(std::move(self->m_receiver), error);
 #else
-			std::move(self.m_receiver).set_error(error);
+			std::move(self->m_receiver).set_error(error);
 #endif
 		}
 
 		static void CompleteStopped(void* operation) noexcept {
-			auto& self = *static_cast<ScheduleOperationState*>(operation);
-			if (self.m_completed.exchange(true, std::memory_order::acq_rel)) {
+			auto self = static_cast<ScheduleOperationState*>(operation);
+			if (self->m_completed.exchange(true, std::memory_order::acq_rel)) {
 				return;
 			}
 #if defined(__cpp_lib_senders) && __cpp_lib_senders >= 202406L
-			std::execution::set_stopped(std::move(self.m_receiver));
+			std::execution::set_stopped(std::move(self->m_receiver));
 #else
-			std::move(self.m_receiver).set_stopped();
+			std::move(self->m_receiver).set_stopped();
 #endif
 		}
 

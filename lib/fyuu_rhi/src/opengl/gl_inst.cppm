@@ -71,7 +71,7 @@ namespace {
 			1,
 			nullptr,
 			nullptr,
-			GetModuleHandleW(nullptr),
+			GetModuleHandle(nullptr),
 			nullptr
 		);
 		if (!s_thread_window) {

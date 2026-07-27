@@ -733,7 +733,7 @@ namespace fyuu_rhi::webgpu {
 				return false;
 			}
 			if (status == wgpu::WaitStatus::Success) {
-				return completed->load(std::memory_order_acquire);
+				return completed->load(std::memory_order::acquire);
 			}
 			if (!completed->exchange(true, std::memory_order::acq_rel)) {
 				std::exception_ptr error;
