@@ -245,10 +245,10 @@ namespace {
 	}
 
 	GLsync ExecuteDeferredDestroy(void* operation_state) noexcept {
-		auto const& deferred_destroy = *static_cast<fyuu_rhi::execution::DeferredDestroy const*>(
+		auto const* deferred_destroy = static_cast<fyuu_rhi::execution::DeferredDestroy const*>(
 			operation_state
 		);
-		deferred_destroy.Destroy(deferred_destroy.object);
+		deferred_destroy->Destroy(deferred_destroy->object);
 		return nullptr;
 	}
 
@@ -258,26 +258,25 @@ namespace {
 	};
 
 	GLsync ExecuteMapResource(void* operation_state) {
-		auto const& operation = *static_cast<OpenGLMapOperation const*>(operation_state);
-		auto const& request = *operation.request;
+		auto const* operation = static_cast<OpenGLMapOperation const*>(operation_state);
 		GLbitfield access = 0u;
-		if (request.read) access |= GL_MAP_READ_BIT;
-		if (request.write) access |= GL_MAP_WRITE_BIT;
+		if (operation->request->read) access |= GL_MAP_READ_BIT;
+		if (operation->request->write) access |= GL_MAP_WRITE_BIT;
 		void* mapped = nullptr;
 		if (GLAD_GL_ARB_direct_state_access) {
 			mapped = glMapNamedBufferRange(
-				operation.resource->impl,
-				request.offset,
-				request.size,
+				operation->resource->impl,
+				operation->request->offset,
+				operation->request->size,
 				access
 			);
 		}
 		else {
-			glBindBuffer(GL_COPY_READ_BUFFER, operation.resource->impl);
+			glBindBuffer(GL_COPY_READ_BUFFER, operation->resource->impl);
 			mapped = glMapBufferRange(
 				GL_COPY_READ_BUFFER,
-				request.offset,
-				request.size,
+				operation->request->offset,
+				operation->request->size,
 				access
 			);
 			glBindBuffer(GL_COPY_READ_BUFFER, 0u);
@@ -286,16 +285,16 @@ namespace {
 			auto error = glGetError();
 			throw std::runtime_error(std::format(
 				"OpenGL buffer mapping failed: object={}, visible={}, offset={}, size={}, access=0x{:x}, error=0x{:x}",
-				operation.resource->impl,
-				glIsBuffer(operation.resource->impl) == GL_TRUE,
-				request.offset,
-				request.size,
+				operation->resource->impl,
+				glIsBuffer(operation->resource->impl) == GL_TRUE,
+				operation->request->offset,
+				operation->request->size,
 				access,
 				error
 			));
 		}
-		request.completion.SetValue(
-			request.completion.operation,
+		operation->request->completion.SetValue(
+			operation->request->completion.operation,
 			static_cast<std::byte*>(mapped)
 		);
 		return nullptr;
@@ -306,13 +305,13 @@ namespace {
 	};
 
 	GLsync ExecuteUnmapResource(void* operation_state) {
-		auto const& operation = *static_cast<OpenGLUnmapOperation const*>(operation_state);
+		auto const* operation = static_cast<OpenGLUnmapOperation const*>(operation_state);
 		GLboolean result;
 		if (GLAD_GL_ARB_direct_state_access) {
-			result = glUnmapNamedBuffer(operation.resource->impl);
+			result = glUnmapNamedBuffer(operation->resource->impl);
 		}
 		else {
-			glBindBuffer(GL_COPY_READ_BUFFER, operation.resource->impl);
+			glBindBuffer(GL_COPY_READ_BUFFER, operation->resource->impl);
 			result = glUnmapBuffer(GL_COPY_READ_BUFFER);
 			glBindBuffer(GL_COPY_READ_BUFFER, 0u);
 		}
@@ -323,8 +322,8 @@ namespace {
 	}
 
 	void CompleteMapError(void* operation, std::exception_ptr const& error) noexcept {
-		auto const& map = *static_cast<OpenGLMapOperation const*>(operation);
-		map.request->completion.SetError(map.request->completion.operation, error);
+		auto const* map = static_cast<OpenGLMapOperation const*>(operation);
+		map->request->completion.SetError(map->request->completion.operation, error);
 	}
 
 	void WaitForPresentationFrame(GLsync& sync) {
@@ -599,8 +598,7 @@ namespace {
 					glDrawBuffers(static_cast<GLsizei>(draw_buffers.size()), draw_buffers.data());
 				}
 				if (command.depth_stencil) {
-					auto const& attachment = *command.depth_stencil;
-					auto const& view = bindings->views[attachment.view.value].get();
+					auto const& view = bindings->views[command.depth_stencil->view.value].get();
 					auto const& texture = std::get<Backend::GLTextureView>(view);
 					AttachView(OpenGLAttachment(texture.format), view);
 				}
@@ -623,18 +621,17 @@ namespace {
 					}
 				}
 				if (command.depth_stencil) {
-					auto const& attachment = *command.depth_stencil;
-					if (!attachment.load_depth && !attachment.load_stencil) {
+					if (!command.depth_stencil->load_depth && !command.depth_stencil->load_stencil) {
 						glClearBufferfi(
-							GL_DEPTH_STENCIL, 0, attachment.clear_depth,
-							static_cast<GLint>(attachment.clear_stencil)
+							GL_DEPTH_STENCIL, 0, command.depth_stencil->clear_depth,
+							static_cast<GLint>(command.depth_stencil->clear_stencil)
 						);
 					}
-					else if (!attachment.load_depth) {
-						glClearBufferfv(GL_DEPTH, 0, &attachment.clear_depth);
+					else if (!command.depth_stencil->load_depth) {
+						glClearBufferfv(GL_DEPTH, 0, &command.depth_stencil->clear_depth);
 					}
-					else if (!attachment.load_stencil) {
-						auto stencil = static_cast<GLint>(attachment.clear_stencil);
+					else if (!command.depth_stencil->load_stencil) {
+						auto stencil = static_cast<GLint>(command.depth_stencil->clear_stencil);
 						glClearBufferiv(GL_STENCIL, 0, &stencil);
 					}
 				}
@@ -1241,12 +1238,12 @@ namespace {
 		};
 
 		GLsync ExecuteOpenGLGraph(void* operation_state) {
-			auto& execution = *static_cast<Backend::GraphExecution*>(operation_state);
-			auto const& bindings = execution.graph->impl->bindings;
-			auto const& snapshot = *static_cast<OpenGLBindingsSnapshot const*>(
-				execution.binding_snapshot.get()
+			auto* execution = static_cast<Backend::GraphExecution*>(operation_state);
+			auto const& bindings = execution->graph->impl->bindings;
+			auto const* snapshot = static_cast<OpenGLBindingsSnapshot const*>(
+				execution->binding_snapshot.get()
 			);
-			if (execution.batches.empty()) {
+			if (execution->batches.empty()) {
 				return nullptr;
 			}
 			GLuint vertex_array = 0u;
@@ -1254,10 +1251,10 @@ namespace {
 			OpenGLCommandRecorder recorder{
 				&bindings,
 				&snapshot,
-				&execution.batches.front().queue->impl
+				&execution->batches.front().queue->impl
 			};
 			recorder.vertex_array = vertex_array;
-			for (auto& batch : execution.batches) {
+			for (auto& batch : execution->batches) {
 				auto const& commands = batch.commands.Get();
 				std::size_t barrier_index = 0u;
 				for (std::size_t index = 0u; index < commands.size(); ++index) {
@@ -1293,15 +1290,14 @@ namespace fyuu_rhi::opengl {
 		Backend::ExecutableGraph const& graph
 	) {
 		Backend::GraphExecution result{ scheduler, graph };
-		auto const& native_graph = *graph->impl;
-		result.binding_snapshot = CaptureBindings(native_graph.bindings);
+		result.binding_snapshot = CaptureBindings(graph->impl->bindings);
 		result.batches.reserve(graph->plan.batches.size());
 		for (auto const& batch_plan : graph->plan.batches) {
 			auto const& queue = scheduler->queues.Select(batch_plan.queue_flags);
 			auto commands = queue->command_pool->Acquire(CreateCommandList, ResetCommandList);
 			std::vector<Backend::GraphExecution::Batch::BarrierPoint> barriers;
 			for (auto node_id : batch_plan.nodes) {
-				auto const& node = native_graph.descriptor.nodes[node_id.value];
+				auto const& node = graph->impl->descriptor.nodes[node_id.value];
 				GLbitfield bits = 0u;
 				for (auto const& access : node.accesses) {
 					bits |= OpenGLBarrierBits(access.flags);

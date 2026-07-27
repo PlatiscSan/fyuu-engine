@@ -1095,11 +1095,10 @@ namespace fyuu_rhi::vulkan {
 		vk::PipelineDepthStencilStateCreateInfo depth_stencil;
 		vk::Format depth_format = vk::Format::eUndefined;
 		if (descriptor.depth_stencil) {
-			auto const& state = *descriptor.depth_stencil;
-			depth_format = ExtractFormat(ResourceFlags(state.format));
+			depth_format = ExtractFormat(ResourceFlags(descriptor.depth_stencil->format));
 			depth_stencil = vk::PipelineDepthStencilStateCreateInfo(
-				{}, state.depth_test_enabled, state.depth_write_enabled, MapPipelineCompareOperation(state.depth_compare),
-				false, state.stencil_enabled, MapPipelineStencilFace(state.stencil_front), MapPipelineStencilFace(state.stencil_back)
+				{}, descriptor.depth_stencil->depth_test_enabled, descriptor.depth_stencil->depth_write_enabled, MapPipelineCompareOperation(descriptor.depth_stencil->depth_compare),
+				false, descriptor.depth_stencil->stencil_enabled, MapPipelineStencilFace(descriptor.depth_stencil->stencil_front), MapPipelineStencilFace(descriptor.depth_stencil->stencil_back)
 			);
 		}
 		std::vector<vk::PipelineColorBlendAttachmentState> blend_attachments;
@@ -1109,14 +1108,13 @@ namespace fyuu_rhi::vulkan {
 			vk::PipelineColorBlendAttachmentState attachment;
 			attachment.colorWriteMask = static_cast<vk::ColorComponentFlags>(static_cast<std::uint8_t>(target_state.write_mask));
 			if (target_state.blend) {
-				auto const& state = *target_state.blend;
 				attachment.blendEnable = true;
-				attachment.srcColorBlendFactor = MapPipelineBlendFactor(state.color.source_factor);
-				attachment.dstColorBlendFactor = MapPipelineBlendFactor(state.color.destination_factor);
-				attachment.colorBlendOp = MapPipelineBlendOperation(state.color.operation);
-				attachment.srcAlphaBlendFactor = MapPipelineBlendFactor(state.alpha.source_factor);
-				attachment.dstAlphaBlendFactor = MapPipelineBlendFactor(state.alpha.destination_factor);
-				attachment.alphaBlendOp = MapPipelineBlendOperation(state.alpha.operation);
+				attachment.srcColorBlendFactor = MapPipelineBlendFactor(target_state.blend->color.source_factor);
+				attachment.dstColorBlendFactor = MapPipelineBlendFactor(target_state.blend->color.destination_factor);
+				attachment.colorBlendOp = MapPipelineBlendOperation(target_state.blend->color.operation);
+				attachment.srcAlphaBlendFactor = MapPipelineBlendFactor(target_state.blend->alpha.source_factor);
+				attachment.dstAlphaBlendFactor = MapPipelineBlendFactor(target_state.blend->alpha.destination_factor);
+				attachment.alphaBlendOp = MapPipelineBlendOperation(target_state.blend->alpha.operation);
 			}
 			blend_attachments.push_back(attachment);
 		}

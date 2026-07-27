@@ -219,15 +219,14 @@ namespace {
 			}
 			std::optional<wgpu::RenderPassDepthStencilAttachment> depth_stencil;
 			if (command.depth_stencil) {
-				auto const& attachment = *command.depth_stencil;
 				depth_stencil = {
-					.view = std::get<wgpu::TextureView>(bindings->views[attachment.view.value].get()),
-					.depthLoadOp = attachment.load_depth ? wgpu::LoadOp::Load : wgpu::LoadOp::Clear,
-					.depthStoreOp = attachment.store_depth ? wgpu::StoreOp::Store : wgpu::StoreOp::Discard,
-					.depthClearValue = attachment.clear_depth,
-					.stencilLoadOp = attachment.load_stencil ? wgpu::LoadOp::Load : wgpu::LoadOp::Clear,
-					.stencilStoreOp = attachment.store_stencil ? wgpu::StoreOp::Store : wgpu::StoreOp::Discard,
-					.stencilClearValue = attachment.clear_stencil
+					.view = std::get<wgpu::TextureView>(bindings->views[command.depth_stencil->view.value].get()),
+					.depthLoadOp = command.depth_stencil->load_depth ? wgpu::LoadOp::Load : wgpu::LoadOp::Clear,
+					.depthStoreOp = command.depth_stencil->store_depth ? wgpu::StoreOp::Store : wgpu::StoreOp::Discard,
+					.depthClearValue = command.depth_stencil->clear_depth,
+					.stencilLoadOp = command.depth_stencil->load_stencil ? wgpu::LoadOp::Load : wgpu::LoadOp::Clear,
+					.stencilStoreOp = command.depth_stencil->store_stencil ? wgpu::StoreOp::Store : wgpu::StoreOp::Discard,
+					.stencilClearValue = command.depth_stencil->clear_stencil
 				};
 			}
 			wgpu::RenderPassDescriptor descriptor{
@@ -534,15 +533,14 @@ namespace fyuu_rhi::webgpu {
 		Backend::ExecutableGraph const& graph
 	) {
 		Backend::GraphExecution result{ scheduler, graph };
-		auto const& native_graph = *graph->impl;
 		result.batches.reserve(graph->plan.batches.size());
 		for (auto const& batch_plan : graph->plan.batches) {
 			auto const& queue = scheduler->queues.Select(batch_plan.queue_flags);
 			auto encoder = queue->device.CreateCommandEncoder();
 			std::vector<Backend::GraphExecution::InFlightPresentation> presentations;
-			WebGPUCommandRecorder recorder{ &native_graph.bindings, &scheduler, encoder, &presentations };
+			WebGPUCommandRecorder recorder{ &graph->impl->bindings, &scheduler, encoder, &presentations };
 			for (auto node_id : batch_plan.nodes) {
-				for (auto const& command : native_graph.descriptor.nodes[node_id.value].commands) {
+				for (auto const& command : graph->impl->descriptor.nodes[node_id.value].commands) {
 					std::visit(recorder, command);
 				}
 			}

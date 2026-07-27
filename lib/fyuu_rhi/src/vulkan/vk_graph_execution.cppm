@@ -165,7 +165,6 @@ namespace {
 	) {
 		auto surface = previous_surface ?
 			*previous_surface : CreatePresentationSurface(scheduler.physical_device, target);
-		auto const& dispatcher = *queue.dispatcher;
 		auto physical_device = *scheduler.physical_device.impl;
 		if (!physical_device.getSurfaceSupportKHR(queue.family, *surface, dispatcher)) {
 			throw std::invalid_argument("Vulkan presentation target is unsupported by the graphics queue");
@@ -499,16 +498,15 @@ namespace {
 			if (!pipeline->compatible_render_pass) {
 				throw std::invalid_argument("Vulkan pipeline is not compatible with traditional render passes");
 			}
-			auto const& command = *pending_rendering;
 			std::vector<vk::AttachmentDescription> attachments;
 			std::vector<vk::AttachmentReference> color_references;
 			std::vector<vk::ImageView> attachment_views;
 			std::vector<vk::ClearValue> clear_values;
-			attachments.reserve(command.colors.size() + (command.depth_stencil ? 1u : 0u));
-			color_references.reserve(command.colors.size());
+			attachments.reserve(pending_rendering->colors.size() + (pending_rendering->depth_stencil ? 1u : 0u));
+			color_references.reserve(pending_rendering->colors.size());
 			attachment_views.reserve(attachments.capacity());
 			clear_values.reserve(attachments.capacity());
-			for (auto const& color : command.colors) {
+			for (auto const& color : pending_rendering->colors) {
 				auto const& view = TextureView(color.view);
 				auto const& resource = std::get<Backend::Resource::Texture>(
 					bindings->resources[color.resource.value].get().impl
@@ -535,28 +533,27 @@ namespace {
 			}
 
 			std::optional<vk::AttachmentReference> depth_reference;
-			if (command.depth_stencil) {
-				auto const& depth = *command.depth_stencil;
-				auto const& view = TextureView(depth.view);
+			if (pending_rendering->depth_stencil) {
+				auto const& view = TextureView(pending_rendering->depth_stencil->view);
 				auto const& resource = std::get<Backend::Resource::Texture>(
-					bindings->resources[depth.resource.value].get().impl
+					bindings->resources[pending_rendering->depth_stencil->resource.value].get().impl
 				);
 				auto index = static_cast<std::uint32_t>(attachments.size());
 				attachments.emplace_back(
 					vk::AttachmentDescriptionFlags{},
 					view.info.format,
 					static_cast<vk::SampleCountFlagBits>(resource.buf_info.samples),
-					depth.load_depth ? vk::AttachmentLoadOp::eLoad : vk::AttachmentLoadOp::eClear,
-					depth.store_depth ? vk::AttachmentStoreOp::eStore : vk::AttachmentStoreOp::eDontCare,
-					depth.load_stencil ? vk::AttachmentLoadOp::eLoad : vk::AttachmentLoadOp::eClear,
-					depth.store_stencil ? vk::AttachmentStoreOp::eStore : vk::AttachmentStoreOp::eDontCare,
+					pending_rendering->depth_stencil->load_depth ? vk::AttachmentLoadOp::eLoad : vk::AttachmentLoadOp::eClear,
+					pending_rendering->depth_stencil->store_depth ? vk::AttachmentStoreOp::eStore : vk::AttachmentStoreOp::eDontCare,
+					pending_rendering->depth_stencil->load_stencil ? vk::AttachmentLoadOp::eLoad : vk::AttachmentLoadOp::eClear,
+					pending_rendering->depth_stencil->store_stencil ? vk::AttachmentStoreOp::eStore : vk::AttachmentStoreOp::eDontCare,
 					vk::ImageLayout::eDepthStencilAttachmentOptimal,
 					vk::ImageLayout::eDepthStencilAttachmentOptimal
 				);
 				depth_reference.emplace(index, vk::ImageLayout::eDepthStencilAttachmentOptimal);
 				attachment_views.emplace_back(*view.impl);
 				vk::ClearValue clear;
-				clear.depthStencil = vk::ClearDepthStencilValue{ depth.clear_depth, depth.clear_stencil };
+				clear.depthStencil = vk::ClearDepthStencilValue{ pending_rendering->depth_stencil->clear_depth, pending_rendering->depth_stencil->clear_stencil };
 				clear_values.emplace_back(clear);
 			}
 
@@ -583,8 +580,8 @@ namespace {
 				{},
 				raw_render_pass,
 				attachment_views,
-				command.width,
-				command.height,
+				pending_rendering->width,
+				pending_rendering->height,
 				1u
 			);
 			auto raw_framebuffer = (*device)->createFramebuffer(
@@ -599,8 +596,8 @@ namespace {
 				raw_render_pass,
 				raw_framebuffer,
 				vk::Rect2D{
-					vk::Offset2D{ command.offset_x, command.offset_y },
-					vk::Extent2D{ command.width, command.height }
+					vk::Offset2D{ pending_rendering->offset_x, pending_rendering->offset_y },
+					vk::Extent2D{ pending_rendering->width, pending_rendering->height }
 				},
 				clear_values
 			);
@@ -765,15 +762,14 @@ namespace {
 			vk::RenderingAttachmentInfo depth;
 			vk::RenderingAttachmentInfo* depth_pointer = nullptr;
 			if (command.depth_stencil) {
-				auto const& attachment = *command.depth_stencil;
-				auto const& view = TextureView(attachment.view);
+				auto const& view = TextureView(command.depth_stencil->view);
 				depth.imageView = *view.impl;
 				depth.imageLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
-				depth.loadOp = attachment.load_depth ? vk::AttachmentLoadOp::eLoad : vk::AttachmentLoadOp::eClear;
-				depth.storeOp = attachment.store_depth ? vk::AttachmentStoreOp::eStore : vk::AttachmentStoreOp::eDontCare;
+				depth.loadOp = command.depth_stencil->load_depth ? vk::AttachmentLoadOp::eLoad : vk::AttachmentLoadOp::eClear;
+				depth.storeOp = command.depth_stencil->store_depth ? vk::AttachmentStoreOp::eStore : vk::AttachmentStoreOp::eDontCare;
 				depth.clearValue.depthStencil = vk::ClearDepthStencilValue{
-					attachment.clear_depth,
-					attachment.clear_stencil
+					command.depth_stencil->clear_depth,
+					command.depth_stencil->clear_stencil
 				};
 				depth_pointer = &depth;
 			}
@@ -1181,11 +1177,10 @@ namespace fyuu_rhi::vulkan {
 		Backend::ExecutableGraph const& graph
 	) {
 		Backend::GraphExecution result{ scheduler, graph };
-		auto const& native_graph = *graph->impl;
-		std::vector<VulkanResourceState> states(native_graph.bindings.resources.size());
+		std::vector<VulkanResourceState> states(graph->impl->bindings.resources.size());
 		auto const& last_users = graph->plan.last_resource_users;
-		for (std::size_t index = 0u; index < native_graph.bindings.resources.size(); ++index) {
-			auto const& resource = native_graph.bindings.resources[index].get();
+		for (std::size_t index = 0u; index < graph->impl->bindings.resources.size(); ++index) {
+			auto const& resource = graph->impl->bindings.resources[index].get();
 			states[index].stages = vk::PipelineStageFlagBits2::eAllCommands;
 			states[index].access = vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite;
 			if (auto texture = std::get_if<Backend::Resource::Texture>(&resource.impl)) {
@@ -1260,7 +1255,7 @@ namespace fyuu_rhi::vulkan {
 			std::vector<vk::SharedFramebuffer> framebuffers;
 			std::vector<Backend::GraphExecution::Batch::PresentationRequest> presentations;
 			VulkanCommandRecorder recorder{
-				&native_graph.bindings,
+				&graph->impl->bindings,
 				command_buffer,
 				&queue->device,
 				&queue->dispatcher,
@@ -1284,7 +1279,7 @@ namespace fyuu_rhi::vulkan {
 					destination.family = destination_queue->family;
 					RecordVulkanBarrier(
 						command_buffer,
-						native_graph.bindings.resources[barrier.resource.value].get(),
+						graph->impl->bindings.resources[barrier.resource.value].get(),
 						source,
 						destination,
 						barrier.destination_range,
@@ -1293,7 +1288,7 @@ namespace fyuu_rhi::vulkan {
 					);
 					states[barrier.resource.value] = destination;
 				}
-				auto const& node = native_graph.descriptor.nodes[node_id.value];
+				auto const& node = graph->impl->descriptor.nodes[node_id.value];
 				for (auto const& access : node.accesses) {
 					auto destination = GetVulkanResourceState(access.flags);
 					destination.family = queue->family;
@@ -1302,7 +1297,7 @@ namespace fyuu_rhi::vulkan {
 						source.layout != destination.layout || source.family != destination.family) {
 						RecordVulkanBarrier(
 							command_buffer,
-							native_graph.bindings.resources[access.resource.value].get(),
+							graph->impl->bindings.resources[access.resource.value].get(),
 							source,
 							destination,
 							access.range,
@@ -1332,7 +1327,7 @@ namespace fyuu_rhi::vulkan {
 					}
 					RecordVulkanBarrier(
 						command_buffer,
-						native_graph.bindings.resources[barrier.resource.value].get(),
+						graph->impl->bindings.resources[barrier.resource.value].get(),
 						source,
 						destination,
 						barrier.source_range,
@@ -1352,7 +1347,7 @@ namespace fyuu_rhi::vulkan {
 					};
 					RecordVulkanBarrier(
 						command_buffer,
-						native_graph.bindings.resources[access.resource.value].get(),
+						graph->impl->bindings.resources[access.resource.value].get(),
 						states[access.resource.value],
 						final,
 						access.range,
@@ -1361,7 +1356,7 @@ namespace fyuu_rhi::vulkan {
 					);
 					states[access.resource.value] = final;
 					if (auto texture = std::get_if<Backend::Resource::Texture>(
-						&native_graph.bindings.resources[access.resource.value].get().impl
+						&graph->impl->bindings.resources[access.resource.value].get().impl
 					)) {
 						texture->curr_layout.store(vk::ImageLayout::eGeneral, std::memory_order_release);
 					}

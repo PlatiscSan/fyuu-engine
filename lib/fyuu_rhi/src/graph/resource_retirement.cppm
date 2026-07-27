@@ -29,18 +29,18 @@ namespace fyuu_rhi::execution {
 		DeferredDestroy m_deferred_destroy;
 
 		static void Destroy(void* operation) noexcept {
-			auto& self = *static_cast<ResourceRetirement*>(operation);
-			self.m_resource.reset();
+			auto* self = static_cast<ResourceRetirement*>(operation);
+			self->m_resource.reset();
 		}
 
 		static void Complete(void* operation) noexcept {
-			auto& self = *static_cast<ResourceRetirement*>(operation);
-			auto ticket = self.m_ticket.lock();
+			auto* self = static_cast<ResourceRetirement*>(operation);
+			auto ticket = self->m_ticket.lock();
 			if (!ticket) {
 				return;
 			}
 			auto keep_alive = ticket->keep_alive;
-			self.m_scheduler.m_submission_coordinator->Complete(ticket);
+			self->m_scheduler.m_submission_coordinator->Complete(ticket);
 			ticket->keep_alive.reset();
 			(void)keep_alive;
 		}
@@ -54,12 +54,12 @@ namespace fyuu_rhi::execution {
 			void* operation,
 			std::shared_ptr<Ticket> const& ticket
 		) noexcept {
-			auto& self = *static_cast<ResourceRetirement*>(operation);
-			self.m_ticket = ticket;
+			auto* self = static_cast<ResourceRetirement*>(operation);
+			self->m_ticket = ticket;
 			try {
 				StartDeferredDestroy(
-					self.m_scheduler.GetImplementation(),
-					self.m_deferred_destroy
+					self->m_scheduler.GetImplementation(),
+					self->m_deferred_destroy
 				);
 			}
 			catch (...) {

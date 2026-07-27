@@ -26,8 +26,8 @@ namespace {
 		void* operation,
 		std::shared_ptr<ResourceSubmissionCoordinator::Ticket> const&
 	) noexcept {
-		auto& value = *static_cast<Operation*>(operation);
-		value.starts->push_back(value.id);
+		auto* value = static_cast<Operation*>(operation);
+		value->starts->push_back(value->id);
 	}
 
 	void Require(bool condition, std::string_view message) {
@@ -181,9 +181,9 @@ namespace {
 		void* operation,
 		std::shared_ptr<ResourceSubmissionCoordinator::Ticket> const& ticket
 	) noexcept {
-		auto& retirement = *static_cast<RetirementOperation*>(operation);
-		*retirement.destroyed = true;
-		retirement.coordinator->Complete(ticket);
+		auto* retirement = static_cast<RetirementOperation*>(operation);
+		*retirement->destroyed = true;
+		retirement->coordinator->Complete(ticket);
 	}
 
 	void RetirementWaitsForResourceUsers() {
@@ -259,10 +259,10 @@ namespace {
 		void* operation,
 		std::shared_ptr<ResourceSubmissionCoordinator::Ticket> const&
 	) noexcept {
-		auto& value = *static_cast<ConcurrentOperation*>(operation);
-		auto active = value.active->fetch_add(1, std::memory_order::acq_rel) + 1;
-		UpdateMaximum(*value.maximum_active, active);
-		value.started.store(true, std::memory_order::release);
+		auto* value = static_cast<ConcurrentOperation*>(operation);
+		auto active = value->active->fetch_add(1, std::memory_order::acq_rel) + 1;
+		UpdateMaximum(*value->maximum_active, active);
+		value->started.store(true, std::memory_order::release);
 	}
 
 	bool WaitUntilStarted(

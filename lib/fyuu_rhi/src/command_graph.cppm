@@ -287,8 +287,8 @@ namespace fyuu_rhi::execution {
 			void* operation,
 			std::shared_ptr<ResourceSubmissionCoordinator::Ticket> const&
 		) noexcept {
-			auto& self = *static_cast<CommandGraphOperationState*>(operation);
-			if (auto error = self.m_scheduler.m_failure_state->Error()) {
+			auto* self = static_cast<CommandGraphOperationState*>(operation);
+			if (auto error = self->m_scheduler.m_failure_state->Error()) {
 				CompleteError(operation, error);
 				return;
 			}
@@ -299,12 +299,12 @@ namespace fyuu_rhi::execution {
 				.SetStopped = CompleteStopped
 			};
 			try {
-				self.m_execution.emplace(CreateGraphExecution(
-					self.m_scheduler.GetImplementation(),
-					*self.m_bound_graph
+				self->m_execution.emplace(CreateGraphExecution(
+					self->m_scheduler.GetImplementation(),
+					*self->m_bound_graph
 				));
-				self.m_backend_started.store(true, std::memory_order::release);
-				StartGraphExecution(*self.m_execution, completion);
+				self->m_backend_started.store(true, std::memory_order::release);
+				StartGraphExecution(*self->m_execution, completion);
 			}
 			catch (...) {
 				CompleteError(operation, std::current_exception());
@@ -316,42 +316,42 @@ namespace fyuu_rhi::execution {
 		}
 
 		static void CompleteValue(void* operation) noexcept {
-			auto& self = *static_cast<CommandGraphOperationState*>(operation);
-			self.ReleaseSubmission();
-			if (self.m_stop_requested.load(std::memory_order::acquire)) {
-				self.DeliverStopped();
+			auto* self = static_cast<CommandGraphOperationState*>(operation);
+			self->ReleaseSubmission();
+			if (self->m_stop_requested.load(std::memory_order::acquire)) {
+				self->DeliverStopped();
 				return;
 			}
-			if (self.m_completed.exchange(true, std::memory_order::acq_rel)) {
+			if (self->m_completed.exchange(true, std::memory_order::acq_rel)) {
 				return;
 			}
 #if defined(__cpp_lib_senders) && __cpp_lib_senders >= 202406L
-			std::execution::set_value(std::move(self.m_receiver));
+			std::execution::set_value(std::move(self->m_receiver));
 #else
-			std::move(self.m_receiver).set_value();
+			std::move(self->m_receiver).set_value();
 #endif // defined(__cpp_lib_senders) && __cpp_lib_senders >= 202406L
 		}
 
 		static void CompleteError(void* operation, std::exception_ptr const& error) noexcept {
-			auto& self = *static_cast<CommandGraphOperationState*>(operation);
-			if (self.m_backend_started.load(std::memory_order::acquire)) {
-				self.m_scheduler.m_failure_state->Fail(error);
+			auto* self = static_cast<CommandGraphOperationState*>(operation);
+			if (self->m_backend_started.load(std::memory_order::acquire)) {
+				self->m_scheduler.m_failure_state->Fail(error);
 			}
-			self.ReleaseSubmission();
-			if (self.m_completed.exchange(true, std::memory_order::acq_rel)) {
+			self->ReleaseSubmission();
+			if (self->m_completed.exchange(true, std::memory_order::acq_rel)) {
 				return;
 			}
 #if defined(__cpp_lib_senders) && __cpp_lib_senders >= 202406L
-			std::execution::set_error(std::move(self.m_receiver), error);
+			std::execution::set_error(std::move(self->m_receiver), error);
 #else
-			std::move(self.m_receiver).set_error(error);
+			std::move(self->m_receiver).set_error(error);
 #endif // defined(__cpp_lib_senders) && __cpp_lib_senders >= 202406L
 		}
 
 		static void CompleteStopped(void* operation) noexcept {
-			auto& self = *static_cast<CommandGraphOperationState*>(operation);
-			self.ReleaseSubmission();
-			self.DeliverStopped();
+			auto* self = static_cast<CommandGraphOperationState*>(operation);
+			self->ReleaseSubmission();
+			self->DeliverStopped();
 		}
 
 	public:

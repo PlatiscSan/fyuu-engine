@@ -527,19 +527,19 @@ namespace {
 			throw std::invalid_argument("ExtractFormat(): Only one format can be set");
 		}
 
-		// 8‑bit per component (1‑channel)
+		// 8â€‘bit per component (1â€‘channel)
 		if (flags.Test(ResourceFlagBits::R8Unorm)) return DXGI_FORMAT_R8_UNORM;
 		else if (flags.Test(ResourceFlagBits::R8Snorm)) return DXGI_FORMAT_R8_SNORM;
 		else if (flags.Test(ResourceFlagBits::R8Uint)) return DXGI_FORMAT_R8_UINT;
 		else if (flags.Test(ResourceFlagBits::R8Sint)) return DXGI_FORMAT_R8_SINT;
 	
-		// 8‑bit per component (2‑channel)
+		// 8â€‘bit per component (2â€‘channel)
 		else if (flags.Test(ResourceFlagBits::R8G8Unorm)) return DXGI_FORMAT_R8G8_UNORM;
 		else if (flags.Test(ResourceFlagBits::R8G8Snorm)) return DXGI_FORMAT_R8G8_SNORM;
 		else if (flags.Test(ResourceFlagBits::R8G8Uint)) return DXGI_FORMAT_R8G8_UINT;
 		else if (flags.Test(ResourceFlagBits::R8G8Sint)) return DXGI_FORMAT_R8G8_SINT;
 	
-		// 8‑bit per component (4‑channel)
+		// 8â€‘bit per component (4â€‘channel)
 		else if (flags.Test(ResourceFlagBits::R8G8B8A8Unorm)) return DXGI_FORMAT_R8G8B8A8_UNORM;
 		else if (flags.Test(ResourceFlagBits::R8G8B8A8Snorm)) return DXGI_FORMAT_R8G8B8A8_SNORM;
 		else if (flags.Test(ResourceFlagBits::R8G8B8A8Uint)) return DXGI_FORMAT_R8G8B8A8_UINT;
@@ -547,38 +547,38 @@ namespace {
 		else if (flags.Test(ResourceFlagBits::R8G8B8A8Srgb)) return DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
 		else if (flags.Test(ResourceFlagBits::B8G8R8A8Srgb)) return DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
 	
-		// 16‑bit per component (1‑channel)
+		// 16â€‘bit per component (1â€‘channel)
 		else if (flags.Test(ResourceFlagBits::R16Unorm)) return DXGI_FORMAT_R16_UNORM;
 		else if (flags.Test(ResourceFlagBits::R16Snorm)) return DXGI_FORMAT_R16_SNORM;
 		else if (flags.Test(ResourceFlagBits::R16Uint)) return DXGI_FORMAT_R16_UINT;
 		else if (flags.Test(ResourceFlagBits::R16Sint)) return DXGI_FORMAT_R16_SINT;
 		else if (flags.Test(ResourceFlagBits::R16Float)) return DXGI_FORMAT_R16_FLOAT;
 	
-		// 16‑bit per component (2‑channel)
+		// 16â€‘bit per component (2â€‘channel)
 		else if (flags.Test(ResourceFlagBits::R16G16Unorm)) return DXGI_FORMAT_R16G16_UNORM;
 		else if (flags.Test(ResourceFlagBits::R16G16Snorm)) return DXGI_FORMAT_R16G16_SNORM;
 		else if (flags.Test(ResourceFlagBits::R16G16Uint)) return DXGI_FORMAT_R16G16_UINT;
 		else if (flags.Test(ResourceFlagBits::R16G16Sint)) return DXGI_FORMAT_R16G16_SINT;
 		else if (flags.Test(ResourceFlagBits::R16G16Float)) return DXGI_FORMAT_R16G16_FLOAT;
 	
-		// 16‑bit per component (4‑channel)
+		// 16â€‘bit per component (4â€‘channel)
 		else if (flags.Test(ResourceFlagBits::R16G16B16A16Unorm)) return DXGI_FORMAT_R16G16B16A16_UNORM;
 		else if (flags.Test(ResourceFlagBits::R16G16B16A16Snorm)) return DXGI_FORMAT_R16G16B16A16_SNORM;
 		else if (flags.Test(ResourceFlagBits::R16G16B16A16Uint)) return DXGI_FORMAT_R16G16B16A16_UINT;
 		else if (flags.Test(ResourceFlagBits::R16G16B16A16Sint)) return DXGI_FORMAT_R16G16B16A16_SINT;
 		else if (flags.Test(ResourceFlagBits::R16G16B16A16Float)) return DXGI_FORMAT_R16G16B16A16_FLOAT;
 	
-		// 32‑bit per component (1‑channel)
+		// 32â€‘bit per component (1â€‘channel)
 		else if (flags.Test(ResourceFlagBits::R32Uint)) return DXGI_FORMAT_R32_UINT;
 		else if (flags.Test(ResourceFlagBits::R32Sint)) return DXGI_FORMAT_R32_SINT;
 		else if (flags.Test(ResourceFlagBits::R32Float)) return DXGI_FORMAT_R32_FLOAT;
 	
-		// 32‑bit per component (2‑channel)
+		// 32â€‘bit per component (2â€‘channel)
 		else if (flags.Test(ResourceFlagBits::R32G32Uint)) return DXGI_FORMAT_R32G32_UINT;
 		else if (flags.Test(ResourceFlagBits::R32G32Sint)) return DXGI_FORMAT_R32G32_SINT;
 		else if (flags.Test(ResourceFlagBits::R32G32Float)) return DXGI_FORMAT_R32G32_FLOAT;
 	
-		// 32‑bit per component (4‑channel)
+		// 32â€‘bit per component (4â€‘channel)
 		else if (flags.Test(ResourceFlagBits::R32G32B32A32Uint)) return DXGI_FORMAT_R32G32B32A32_UINT;
 		else if (flags.Test(ResourceFlagBits::R32G32B32A32Sint)) return DXGI_FORMAT_R32G32B32A32_SINT;
 		else if (flags.Test(ResourceFlagBits::R32G32B32A32Float)) return DXGI_FORMAT_R32G32B32A32_FLOAT;
@@ -1419,7 +1419,7 @@ namespace fyuu_rhi::d3d12 {
 
 		if (is_uav && is_srv) {
 			throw std::invalid_argument(
-				"CreateBufferView(): conflicting flags – cannot create both SRV and UAV.");
+				"CreateBufferView(): conflicting flags â€“ cannot create both SRV and UAV.");
 		}
 		if (!is_uav && !is_srv) {
 			// Default to SRV if no explicit view type is given.
@@ -1437,7 +1437,7 @@ namespace fyuu_rhi::d3d12 {
 			};
 
 			if (format == DXGI_FORMAT_UNKNOWN) {
-				// Raw buffer view (byte addressable, 32‑bit elements).
+				// Raw buffer view (byte addressable, 32â€‘bit elements).
 				if ((offset % 4) != 0 || (range % 4) != 0) {
 					throw std::invalid_argument(
 						"CreateBufferView(): for raw buffer SRV, offset and range must be multiples of 4.");
@@ -1641,14 +1641,13 @@ namespace fyuu_rhi::d3d12 {
 			auto& target_blend = native.BlendState.RenderTarget[index];
 			target_blend.RenderTargetWriteMask = static_cast<UINT8>(target_state.write_mask);
 			if (target_state.blend) {
-				auto const& blend = *target_state.blend;
 				target_blend.BlendEnable = true;
-				target_blend.SrcBlend = MapBlendFactor(blend.color.source_factor);
-				target_blend.DestBlend = MapBlendFactor(blend.color.destination_factor);
-				target_blend.BlendOp = MapBlendOperation(blend.color.operation);
-				target_blend.SrcBlendAlpha = MapBlendFactor(blend.alpha.source_factor);
-				target_blend.DestBlendAlpha = MapBlendFactor(blend.alpha.destination_factor);
-				target_blend.BlendOpAlpha = MapBlendOperation(blend.alpha.operation);
+				target_blend.SrcBlend = MapBlendFactor(target_state.blend->color.source_factor);
+				target_blend.DestBlend = MapBlendFactor(target_state.blend->color.destination_factor);
+				target_blend.BlendOp = MapBlendOperation(target_state.blend->color.operation);
+				target_blend.SrcBlendAlpha = MapBlendFactor(target_state.blend->alpha.source_factor);
+				target_blend.DestBlendAlpha = MapBlendFactor(target_state.blend->alpha.destination_factor);
+				target_blend.BlendOpAlpha = MapBlendOperation(target_state.blend->alpha.operation);
 			}
 		}
 
@@ -1656,18 +1655,17 @@ namespace fyuu_rhi::d3d12 {
 		native.DepthStencilState.DepthEnable = false;
 		native.DepthStencilState.StencilEnable = false;
 		if (desc.depth_stencil) {
-			auto const& state = *desc.depth_stencil;
-			native.DSVFormat = MapFormat(state.format);
-			native.DepthStencilState.DepthEnable = state.depth_test_enabled;
-			native.DepthStencilState.DepthWriteMask = state.depth_write_enabled
+			native.DSVFormat = MapFormat(desc.depth_stencil->format);
+			native.DepthStencilState.DepthEnable = desc.depth_stencil->depth_test_enabled;
+			native.DepthStencilState.DepthWriteMask = desc.depth_stencil->depth_write_enabled
 				? D3D12_DEPTH_WRITE_MASK_ALL
 				: D3D12_DEPTH_WRITE_MASK_ZERO;
-			native.DepthStencilState.DepthFunc = MapPipelineCompare(state.depth_compare);
-			native.DepthStencilState.StencilEnable = state.stencil_enabled;
-			native.DepthStencilState.StencilReadMask = static_cast<UINT8>(state.stencil_read_mask);
-			native.DepthStencilState.StencilWriteMask = static_cast<UINT8>(state.stencil_write_mask);
-			native.DepthStencilState.FrontFace = MapStencilFace(state.stencil_front);
-			native.DepthStencilState.BackFace = MapStencilFace(state.stencil_back);
+			native.DepthStencilState.DepthFunc = MapPipelineCompare(desc.depth_stencil->depth_compare);
+			native.DepthStencilState.StencilEnable = desc.depth_stencil->stencil_enabled;
+			native.DepthStencilState.StencilReadMask = static_cast<UINT8>(desc.depth_stencil->stencil_read_mask);
+			native.DepthStencilState.StencilWriteMask = static_cast<UINT8>(desc.depth_stencil->stencil_write_mask);
+			native.DepthStencilState.FrontFace = MapStencilFace(desc.depth_stencil->stencil_front);
+			native.DepthStencilState.BackFace = MapStencilFace(desc.depth_stencil->stencil_back);
 		}
 		native.SampleMask = desc.multisample.mask;
 		native.SampleDesc = { MapSampleCount(desc.multisample.sample_count), 0 };

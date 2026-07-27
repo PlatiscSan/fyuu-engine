@@ -344,10 +344,9 @@ namespace {
 			D3D12_CPU_DESCRIPTOR_HANDLE depth{};
 			D3D12_CPU_DESCRIPTOR_HANDLE* depth_pointer = nullptr;
 			if (command.depth_stencil) {
-				auto const& attachment = *command.depth_stencil;
-				auto const& view = bindings->views[attachment.view.value].get();
+				auto const& view = bindings->views[command.depth_stencil->view.value].get();
 				if (view.type != Backend::View::Type::DepthStencil ||
-					view.allocation.Get() != bindings->resources[attachment.resource.value].get().impl.Get()) {
+					view.allocation.Get() != bindings->resources[command.depth_stencil->resource.value].get().impl.Get()) {
 					throw std::invalid_argument("D3D12 depth attachment view does not match its resource");
 				}
 				Subresource(view);
@@ -355,14 +354,14 @@ namespace {
 				depth = view.CPU();
 				depth_pointer = &depth;
 				D3D12_CLEAR_FLAGS flags = static_cast<D3D12_CLEAR_FLAGS>(0u);
-				if (!attachment.load_depth) flags |= D3D12_CLEAR_FLAG_DEPTH;
-				if (!attachment.load_stencil) flags |= D3D12_CLEAR_FLAG_STENCIL;
+				if (!command.depth_stencil->load_depth) flags |= D3D12_CLEAR_FLAG_DEPTH;
+				if (!command.depth_stencil->load_stencil) flags |= D3D12_CLEAR_FLAG_STENCIL;
 				if (flags != 0u) {
 					commands->ClearDepthStencilView(
 						depth,
 						flags,
-						attachment.clear_depth,
-						static_cast<UINT8>(attachment.clear_stencil),
+						command.depth_stencil->clear_depth,
+						static_cast<UINT8>(command.depth_stencil->clear_stencil),
 						0u,
 						nullptr
 					);
@@ -808,10 +807,9 @@ namespace fyuu_rhi::d3d12 {
 		Backend::ExecutableGraph const& graph
 	) {
 		Backend::GraphExecution result{ scheduler, graph };
-		auto const& native_graph = *graph->impl;
 		std::vector<D3D12_RESOURCE_STATES> stable_states;
-		stable_states.reserve(native_graph.bindings.resources.size());
-		for (auto const& resource : native_graph.bindings.resources) {
+		stable_states.reserve(graph->impl->bindings.resources.size());
+		for (auto const& resource : graph->impl->bindings.resources) {
 			stable_states.push_back(resource.get().stable_state);
 		}
 		auto states = stable_states;
@@ -841,17 +839,17 @@ namespace fyuu_rhi::d3d12 {
 			auto* command_list = commands.Get().impl.Get();
 			std::vector<Backend::GraphExecution::Batch::PresentationRequest> presentations;
 			D3D12CommandRecorder recorder{
-				&native_graph.bindings,
+				&graph->impl->bindings,
 				command_list,
 				&states,
 				queue.get(),
 				&presentations
 			};
 			for (auto node_id : batch.nodes) {
-				auto const& node = native_graph.descriptor.nodes[node_id.value];
+				auto const& node = graph->impl->descriptor.nodes[node_id.value];
 				for (auto const& access : node.accesses) {
 					auto desired = D3D12ResourceState(access.flags);
-					auto resource = native_graph.bindings.resources[access.resource.value]
+					auto resource = graph->impl->bindings.resources[access.resource.value]
 						.get().impl->GetResource();
 					if (UsesCopyQueueCommonLayout(
 						queue->type,
@@ -886,7 +884,7 @@ namespace fyuu_rhi::d3d12 {
 						states[release.resource.value] == D3D12_RESOURCE_STATE_COMMON) {
 						continue;
 					}
-					auto resource = native_graph.bindings.resources[release.resource.value]
+					auto resource = graph->impl->bindings.resources[release.resource.value]
 						.get().impl->GetResource();
 					auto barrier = TransitionBarrier(
 						resource,
@@ -901,7 +899,7 @@ namespace fyuu_rhi::d3d12 {
 						states[access.resource.value] == stable_states[access.resource.value]) {
 						continue;
 					}
-					auto resource = native_graph.bindings.resources[access.resource.value]
+					auto resource = graph->impl->bindings.resources[access.resource.value]
 						.get().impl->GetResource();
 					auto barrier = TransitionBarrier(
 						resource,

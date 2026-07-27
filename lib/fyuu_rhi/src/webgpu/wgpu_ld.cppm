@@ -133,19 +133,19 @@ namespace {
 			throw std::invalid_argument("Only one format can be set");
 		}
 	
-		// 8‑bit per component (1‑channel)
+		// 8â€‘bit per component (1â€‘channel)
 		if (flags.Test(ResourceFlagBits::R8Unorm)) return wgpu::TextureFormat::R8Unorm;
 		else if (flags.Test(ResourceFlagBits::R8Snorm)) return wgpu::TextureFormat::R8Snorm;
 		else if (flags.Test(ResourceFlagBits::R8Uint)) return wgpu::TextureFormat::R8Uint;
 		else if (flags.Test(ResourceFlagBits::R8Sint)) return wgpu::TextureFormat::R8Sint;
 	
-		// 8‑bit per component (2‑channel)
+		// 8â€‘bit per component (2â€‘channel)
 		else if (flags.Test(ResourceFlagBits::R8G8Unorm)) return wgpu::TextureFormat::RG8Unorm;
 		else if (flags.Test(ResourceFlagBits::R8G8Snorm)) return wgpu::TextureFormat::RG8Snorm;
 		else if (flags.Test(ResourceFlagBits::R8G8Uint)) return wgpu::TextureFormat::RG8Uint;
 		else if (flags.Test(ResourceFlagBits::R8G8Sint)) return wgpu::TextureFormat::RG8Sint;
 	
-		// 8‑bit per component (4‑channel)
+		// 8â€‘bit per component (4â€‘channel)
 		else if (flags.Test(ResourceFlagBits::R8G8B8A8Unorm)) return wgpu::TextureFormat::RGBA8Unorm;
 		else if (flags.Test(ResourceFlagBits::R8G8B8A8Snorm)) return wgpu::TextureFormat::RGBA8Snorm;
 		else if (flags.Test(ResourceFlagBits::R8G8B8A8Uint)) return wgpu::TextureFormat::RGBA8Uint;
@@ -153,38 +153,38 @@ namespace {
 		else if (flags.Test(ResourceFlagBits::R8G8B8A8Srgb)) return wgpu::TextureFormat::RGBA8UnormSrgb;
 		else if (flags.Test(ResourceFlagBits::B8G8R8A8Srgb)) return wgpu::TextureFormat::BGRA8UnormSrgb;
 	
-		// 16‑bit per component (1‑channel)
+		// 16â€‘bit per component (1â€‘channel)
 		else if (flags.Test(ResourceFlagBits::R16Unorm)) return wgpu::TextureFormat::R16Unorm;
 		else if (flags.Test(ResourceFlagBits::R16Snorm)) return wgpu::TextureFormat::R16Snorm;
 		else if (flags.Test(ResourceFlagBits::R16Uint)) return wgpu::TextureFormat::R16Uint;
 		else if (flags.Test(ResourceFlagBits::R16Sint)) return wgpu::TextureFormat::R16Sint;
 		else if (flags.Test(ResourceFlagBits::R16Float)) return wgpu::TextureFormat::R16Float;
 	
-		// 16‑bit per component (2‑channel)
+		// 16â€‘bit per component (2â€‘channel)
 		else if (flags.Test(ResourceFlagBits::R16G16Unorm)) return wgpu::TextureFormat::RG16Unorm;
 		else if (flags.Test(ResourceFlagBits::R16G16Snorm)) return wgpu::TextureFormat::RG16Snorm;
 		else if (flags.Test(ResourceFlagBits::R16G16Uint)) return wgpu::TextureFormat::RG16Uint;
 		else if (flags.Test(ResourceFlagBits::R16G16Sint)) return wgpu::TextureFormat::RG16Sint;
 		else if (flags.Test(ResourceFlagBits::R16G16Float)) return wgpu::TextureFormat::RG16Float;
 	
-		// 16‑bit per component (4‑channel)
+		// 16â€‘bit per component (4â€‘channel)
 		else if (flags.Test(ResourceFlagBits::R16G16B16A16Unorm)) return wgpu::TextureFormat::RGBA16Unorm;
 		else if (flags.Test(ResourceFlagBits::R16G16B16A16Snorm)) return wgpu::TextureFormat::RGBA16Snorm;
 		else if (flags.Test(ResourceFlagBits::R16G16B16A16Uint)) return wgpu::TextureFormat::RGBA16Uint;
 		else if (flags.Test(ResourceFlagBits::R16G16B16A16Sint)) return wgpu::TextureFormat::RGBA16Sint;
 		else if (flags.Test(ResourceFlagBits::R16G16B16A16Float)) return wgpu::TextureFormat::RGBA16Float;
 	
-		// 32‑bit per component (1‑channel)
+		// 32â€‘bit per component (1â€‘channel)
 		else if (flags.Test(ResourceFlagBits::R32Uint)) return wgpu::TextureFormat::R32Uint;
 		else if (flags.Test(ResourceFlagBits::R32Sint)) return wgpu::TextureFormat::R32Sint;
 		else if (flags.Test(ResourceFlagBits::R32Float)) return wgpu::TextureFormat::R32Float;
 	
-		// 32‑bit per component (2‑channel)
+		// 32â€‘bit per component (2â€‘channel)
 		else if (flags.Test(ResourceFlagBits::R32G32Uint)) return wgpu::TextureFormat::RG32Uint;
 		else if (flags.Test(ResourceFlagBits::R32G32Sint)) return wgpu::TextureFormat::RG32Sint;
 		else if (flags.Test(ResourceFlagBits::R32G32Float)) return wgpu::TextureFormat::RG32Float;
 	
-		// 32‑bit per component (4‑channel)
+		// 32â€‘bit per component (4â€‘channel)
 		else if (flags.Test(ResourceFlagBits::R32G32B32A32Uint)) return wgpu::TextureFormat::RGBA32Uint;
 		else if (flags.Test(ResourceFlagBits::R32G32B32A32Sint)) return wgpu::TextureFormat::RGBA32Sint;
 		else if (flags.Test(ResourceFlagBits::R32G32B32A32Float)) return wgpu::TextureFormat::RGBA32Float;
@@ -584,19 +584,18 @@ namespace fyuu_rhi::webgpu {
 
 		std::optional<wgpu::DepthStencilState> depth_stencil;
 		if (descriptor.depth_stencil) {
-			auto const& state = *descriptor.depth_stencil;
 			depth_stencil = {
-				.format = ExtractFormat(ResourceFlags(state.format)),
-				.depthWriteEnabled = state.depth_write_enabled
+				.format = ExtractFormat(ResourceFlags(descriptor.depth_stencil->format)),
+				.depthWriteEnabled = descriptor.depth_stencil->depth_write_enabled
 					? wgpu::OptionalBool::True
 					: wgpu::OptionalBool::False,
-				.depthCompare = state.depth_test_enabled
-					? MapPipelineCompare(state.depth_compare)
+				.depthCompare = descriptor.depth_stencil->depth_test_enabled
+					? MapPipelineCompare(descriptor.depth_stencil->depth_compare)
 					: wgpu::CompareFunction::Always,
-				.stencilFront = MapStencilFace(state.stencil_front),
-				.stencilBack = MapStencilFace(state.stencil_back),
-				.stencilReadMask = state.stencil_read_mask,
-				.stencilWriteMask = state.stencil_write_mask,
+				.stencilFront = MapStencilFace(descriptor.depth_stencil->stencil_front),
+				.stencilBack = MapStencilFace(descriptor.depth_stencil->stencil_back),
+				.stencilReadMask = descriptor.depth_stencil->stencil_read_mask,
+				.stencilWriteMask = descriptor.depth_stencil->stencil_write_mask,
 				.depthBias = descriptor.rasterization.depth_bias.constant,
 				.depthBiasSlopeScale = descriptor.rasterization.depth_bias.slope_scale,
 				.depthBiasClamp = descriptor.rasterization.depth_bias.clamp
@@ -610,18 +609,17 @@ namespace fyuu_rhi::webgpu {
 		for (auto const& target_state : descriptor.color_targets) {
 			wgpu::BlendState* blend = nullptr;
 			if (target_state.blend) {
-				auto const& state = *target_state.blend;
 				blends.push_back(
 					{
 						.color = {
-							.operation = MapBlendOperation(state.color.operation),
-							.srcFactor = MapBlendFactor(state.color.source_factor),
-							.dstFactor = MapBlendFactor(state.color.destination_factor)
+							.operation = MapBlendOperation(target_state.blend->color.operation),
+							.srcFactor = MapBlendFactor(target_state.blend->color.source_factor),
+							.dstFactor = MapBlendFactor(target_state.blend->color.destination_factor)
 						},
 						.alpha = {
-							.operation = MapBlendOperation(state.alpha.operation),
-							.srcFactor = MapBlendFactor(state.alpha.source_factor),
-							.dstFactor = MapBlendFactor(state.alpha.destination_factor)
+							.operation = MapBlendOperation(target_state.blend->alpha.operation),
+							.srcFactor = MapBlendFactor(target_state.blend->alpha.source_factor),
+							.dstFactor = MapBlendFactor(target_state.blend->alpha.destination_factor)
 						}
 					}
 				);

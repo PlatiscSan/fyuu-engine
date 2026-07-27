@@ -179,15 +179,14 @@ namespace fyuu_rhi::execution {
 				}
 			}
 			if (command.depth_stencil) {
-				auto const& depth = *command.depth_stencil;
-				ValidateResourceID(descriptor, depth.resource);
-				ValidateViewID(descriptor, depth.view);
+				ValidateResourceID(descriptor, command.depth_stencil->resource);
+				ValidateViewID(descriptor, command.depth_stencil->view);
 				auto required = GraphAccessFlagBits::DepthStencilAttachment |
-					(depth.load_depth || depth.load_stencil
+					(command.depth_stencil->load_depth || command.depth_stencil->load_stencil
 						? GraphAccessFlagBits::Read : GraphAccessFlagBits::None) |
-					(!depth.store_depth && !depth.store_stencil
+					(!command.depth_stencil->store_depth && !command.depth_stencil->store_stencil
 						? GraphAccessFlagBits::None : GraphAccessFlagBits::Write);
-				ValidateResourceAccess(node, depth.resource, required,
+				ValidateResourceAccess(node, command.depth_stencil->resource, required,
 					"Depth/stencil attachment is missing its declared attachment access");
 			}
 		}

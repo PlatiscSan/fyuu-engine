@@ -40,13 +40,13 @@ namespace fyuu_rhi::execution {
 		std::shared_ptr<AbandonedResourceMapping> m_keep_alive;
 
 		static void Complete(void* operation) noexcept {
-			auto& self = *static_cast<AbandonedResourceMapping*>(operation);
-			auto keep_alive = self.m_keep_alive;
-			auto resource = std::move(*self.m_resource);
-			self.m_resource.reset();
-			self.m_scheduler.m_submission_coordinator->Complete(self.m_submission);
-			self.m_keep_alive.reset();
-			Retire(self.m_scheduler, std::move(resource));
+			auto* self = static_cast<AbandonedResourceMapping*>(operation);
+			auto keep_alive = self->m_keep_alive;
+			auto resource = std::move(*self->m_resource);
+			self->m_resource.reset();
+			self->m_scheduler.m_submission_coordinator->Complete(self->m_submission);
+			self->m_keep_alive.reset();
+			Retire(self->m_scheduler, std::move(resource));
 			(void)keep_alive;
 		}
 
@@ -252,16 +252,16 @@ namespace fyuu_rhi::execution {
 			void* operation,
 			std::shared_ptr<ResourceSubmissionCoordinator::Ticket> const&
 		) noexcept {
-			auto& self = *static_cast<ResourceMapOperationState*>(operation);
-			if (auto error = self.m_scheduler.m_failure_state->Error()) {
+			auto* self = static_cast<ResourceMapOperationState*>(operation);
+			if (auto error = self->m_scheduler.m_failure_state->Error()) {
 				CompleteError(operation, error);
 				return;
 			}
 			try {
 				StartMapResource(
-					self.m_scheduler.GetImplementation(),
-					self.m_resource->GetLogicalDevicePassKey().GetImplementation(),
-					self.m_request
+					self->m_scheduler.GetImplementation(),
+					self->m_resource->GetLogicalDevicePassKey().GetImplementation(),
+					self->m_request
 				);
 			}
 			catch (...) {
@@ -270,39 +270,39 @@ namespace fyuu_rhi::execution {
 		}
 
 		static void CompleteValue(void* operation, std::byte* data) noexcept {
-			auto& self = *static_cast<ResourceMapOperationState*>(operation);
-			if (self.m_completed.exchange(true, std::memory_order::acq_rel)) {
+			auto* self = static_cast<ResourceMapOperationState*>(operation);
+			if (self->m_completed.exchange(true, std::memory_order::acq_rel)) {
 				return;
 			}
 			MappedResource<Backend> mapped(
-				self.m_scheduler,
-				std::move(*self.m_resource),
-				self.m_submission,
+				self->m_scheduler,
+				std::move(*self->m_resource),
+				self->m_submission,
 				data,
-				self.m_range,
-				self.m_flags
+				self->m_range,
+				self->m_flags
 			);
-			self.m_resource.reset();
+			self->m_resource.reset();
 #if defined(__cpp_lib_senders) && __cpp_lib_senders >= 202406L
-			std::execution::set_value(std::move(self.m_receiver), std::move(mapped));
+			std::execution::set_value(std::move(self->m_receiver), std::move(mapped));
 #else
-			std::move(self.m_receiver).set_value(std::move(mapped));
+			std::move(self->m_receiver).set_value(std::move(mapped));
 #endif // defined(__cpp_lib_senders) && __cpp_lib_senders >= 202406L
 		}
 
 		static void CompleteError(void* operation, std::exception_ptr const& error) noexcept {
-			auto& self = *static_cast<ResourceMapOperationState*>(operation);
-			if (self.m_completed.exchange(true, std::memory_order::acq_rel)) {
+			auto* self = static_cast<ResourceMapOperationState*>(operation);
+			if (self->m_completed.exchange(true, std::memory_order::acq_rel)) {
 				return;
 			}
-			auto resource = std::move(*self.m_resource);
-			self.m_resource.reset();
-			self.ReleaseSubmission();
-			Retire(self.m_scheduler, std::move(resource));
+			auto resource = std::move(*self->m_resource);
+			self->m_resource.reset();
+			self->ReleaseSubmission();
+			Retire(self->m_scheduler, std::move(resource));
 #if defined(__cpp_lib_senders) && __cpp_lib_senders >= 202406L
-			std::execution::set_error(std::move(self.m_receiver), error);
+			std::execution::set_error(std::move(self->m_receiver), error);
 #else
-			std::move(self.m_receiver).set_error(error);
+			std::move(self->m_receiver).set_error(error);
 #endif // defined(__cpp_lib_senders) && __cpp_lib_senders >= 202406L
 		}
 
@@ -482,59 +482,59 @@ namespace fyuu_rhi::execution {
 		bool m_started = false;
 
 		static void CompleteValue(void* operation) noexcept {
-			auto& self = *static_cast<ResourceUnmapOperationState*>(operation);
-			if (self.m_stop_token.stop_requested()) {
+			auto* self = static_cast<ResourceUnmapOperationState*>(operation);
+			if (self->m_stop_token.stop_requested()) {
 				CompleteStopped(operation);
 				return;
 			}
-			if (self.m_completed.exchange(true, std::memory_order::acq_rel)) {
+			if (self->m_completed.exchange(true, std::memory_order::acq_rel)) {
 				return;
 			}
-			self.m_mapped.m_scheduler.m_submission_coordinator->Complete(
-				self.m_mapped.m_submission
+			self->m_mapped.m_scheduler.m_submission_coordinator->Complete(
+				self->m_mapped.m_submission
 			);
-			auto resource = std::move(*self.m_mapped.m_resource);
-			self.m_mapped.m_resource.reset();
+			auto resource = std::move(*self->m_mapped.m_resource);
+			self->m_mapped.m_resource.reset();
 #if defined(__cpp_lib_senders) && __cpp_lib_senders >= 202406L
-			std::execution::set_value(std::move(self.m_receiver), std::move(resource));
+			std::execution::set_value(std::move(self->m_receiver), std::move(resource));
 #else
-			std::move(self.m_receiver).set_value(std::move(resource));
+			std::move(self->m_receiver).set_value(std::move(resource));
 #endif // defined(__cpp_lib_senders) && __cpp_lib_senders >= 202406L
 		}
 
 		static void CompleteStopped(void* operation) noexcept {
-			auto& self = *static_cast<ResourceUnmapOperationState*>(operation);
-			if (self.m_completed.exchange(true, std::memory_order::acq_rel)) {
+			auto* self = static_cast<ResourceUnmapOperationState*>(operation);
+			if (self->m_completed.exchange(true, std::memory_order::acq_rel)) {
 				return;
 			}
-			self.m_mapped.m_scheduler.m_submission_coordinator->Complete(
-				self.m_mapped.m_submission
+			self->m_mapped.m_scheduler.m_submission_coordinator->Complete(
+				self->m_mapped.m_submission
 			);
-			auto resource = std::move(*self.m_mapped.m_resource);
-			self.m_mapped.m_resource.reset();
-			Retire(self.m_mapped.m_scheduler, std::move(resource));
+			auto resource = std::move(*self->m_mapped.m_resource);
+			self->m_mapped.m_resource.reset();
+			Retire(self->m_mapped.m_scheduler, std::move(resource));
 #if defined(__cpp_lib_senders) && __cpp_lib_senders >= 202406L
-			std::execution::set_stopped(std::move(self.m_receiver));
+			std::execution::set_stopped(std::move(self->m_receiver));
 #else
-			std::move(self.m_receiver).set_stopped();
+			std::move(self->m_receiver).set_stopped();
 #endif // defined(__cpp_lib_senders) && __cpp_lib_senders >= 202406L
 		}
 
 		static void CompleteError(void* operation, std::exception_ptr const& error) noexcept {
-			auto& self = *static_cast<ResourceUnmapOperationState*>(operation);
-			if (self.m_completed.exchange(true, std::memory_order::acq_rel)) {
+			auto* self = static_cast<ResourceUnmapOperationState*>(operation);
+			if (self->m_completed.exchange(true, std::memory_order::acq_rel)) {
 				return;
 			}
-			auto resource = std::move(*self.m_mapped.m_resource);
-			self.m_mapped.m_resource.reset();
-			self.m_mapped.m_scheduler.m_submission_coordinator->Complete(
-				self.m_mapped.m_submission
+			auto resource = std::move(*self->m_mapped.m_resource);
+			self->m_mapped.m_resource.reset();
+			self->m_mapped.m_scheduler.m_submission_coordinator->Complete(
+				self->m_mapped.m_submission
 			);
-			Retire(self.m_mapped.m_scheduler, std::move(resource));
+			Retire(self->m_mapped.m_scheduler, std::move(resource));
 #if defined(__cpp_lib_senders) && __cpp_lib_senders >= 202406L
-			std::execution::set_error(std::move(self.m_receiver), error);
+			std::execution::set_error(std::move(self->m_receiver), error);
 #else
-			std::move(self.m_receiver).set_error(error);
+			std::move(self->m_receiver).set_error(error);
 #endif // defined(__cpp_lib_senders) && __cpp_lib_senders >= 202406L
 		}
 
