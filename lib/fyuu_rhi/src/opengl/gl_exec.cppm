@@ -1623,18 +1623,6 @@ namespace fyuu_rhi::opengl {
 					LOG_WARNING(std::format("OpenGL replay recorded an error: {}", message));
 				}
 			}
-			for (auto const& batch : current.plan.batches) {
-				for (auto const& node : batch.nodes) {
-					std::string first = node.commands.empty() ? "(none)" : CommandName(node.commands.front());
-					LOG_INFO(std::format(
-						"OpenGL replay node {} has {} commands, first is {}",
-						node.id,
-						node.commands.size(),
-						first
-					));
-				}
-			}
-			LOG_INFO(std::format("OpenGL replay finished for submission with {} batches", current.plan.batches.size()));
 			// Re-assert the scheduler context after every submission: Present switches
 			// the drawable, and any partial failure must not leak that state into
 			// the next submission or the glGetError drain above.
