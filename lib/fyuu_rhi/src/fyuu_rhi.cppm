@@ -127,6 +127,41 @@ namespace fyuu_rhi {
 
 } // namespace fyuu_rhi
 
+namespace fyuu_rhi::execution {
+
+#if defined(_WIN32)
+	export using D3D12CommandScheduler = CommandScheduler<d3d12::Backend>;
+	export using D3D12CommandGraphBuilder = CommandGraphBuilder<d3d12::Backend>;
+	export using D3D12CommandGraphResources = CommandGraphResources<d3d12::Backend>;
+	export template <class Receiver>
+	using D3D12CommandGraphBindings = CommandGraphBindings<d3d12::Backend, Receiver>;
+#endif // defined(_WIN32)
+#if defined(__APPLE__)
+	export using MetalCommandScheduler = CommandScheduler<metal::Backend>;
+	export using MetalCommandGraphBuilder = CommandGraphBuilder<metal::Backend>;
+	export using MetalCommandGraphResources = CommandGraphResources<metal::Backend>;
+	export template <class Receiver>
+	using MetalCommandGraphBindings = CommandGraphBindings<metal::Backend, Receiver>;
+#else
+	export using VulkanCommandScheduler = CommandScheduler<vulkan::Backend>;
+	export using VulkanCommandGraphBuilder = CommandGraphBuilder<vulkan::Backend>;
+	export using VulkanCommandGraphResources = CommandGraphResources<vulkan::Backend>;
+	export template <class Receiver>
+	using VulkanCommandGraphBindings = CommandGraphBindings<vulkan::Backend, Receiver>;
+	export using OpenGLCommandScheduler = CommandScheduler<opengl::Backend>;
+	export using OpenGLCommandGraphBuilder = CommandGraphBuilder<opengl::Backend>;
+	export using OpenGLCommandGraphResources = CommandGraphResources<opengl::Backend>;
+	export template <class Receiver>
+	using OpenGLCommandGraphBindings = CommandGraphBindings<opengl::Backend, Receiver>;
+#endif // defined(__APPLE__)
+	export using WebGPUCommandScheduler = CommandScheduler<webgpu::Backend>;
+	export using WebGPUCommandGraphBuilder = CommandGraphBuilder<webgpu::Backend>;
+	export using WebGPUCommandGraphResources = CommandGraphResources<webgpu::Backend>;
+	export template <class Receiver>
+	using WebGPUCommandGraphBindings = CommandGraphBindings<webgpu::Backend, Receiver>;
+
+}
+
 namespace fyuu_rhi::pipeline {
 
 #if defined(_WIN32)
