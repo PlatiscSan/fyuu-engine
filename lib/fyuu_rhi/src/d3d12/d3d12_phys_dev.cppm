@@ -98,17 +98,19 @@ namespace fyuu_rhi::d3d12 {
 		result = D3D12MA::CreateAllocator(&allocator_desc, &mem_alloc);
 		ThrowIfFailed(result);
 
-		DescriptorAllocator univ_alloc = CreateUniversalViewAllocator(dev.Get());
-		DescriptorAllocator rtv_alloc = CreateRTVAllocator(dev.Get());
-		DescriptorAllocator dsv_alloc = CreateDSVAllocator(dev.Get());
-		DescriptorAllocator sampler_alloc = CreateSamplerAllocator(dev.Get());
+		DescriptorAllocator univ_alloc = CreateUniversalViewAllocator(dev);
+		DescriptorAllocator rtv_alloc = CreateRTVAllocator(dev);
+		DescriptorAllocator dsv_alloc = CreateDSVAllocator(dev);
+		DescriptorAllocator sampler_alloc = CreateSamplerAllocator(dev);
 
 		Microsoft::WRL::ComPtr<ID3D12CommandSignature> multidraw = CreateCommandSignature(dev.Get(), D3D12_INDIRECT_ARGUMENT_TYPE_DRAW);
 		Microsoft::WRL::ComPtr<ID3D12CommandSignature> multidraw_indexed = CreateCommandSignature(dev.Get(), D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED);
 		Microsoft::WRL::ComPtr<ID3D12CommandSignature> dispatch_indirect = CreateCommandSignature(dev.Get(), D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH);
 
+		result = dev->SetPrivateDataInterface(__uuidof(IDXGIAdapter1), adapter.Get());
+		ThrowIfFailed(result);
+
 		return { 
-			adapter,
 			std::move(dev), 
 			std::move(rm_tracker), 
 			std::move(mem_alloc), 
@@ -118,9 +120,7 @@ namespace fyuu_rhi::d3d12 {
 			std::move(sampler_alloc),
 			std::move(multidraw),
 			std::move(multidraw_indexed),
-			std::move(dispatch_indirect),
-			std::make_shared<LogicalDevice::PresentationCache>(),
-			execution::CompletionService::Instance()
+			std::move(dispatch_indirect)
 		};
 
 	}

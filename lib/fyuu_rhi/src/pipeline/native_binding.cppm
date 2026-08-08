@@ -149,7 +149,7 @@ namespace fyuu_rhi::pipeline {
 				reflected->flags.Test(ResourceFlagBits::TextureBinding) ||
 				reflected->flags.Test(ResourceFlagBits::StorageBinding);
 			bool matches = false;
-			if (expects_buffer && !expects_view && !expects_sampler) {
+			if (expects_buffer && !expects_sampler) {
 				matches = std::holds_alternative<NativePipelineBufferBinding<Backend>>(entry.value);
 			}
 			else if (!expects_buffer && expects_view && !expects_sampler) {

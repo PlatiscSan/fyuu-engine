@@ -40,6 +40,8 @@ bld/
 [Ll]og/
 [Ll]ogs/
 deprecated/
+!lib/fyuu_rhi/src/deprecated/
+!lib/fyuu_rhi/src/deprecated/**
 
 # Visual Studio 2015/2017 cache/options directory
 .vs/

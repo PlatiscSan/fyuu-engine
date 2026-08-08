@@ -20,18 +20,10 @@ import :resource;
 import :view;
 import :sampler_types;
 import :sampler;
-import :scheduler_types;
-import :scheduler;
-import :command_graph;
-import :command_graph_validation;
 import :pipeline_types;
 import :pipeline;
 import :native_pipeline_binding;
-import :staging_resource_pool;
-
-namespace fyuu_rhi::execution {
-	template <class Backend> class StagingResourcePoolAccess;
-}
+import :execution;
 
 namespace fyuu_rhi {
 
@@ -40,18 +32,12 @@ namespace fyuu_rhi {
 		using Implementation = typename Backend::LogicalDevice;
 
 	private:
-		template <class U> friend class execution::StagingResourcePoolAccess;
-
 		Implementation m_impl;
-		std::shared_ptr<execution::StagingResourcePool<Backend>> m_staging_resource_pool;
 
 	public:
 		template <std::convertible_to<Implementation> I>
 		LogicalDevice(I&& impl)
-			: m_impl(std::forward<I>(impl)),
-			m_staging_resource_pool(
-				std::make_shared<execution::StagingResourcePool<Backend>>()
-			) {
+			: m_impl(std::forward<I>(impl)) {
 
 		}
 
@@ -112,46 +98,6 @@ namespace fyuu_rhi {
 			static_assert(std::constructible_from<Sampler<Backend>, Ret>,
 				"Sampler<Backend> must be constructible from sampler returned by CreateSampler()");
 			return Backend::CreateSampler(m_impl, descriptor);
-		}
-
-		template <class... Args>
-		execution::Scheduler<Backend> CreateScheduler(
-			execution::SchedulerDescriptor const& descriptor,
-			Args&&... args
-		) {
-			using Ret = decltype(
-				Backend::CreateScheduler(
-					m_impl,
-					descriptor,
-					std::forward<Args>(args)...
-				)
-			);
-			static_assert(
-				std::constructible_from<execution::Scheduler<Backend>, Ret>,
-				"Scheduler<Backend> must be constructible from scheduler returned by CreateScheduler()"
-			);
-			return execution::Scheduler<Backend>(
-				Backend::CreateScheduler(
-					m_impl,
-					descriptor,
-					std::forward<Args>(args)...
-				)
-			);
-		}
-
-		execution::ExecutableGraph<Backend> CompileCommandGraph(
-			execution::CommandGraph<Backend> const& graph
-		) {
-			auto impl = Backend::CompileCommandGraph(graph.GetImplementation());
-			return execution::ExecutableGraph<Backend>(impl);
-		}
-
-		execution::CommandGraph<Backend> CreateCommandGraph(
-			execution::CommandGraphDescriptor const& descriptor
-		) {
-			execution::ValidateCommandGraphDescriptor(descriptor);
-			auto impl = Backend::CreateCommandGraph(descriptor);
-			return execution::CommandGraph<Backend>(impl);
 		}
 
 		pipeline::Pipeline<Backend> CreateGraphicsPipeline(
@@ -225,17 +171,10 @@ namespace fyuu_rhi {
 			return pipeline::PipelineResourceGroup<Backend>(std::move(impl), space);
 		}
 
-	};
-
-}
-
-namespace fyuu_rhi::execution {
-	template <class Backend> class StagingResourcePoolAccess {
-	public:
-		[[nodiscard]] static std::shared_ptr<StagingResourcePool<Backend>> const& Get(
-			LogicalDevice<Backend> const& logical_device
-		) noexcept {
-			return logical_device.m_staging_resource_pool;
+		[[nodiscard]] execution::CommandScheduler<Backend> CreateScheduler() {
+			return execution::CommandScheduler<Backend>(Backend::CreateScheduler(m_impl));
 		}
+
 	};
+
 }

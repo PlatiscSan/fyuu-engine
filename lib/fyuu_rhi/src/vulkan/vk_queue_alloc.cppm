@@ -1,25 +1,28 @@
-module;
+﻿module;
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <algorithm>
 #include <cmath>
-#include <stdexcept>
+#include <compare>
+#include <cstdint>
+#include <deque>
+#include <limits>
 #include <memory>
-#include <random>
-#include <array>
-#include <vector>
-#include <unordered_set>
-#include <unordered_map>
 #include <mutex>
 #include <optional>
+#include <ranges>
 #include <span>
-#include <limits>
+#include <stdexcept>
+#include <tuple>
+#include <utility>
+#include <vector>
 #endif
 module fyuu_rhi:vulkan_queue_allocator;
 #if !defined(__APPLE__)
 #if defined(__cpp_lib_modules)
 import std;
 #endif
+import vulkan;
 
 namespace fyuu_rhi::vulkan {
 
@@ -30,330 +33,705 @@ namespace fyuu_rhi::vulkan {
 		Copy = 1u << 2u,
 	};
 
-	[[nodiscard]] constexpr CommandQueueType operator|(CommandQueueType lhs, CommandQueueType rhs) noexcept {
+	[[nodiscard]] constexpr CommandQueueType operator|(
+		CommandQueueType lhs,
+		CommandQueueType rhs
+	) noexcept {
 		return static_cast<CommandQueueType>(
-			static_cast<std::uint8_t>(lhs) | static_cast<std::uint8_t>(rhs)
+			static_cast<std::uint8_t>(lhs) |
+			static_cast<std::uint8_t>(rhs)
 		);
 	}
 
-	[[nodiscard]] constexpr CommandQueueType operator&(CommandQueueType lhs, CommandQueueType rhs) noexcept {
+	[[nodiscard]] constexpr CommandQueueType operator&(
+		CommandQueueType lhs,
+		CommandQueueType rhs
+	) noexcept {
 		return static_cast<CommandQueueType>(
-			static_cast<std::uint8_t>(lhs) & static_cast<std::uint8_t>(rhs)
+			static_cast<std::uint8_t>(lhs) &
+			static_cast<std::uint8_t>(rhs)
 		);
 	}
 
-	constexpr CommandQueueType& operator|=(CommandQueueType& lhs, CommandQueueType rhs) noexcept {
+	constexpr CommandQueueType& operator|=(
+		CommandQueueType& lhs,
+		CommandQueueType rhs
+	) noexcept {
 		return lhs = lhs | rhs;
 	}
 
-	constexpr CommandQueueType& operator&=(CommandQueueType& lhs, CommandQueueType rhs) noexcept {
+	constexpr CommandQueueType& operator&=(
+		CommandQueueType& lhs,
+		CommandQueueType rhs
+	) noexcept {
 		return lhs = lhs & rhs;
 	}
 
-	enum class QueuePriority : std::uint8_t {
-		High,
-		Medium,
-		Low
-	};
-
+	/// Describes every queue created from one physical-device queue family.
 	struct CommandQueueInfo {
-		CommandQueueType type;
-		std::optional<std::uint32_t> family;
-		std::uint32_t num_available;
+		CommandQueueType capabilities;
+		std::uint32_t family;
+		std::uint32_t count;
 	};
 
+	/// Identifies one immutable queue slot created with the logical device.
+	struct QueueIdentifier {
+		std::uint32_t family;
+		std::uint32_t index;
+
+		auto operator<=>(QueueIdentifier const&) const noexcept = default;
+	};
+
+	/// Supplies one VkDeviceQueueCreateInfo without exposing allocator state.
+	/// priorities remains valid while the QueueAllocator state remains alive.
+	struct QueueCreatePlan {
+		std::uint32_t family;
+		std::span<float const> priorities;
+	};
+
+	/// Contains graph analysis produced by Scheduler. QueueAllocator consumes the
+	/// complete request array and alone decides the physical queue assignment.
+	struct QueueRequest {
+		CommandQueueType required_capabilities;
+		/// Normalized urgency in [0, 1].
+		float priority;
+		/// Relative work estimate comparable with other batches in this graph.
+		std::uint64_t estimated_work;
+		/// Soft affinity used to avoid unnecessary family ownership transfers.
+		std::optional<std::uint32_t> preferred_family;
+		/// Hard family restriction; empty means every compatible family is legal.
+		std::span<std::uint32_t const> allowed_families;
+		/// Predecessor indices in this same request array.
+		std::span<std::size_t const> dependencies;
+	};
+
+}
+
+namespace std {
+	/// Packs the family/index pair for unordered containers.
+	template <>
+	struct hash<fyuu_rhi::vulkan::QueueIdentifier> {
+		[[nodiscard]] std::size_t operator()(
+			fyuu_rhi::vulkan::QueueIdentifier const& identifier
+		) const noexcept {
+			return
+				(static_cast<std::size_t>(identifier.family) << 32u) |
+				static_cast<std::size_t>(identifier.index);
+		}
+	};
 }
 
 namespace {
 
-	using namespace fyuu_rhi;
 	using namespace fyuu_rhi::vulkan;
 
-	struct QueueSet {
+	struct QueueFamilyState {
 		CommandQueueInfo info;
 		std::vector<float> priorities;
-
-		std::unordered_set<std::uint32_t> allocated_queue; // Indices that are currently in use
-		std::mutex allocated_queue_mutex;
-
-		QueueSet(CommandQueueInfo const& info_, std::span<float const> priorities_)
-			: info(info_),
-			priorities(priorities_.begin(), priorities_.end()),
-			allocated_queue(),
-			allocated_queue_mutex() {
-
-		}
 	};
+
+	struct QueueState {
+		QueueIdentifier identifier;
+		CommandQueueType capabilities;
+		float priority;
+		/// Work assigned during phase 1 but not submitted successfully.
+		std::uint64_t reserved_work = 0u;
+		/// Submitted work whose GPU completion has not yet been retired.
+		std::uint64_t submitted_work = 0u;
+		/// Serializes externally synchronized host operations on this physical
+		/// queue across every scheduler sharing the logical device.
+		std::mutex submission_mutex;
+	};
+
+	struct QueueAllocatorState {
+		std::vector<QueueFamilyState> families;
+		std::vector<QueueCreatePlan> create_plans;
+		/// QueueState contains a mutex and therefore has a stable, non-moving
+		/// address in deque storage after logical-device creation.
+		std::deque<QueueState> queues;
+		/// Serializes whole-graph selection, reservation and load accounting.
+		std::mutex mutex;
+	};
+
+	[[nodiscard]] std::uint64_t NormalizedWork(std::uint64_t work) noexcept {
+		return std::max(work, std::uint64_t{ 1u });
+	}
+
+	[[nodiscard]] std::uint8_t CapabilityCount(
+		CommandQueueType capabilities
+	) noexcept {
+		auto value = static_cast<std::uint8_t>(capabilities);
+		std::uint8_t result = 0u;
+		while (value != 0u) {
+			result += value & 1u;
+			value >>= 1u;
+		}
+		return result;
+	}
+
+	[[nodiscard]] float NativePriority(
+		std::uint32_t index,
+		std::uint32_t count
+	) noexcept {
+		if (count == 1u) {
+			return 1.0f;
+		}
+		return 1.0f -
+			static_cast<float>(index) /
+			static_cast<float>(count - 1u);
+	}
+
+	[[nodiscard]] bool ContainsFamily(
+		std::span<std::uint32_t const> families,
+		std::uint32_t family
+	) noexcept {
+		return
+			families.empty() ||
+			std::ranges::find(families, family) != families.end();
+	}
+
+	[[nodiscard]] bool SupportsCapabilities(
+		QueueState const& queue,
+		CommandQueueType required
+	) noexcept {
+		return (queue.capabilities & required) == required;
+	}
+
+	void ValidateRequest(
+		QueueRequest const& request,
+		std::size_t index,
+		std::size_t request_count
+	) {
+		if (request.required_capabilities == CommandQueueType::None &&
+			request.allowed_families.empty()) {
+			throw std::invalid_argument(
+				"A capability-free Vulkan queue request requires allowed families"
+			);
+		}
+		if (!std::isfinite(request.priority) ||
+			request.priority < 0.0f ||
+			request.priority > 1.0f) {
+			throw std::invalid_argument(
+				"Vulkan queue request priority is outside [0, 1]"
+			);
+		}
+		for (std::size_t dependency : request.dependencies) {
+			if (dependency >= request_count || dependency == index) {
+				throw std::invalid_argument(
+					"Vulkan queue request contains an invalid dependency"
+				);
+			}
+		}
+	}
 
 }
 
 namespace fyuu_rhi::vulkan {
 
-	struct AllocatedCommandQueueInfo {
-		std::uint32_t family;
-		std::uint32_t index;
-	};
+	class QueueAllocator;
+	class QueueReservationSession;
 
-	// Configuration options for the queue allocator.
-	struct QueueOptions {
-		std::size_t max_graphics; // Max number of graphics queues to use
-		std::span<float const> graphics_priorities; // Priorities for each graphics queue
-
-		std::size_t max_compute; // Max number of compute queues
-		std::span<float const> compute_priorities; // Priorities for compute queues
-
-		std::size_t max_copy; // Max number of copy queues
-		std::span<float const> copy_priorities; // Priorities for copy queues
-
-		static QueueOptions PlatformDefault(); // Returns a default configuration for the current platform
-	};
-
-	// Move-only lease that returns its queue index to the allocator on destruction.
-	class ManagedQueue final {
+	/// Retains submitted load until CompletionToken releases it after GPU
+	/// completion. The token performs no native wait; the owner must keep it
+	/// alive at least as long as the corresponding completion point.
+	class QueueWorkToken final {
 	private:
-		std::shared_ptr<QueueSet> m_queue_set;
-		std::uint32_t m_index;
+		friend class QueueReservationSession;
+
+		std::shared_ptr<QueueAllocatorState> state;
+		std::size_t slot;
+		std::uint64_t work;
+
+		QueueWorkToken(
+			std::shared_ptr<QueueAllocatorState> const& state_,
+			std::size_t slot_,
+			std::uint64_t work_
+		) noexcept
+			: state(state_),
+			slot(slot_),
+			work(work_) {
+		}
+
+		void Retire() noexcept {
+			if (!state) {
+				return;
+			}
+			std::unique_lock<std::mutex> lock(state->mutex);
+			state->queues[slot].submitted_work -= work;
+			state.reset();
+		}
 
 	public:
-		ManagedQueue(std::shared_ptr<QueueSet> const& queue_set, std::uint32_t index) noexcept
-			: m_queue_set(queue_set), m_index(index) {
+		QueueWorkToken(QueueWorkToken const&) = delete;
+		QueueWorkToken& operator=(QueueWorkToken const&) = delete;
+
+		QueueWorkToken(QueueWorkToken&& other) noexcept
+			: state(std::move(other.state)),
+			slot(std::exchange(other.slot, 0u)),
+			work(std::exchange(other.work, 0u)) {
 		}
 
-		~ManagedQueue() {
-			if (m_queue_set) {
-				std::unique_lock<std::mutex> lock(m_queue_set->allocated_queue_mutex);
-				m_queue_set->allocated_queue.erase(m_index);
+		QueueWorkToken& operator=(QueueWorkToken&& other) noexcept {
+			if (this != &other) {
+				Retire();
+				state = std::move(other.state);
+				slot = std::exchange(other.slot, 0u);
+				work = std::exchange(other.work, 0u);
 			}
+			return *this;
 		}
 
-		// Queue leases have unique ownership.
+		~QueueWorkToken() noexcept {
+			Retire();
+		}
+
+		[[nodiscard]] QueueIdentifier GetQueue() const noexcept {
+			return state->queues[slot].identifier;
+		}
+	};
+
+	/// Move-only stack object granting access to one physical queue. Different
+	/// graphs may select the same queue; native queue calls are serialized by the
+	/// QueueState submission mutex while recording remains fully concurrent.
+	class ManagedQueue final {
+	private:
+		friend class QueueAllocator;
+		friend class QueueReservationSession;
+
+		std::shared_ptr<QueueAllocatorState> state;
+		std::size_t slot;
+		vk::SharedQueue impl;
+
+		ManagedQueue(
+			std::shared_ptr<QueueAllocatorState> const& state_,
+			std::size_t slot_,
+			vk::SharedQueue&& impl_
+		) noexcept
+			: state(state_),
+			slot(slot_),
+			impl(std::move(impl_)) {
+		}
+
+	public:
 		ManagedQueue(ManagedQueue const&) = delete;
 		ManagedQueue& operator=(ManagedQueue const&) = delete;
 
 		ManagedQueue(ManagedQueue&& other) noexcept
-			: m_queue_set(std::move(other.m_queue_set)),
-			m_index(other.m_index) {
-
+			: state(std::move(other.state)),
+			slot(std::exchange(other.slot, 0u)),
+			impl(std::move(other.impl)) {
 		}
 
 		ManagedQueue& operator=(ManagedQueue&& other) noexcept {
-			std::swap(m_queue_set, other.m_queue_set);
-			std::swap(m_index, other.m_index);
+			if (this != &other) {
+				state = std::move(other.state);
+				slot = std::exchange(other.slot, 0u);
+				impl = std::move(other.impl);
+			}
 			return *this;
 		}
 
-		[[nodiscard]] std::uint32_t GetFamily() const noexcept {
-			return *m_queue_set->info.family;
+		[[nodiscard]] QueueIdentifier GetIdentifier() const noexcept {
+			return state->queues[slot].identifier;
 		}
 
-		[[nodiscard]] std::uint32_t GetIndex() const noexcept {
-			return m_index;
+		[[nodiscard]] vk::SharedQueue const& GetImplementation(
+		) const noexcept {
+			return impl;
 		}
 
-		[[nodiscard]] AllocatedCommandQueueInfo GetInfo() const noexcept {
-			return { GetFamily(), m_index };
+		/// Every vkQueueSubmit*, vkQueuePresentKHR and vkQueueWaitIdle call on
+		/// this physical queue must hold the returned device-level mutex.
+		[[nodiscard]] std::mutex& GetSubmissionMutex() const noexcept {
+			return state->queues[slot].submission_mutex;
 		}
 	};
 
-	class QueueAllocator {
-	private:
-		std::unordered_map<CommandQueueType, std::shared_ptr<QueueSet>> m_queue_sets;
+	/// Maps one input QueueRequest to a ManagedQueue stored by the reservation
+	/// session. queue is an index rather than a pointer, so moving the session
+	/// cannot invalidate assignments.
+	struct QueueAssignment {
+		std::size_t queue;
+		std::uint64_t work;
+	};
 
-		static std::shared_ptr<QueueSet> MakeQueueSet(CommandQueueType type, std::span<CommandQueueInfo const> queue_infos, QueueOptions const& init_options);
+	/// Owns every physical queue selected for one graph exactly once and keeps
+	/// one load reservation per input batch until submission or rollback.
+	class QueueReservationSession final {
+	private:
+		friend class QueueAllocator;
+
+		std::shared_ptr<QueueAllocatorState> state;
+		std::vector<ManagedQueue> queues;
+		std::vector<QueueAssignment> assignments;
+		std::vector<bool> committed;
+
+		QueueReservationSession(
+			std::shared_ptr<QueueAllocatorState> const& state_,
+			std::vector<ManagedQueue>&& queues_,
+			std::vector<QueueAssignment>&& assignments_,
+			std::vector<bool>&& committed_
+		) noexcept
+			: state(state_),
+			queues(std::move(queues_)),
+			assignments(std::move(assignments_)),
+			committed(std::move(committed_)) {
+		}
+
+		void Rollback() noexcept {
+			if (!state) {
+				return;
+			}
+			std::unique_lock<std::mutex> lock(state->mutex);
+			for (std::size_t index = 0u; index < assignments.size(); ++index) {
+				if (committed[index]) {
+					continue;
+				}
+				auto slot = queues[assignments[index].queue].slot;
+				state->queues[slot].reserved_work -= assignments[index].work;
+			}
+			state.reset();
+		}
 
 	public:
-		// Builds queue sets for every capability available in the given family list.
-		QueueAllocator(
-			std::span<CommandQueueInfo const> queue_infos,
-			QueueOptions const& init_options = QueueOptions::PlatformDefault()
-		);
+		QueueReservationSession(QueueReservationSession const&) = delete;
+		QueueReservationSession& operator=(QueueReservationSession const&) = delete;
 
-		// Allocate a queue of the given type with the requested priority.
-		[[nodiscard]] ManagedQueue Allocate(CommandQueueType type, QueuePriority priority);
-		[[nodiscard]] bool Supports(CommandQueueType type) const noexcept;
+		QueueReservationSession(QueueReservationSession&& other) noexcept
+			: state(std::move(other.state)),
+			queues(std::move(other.queues)),
+			assignments(std::move(other.assignments)),
+			committed(std::move(other.committed)) {
+		}
 
-		// Query properties of the underlying queue set for a given type.
-		[[nodiscard]] std::uint32_t GetFamily(CommandQueueType type) const noexcept;
-		[[nodiscard]] std::uint32_t GetTotalQueue(CommandQueueType type) const noexcept;
-		[[nodiscard]] std::span<float const> GetPriorities(CommandQueueType type) const noexcept;
+		QueueReservationSession& operator=(QueueReservationSession&& other) noexcept {
+			if (this != &other) {
+				Rollback();
+				queues = std::move(other.queues);
+				assignments = std::move(other.assignments);
+				committed = std::move(other.committed);
+				state = std::move(other.state);
+			}
+			return *this;
+		}
+
+		~QueueReservationSession() noexcept {
+			Rollback();
+		}
+
+		[[nodiscard]] std::size_t GetAssignmentCount() const noexcept {
+			return assignments.size();
+		}
+
+		[[nodiscard]] QueueAssignment const& GetAssignment(
+			std::size_t batch
+		) const noexcept {
+			return assignments[batch];
+		}
+
+		[[nodiscard]] ManagedQueue& GetQueue(this auto&& self, std::size_t batch) noexcept {
+			return self.queues[self.assignments[batch].queue];
+		}
+
+		/// Converts one batch from reserved load to submitted load. Call only
+		/// after the native queue submission succeeds.
+		[[nodiscard]] QueueWorkToken Commit(std::size_t batch) {
+			if (!state || committed[batch]) {
+				throw std::logic_error("Vulkan queue assignment is not active");
+			}
+			auto const& assignment = assignments[batch];
+			auto slot = queues[assignment.queue].slot;
+			{
+				std::unique_lock<std::mutex> lock(state->mutex);
+				state->queues[slot].reserved_work -= assignment.work;
+				state->queues[slot].submitted_work += assignment.work;
+				committed[batch] = true;
+			}
+			return QueueWorkToken(state, slot, assignment.work);
+		}
+	};
+
+	/// Builds the immutable device queue creation plan and atomically schedules
+	/// complete execution graphs onto the physical queue slots it describes.
+	class QueueAllocator {
+	private:
+		std::shared_ptr<QueueAllocatorState> state;
+
+	public:
+		QueueAllocator(std::span<CommandQueueInfo const> queue_families)
+			: state(std::make_shared<QueueAllocatorState>()) {
+			state->families.reserve(queue_families.size());
+			std::size_t queue_count = 0u;
+			for (auto const& queue_family : queue_families) {
+				if (queue_family.count == 0u) {
+					throw std::invalid_argument(
+						"Vulkan queue family must expose at least one queue"
+					);
+				}
+				if (queue_family.count >
+					std::numeric_limits<std::size_t>::max() - queue_count) {
+					throw std::length_error("Vulkan queue count overflow");
+				}
+				queue_count += queue_family.count;
+				QueueFamilyState family;
+				family.info = queue_family;
+				family.priorities.reserve(queue_family.count);
+				for (std::uint32_t index = 0u;
+					index < queue_family.count;
+					++index) {
+					family.priorities.emplace_back(
+						NativePriority(index, queue_family.count)
+					);
+				}
+				state->families.emplace_back(std::move(family));
+			}
+
+			// Spans are built only after family storage is complete and never moves.
+			state->create_plans.reserve(state->families.size());
+			for (auto const& family : state->families) {
+				state->create_plans.emplace_back(
+					family.info.family,
+					family.priorities
+				);
+				for (std::uint32_t index = 0u;
+					index < family.info.count;
+					++index) {
+					state->queues.emplace_back(
+						QueueIdentifier(family.info.family, index),
+						family.info.capabilities,
+						family.priorities[index]
+					);
+				}
+			}
+		}
+
+		[[nodiscard]] std::span<QueueCreatePlan const> GetCreatePlans() const noexcept {
+			return state->create_plans;
+		}
+
+		/// Assigns every request under one allocator lock. All temporary storage
+		/// and SharedQueue objects are prepared before the no-throw state commit,
+		/// so an exception never leaves a partially reserved graph.
+		[[nodiscard]] QueueReservationSession Reserve(
+			vk::SharedDevice const& device,
+			std::shared_ptr<vk::detail::DispatchLoaderDynamic> const& dispatcher,
+			std::span<QueueRequest const> requests
+		) {
+			for (std::size_t index = 0u; index < requests.size(); ++index) {
+				ValidateRequest(requests[index], index, requests.size());
+			}
+
+			std::vector<std::vector<std::size_t>> successors(requests.size());
+			std::vector<std::size_t> indegrees(requests.size(), 0u);
+			for (std::size_t index = 0u; index < requests.size(); ++index) {
+				for (std::size_t dependency : requests[index].dependencies) {
+					successors[dependency].emplace_back(index);
+					++indegrees[index];
+				}
+			}
+
+			std::vector<std::size_t> selected_slots(requests.size());
+			std::vector<bool> request_assigned(requests.size(), false);
+			std::vector<bool> slot_selected(state->queues.size(), false);
+			std::vector<std::uint64_t> projected_work(state->queues.size(), 0u);
+			std::unique_lock<std::mutex> lock(state->mutex);
+
+			auto IsCandidate = [&](std::size_t slot, QueueRequest const& request) {
+				auto const& queue = state->queues[slot];
+				return SupportsCapabilities(queue, request.required_capabilities) &&
+					ContainsFamily(request.allowed_families, queue.identifier.family);
+			};
+
+			for (std::size_t assigned_count = 0u;
+				assigned_count < requests.size();
+				++assigned_count) {
+				std::optional<std::size_t> selected_request;
+				std::size_t selected_candidate_count = 0u;
+				for (std::size_t request_index = 0u;
+					request_index < requests.size();
+					++request_index) {
+					if (request_assigned[request_index] || indegrees[request_index] != 0u) {
+						continue;
+					}
+					std::size_t candidate_count = 0u;
+					for (std::size_t slot = 0u; slot < state->queues.size(); ++slot) {
+						candidate_count += IsCandidate(slot, requests[request_index]) ? 1u : 0u;
+					}
+					if (candidate_count == 0u) {
+						throw std::runtime_error(
+							"No Vulkan queue satisfies a graph request"
+						);
+					}
+					bool is_more_constrained =
+						!selected_request ||
+						candidate_count < selected_candidate_count ||
+						(
+							candidate_count == selected_candidate_count &&
+							requests[request_index].priority >
+								requests[*selected_request].priority
+						) ||
+						(
+							candidate_count == selected_candidate_count &&
+							requests[request_index].priority ==
+								requests[*selected_request].priority &&
+							requests[request_index].estimated_work >
+								requests[*selected_request].estimated_work
+						) ||
+						(
+							candidate_count == selected_candidate_count &&
+							requests[request_index].priority ==
+								requests[*selected_request].priority &&
+							requests[request_index].estimated_work ==
+								requests[*selected_request].estimated_work &&
+							request_index < *selected_request
+						);
+					if (is_more_constrained) {
+						selected_request = request_index;
+						selected_candidate_count = candidate_count;
+					}
+				}
+				if (!selected_request) {
+					throw std::invalid_argument(
+						"Vulkan queue request dependencies contain a cycle"
+					);
+				}
+
+				auto request_index = *selected_request;
+				auto const& request = requests[request_index];
+				std::optional<std::size_t> selected_slot;
+				for (std::size_t slot = 0u; slot < state->queues.size(); ++slot) {
+					if (!IsCandidate(slot, request)) {
+						continue;
+					}
+					auto const& queue = state->queues[slot];
+					auto cross_queue_dependencies = std::ranges::count_if(
+						request.dependencies,
+						[&](std::size_t dependency) {
+							return selected_slots[dependency] != slot;
+						}
+					);
+					auto score = std::tuple(
+						request.preferred_family &&
+							queue.identifier.family != *request.preferred_family,
+						CapabilityCount(queue.capabilities) -
+							CapabilityCount(request.required_capabilities),
+						std::abs(queue.priority - request.priority),
+						queue.reserved_work + queue.submitted_work + projected_work[slot],
+						cross_queue_dependencies,
+						!slot_selected[slot],
+						queue.identifier.family,
+						queue.identifier.index
+					);
+					if (!selected_slot) {
+						selected_slot = slot;
+						continue;
+					}
+					auto const& current = state->queues[*selected_slot];
+					auto current_cross_queue_dependencies = std::ranges::count_if(
+						request.dependencies,
+						[&](std::size_t dependency) {
+							return selected_slots[dependency] != *selected_slot;
+						}
+					);
+					auto current_score = std::tuple(
+						request.preferred_family &&
+							current.identifier.family != *request.preferred_family,
+						CapabilityCount(current.capabilities) -
+							CapabilityCount(request.required_capabilities),
+						std::abs(current.priority - request.priority),
+						current.reserved_work + current.submitted_work +
+							projected_work[*selected_slot],
+						current_cross_queue_dependencies,
+						!slot_selected[*selected_slot],
+						current.identifier.family,
+						current.identifier.index
+					);
+					if (score < current_score) {
+						selected_slot = slot;
+					}
+				}
+
+				selected_slots[request_index] = *selected_slot;
+				slot_selected[*selected_slot] = true;
+				auto work = NormalizedWork(request.estimated_work);
+				auto const& queue = state->queues[*selected_slot];
+				if (work > std::numeric_limits<std::uint64_t>::max() -
+					queue.reserved_work -
+					queue.submitted_work -
+					projected_work[*selected_slot]) {
+					throw std::overflow_error("Vulkan queue work estimate overflow");
+				}
+				projected_work[*selected_slot] += work;
+				request_assigned[request_index] = true;
+				for (std::size_t successor : successors[request_index]) {
+					--indegrees[successor];
+				}
+			}
+
+			std::vector<std::size_t> slot_to_managed(
+				state->queues.size(),
+				std::numeric_limits<std::size_t>::max()
+			);
+			std::vector<ManagedQueue> managed_queues;
+			managed_queues.reserve(std::ranges::count(slot_selected, true));
+			for (std::size_t slot = 0u; slot < state->queues.size(); ++slot) {
+				if (!slot_selected[slot]) {
+					continue;
+				}
+				auto identifier = state->queues[slot].identifier;
+				vk::Queue native_queue = device->getQueue(
+					identifier.family,
+					identifier.index,
+					*dispatcher
+				);
+				slot_to_managed[slot] = managed_queues.size();
+				managed_queues.push_back(
+					ManagedQueue(
+						state,
+						slot,
+						vk::SharedQueue(native_queue, device)
+					)
+				);
+			}
+
+			std::vector<QueueAssignment> assignments;
+			assignments.reserve(requests.size());
+			for (std::size_t index = 0u; index < requests.size(); ++index) {
+				assignments.emplace_back(
+					slot_to_managed[selected_slots[index]],
+					NormalizedWork(requests[index].estimated_work)
+				);
+			}
+			std::vector<bool> committed(requests.size(), false);
+			QueueReservationSession result(
+				state,
+				std::move(managed_queues),
+				std::move(assignments),
+				std::move(committed)
+			);
+
+			// This is the only allocator-state mutation in Reserve. Everything that
+			// can allocate or query Vulkan has already completed successfully.
+			for (std::size_t index = 0u; index < requests.size(); ++index) {
+				auto slot = selected_slots[index];
+				auto work = NormalizedWork(requests[index].estimated_work);
+				state->queues[slot].reserved_work += work;
+			}
+			return result;
+		}
+
+		[[nodiscard]] bool Supports(CommandQueueType capabilities) const noexcept {
+			if (capabilities == CommandQueueType::None) {
+				return false;
+			}
+			return std::ranges::any_of(
+				state->queues,
+				[capabilities](QueueState const& queue) {
+					return SupportsCapabilities(queue, capabilities);
+				}
+			);
+		}
 	};
 
 }
-
-namespace fyuu_rhi::vulkan {
-
-	QueueOptions QueueOptions::PlatformDefault() {
-
-		QueueOptions options;
-#if defined(_WIN32) || defined(__linux__)
-		// high performance desktop GPUs
-		options.max_graphics = 3u;
-		options.max_compute = 3u;
-		options.max_copy = 3u;
-
-		// high, medium, low
-		static constexpr std::array priorities = { 1.00f, 0.67f, 0.33f };
-
-		options.graphics_priorities = priorities;
-		options.compute_priorities = priorities;
-		options.copy_priorities = priorities;
-#elif defined(__ANDROID__)
-		// mobile and embedded devices
-		options.max_graphics = 1u;
-		options.max_compute = 1u;
-		options.max_copy = 1u;
-
-		static constexpr std::array priorities = { 1.00f };
-
-		options.graphics_priorities = priorities;
-		options.compute_priorities = priorities;
-		options.copy_priorities = priorities;
-#endif // defined(_WIN32) || defined(__linux__)
-		return options;
-	}
-
-	std::shared_ptr<QueueSet> QueueAllocator::MakeQueueSet(CommandQueueType type, std::span<CommandQueueInfo const> queue_infos, QueueOptions const& init_options) {
-		std::vector<std::uint32_t> indices;
-		std::uint8_t minimum_capability_count = std::numeric_limits<std::uint8_t>::max();
-	
-		auto length = static_cast<std::uint32_t>(queue_infos.size());
-
-		// Collect indices of queue families that support the requested type.
-
-		for (std::uint32_t i = 0; i < length; ++i) {
-			if ((queue_infos[i].type & type) == type) {
-				auto capabilities = static_cast<std::uint8_t>(queue_infos[i].type);
-				std::uint8_t capability_count = 0u;
-				while (capabilities != 0u) {
-					capability_count += capabilities & 1u;
-					capabilities >>= 1u;
-				}
-
-				if (capability_count < minimum_capability_count) {
-					indices.clear();
-					minimum_capability_count = capability_count;
-				}
-				if (capability_count == minimum_capability_count) {
-					indices.emplace_back(i);
-				}
-			}
-		}
-
-		if (indices.empty()) {
-			return nullptr;
-		}
-
-		// Randomly select one family from the matching ones.
-
-		static thread_local std::mt19937 gen(std::random_device{}());
-		static thread_local std::uniform_int_distribution<std::size_t> dist;
-		using param_t = std::uniform_int_distribution<std::size_t>::param_type;
-		dist.param(param_t{ 0, indices.size() - 1 });
-
-		std::size_t selected_index = dist(gen);
-
-		CommandQueueInfo queue_info = queue_infos[indices[selected_index]];
-
-		// Cap the number of queues to use according to init_options and assign priorities.
-		switch (type) {
-		case CommandQueueType::Copy:
-			queue_info.num_available = std::min(
-				queue_info.num_available,
-				static_cast<std::uint32_t>(init_options.max_copy)
-			);
-			return std::make_shared<QueueSet>(queue_info, init_options.copy_priorities.subspan(0, queue_info.num_available));
-
-		case CommandQueueType::Compute:
-			queue_info.num_available = std::min(
-				queue_info.num_available,
-				static_cast<std::uint32_t>(init_options.max_compute)
-			);
-			return std::make_shared<QueueSet>(queue_info, init_options.compute_priorities.subspan(0, queue_info.num_available));
-
-		case CommandQueueType::Graphics:
-		default:
-			queue_info.num_available = std::min(
-				queue_info.num_available,
-				static_cast<std::uint32_t>(init_options.max_graphics)
-			);
-			return std::make_shared<QueueSet>(queue_info, init_options.graphics_priorities.subspan(0, queue_info.num_available));
-		}
-	}
-
-	QueueAllocator::QueueAllocator(
-		std::span<CommandQueueInfo const> queue_infos,
-		QueueOptions const& init_options
-	) : m_queue_sets() {
-		for (CommandQueueType type : {
-			CommandQueueType::Graphics,
-			CommandQueueType::Compute,
-			CommandQueueType::Copy
-		}) {
-			auto queue_set = MakeQueueSet(type, queue_infos, init_options);
-			if (queue_set) {
-				m_queue_sets.emplace(type, std::move(queue_set));
-			}
-		}
-
-	}
-
-	ManagedQueue QueueAllocator::Allocate(CommandQueueType type, QueuePriority priority) {
-
-		auto& queue_set = m_queue_sets.at(type);
-		auto const& priorities = queue_set->priorities;
-		float requested_priority;
-		switch (priority) {
-		case QueuePriority::Low:
-			requested_priority = 0.0f;
-			break;
-		case QueuePriority::Medium:
-			requested_priority = 0.5f;
-			break;
-		case QueuePriority::High:
-		default:
-			requested_priority = 1.0f;
-			break;
-		}
-		std::vector<std::pair<float, std::uint32_t>> candidates;
-		candidates.reserve(priorities.size());
-		for (std::size_t index = 0u; index < priorities.size(); ++index) {
-			candidates.emplace_back(
-				std::abs(priorities[index] - requested_priority),
-				static_cast<std::uint32_t>(index)
-			);
-		}
-		std::ranges::sort(candidates);
-
-		std::unique_lock<std::mutex> lock(queue_set->allocated_queue_mutex);
-		for (auto const& [distance, index] : candidates) {
-			(void)distance;
-			auto& allocated_queue = queue_set->allocated_queue;
-			if (allocated_queue.find(index) == allocated_queue.end()) {
-				allocated_queue.insert(index);
-				return ManagedQueue(queue_set, index);
-			}
-		}
-
-		throw std::runtime_error("No queue available");
-	}
-
-	bool QueueAllocator::Supports(CommandQueueType type) const noexcept {
-		return m_queue_sets.contains(type);
-	}
-
-	std::uint32_t QueueAllocator::GetFamily(CommandQueueType type) const noexcept {
-		auto& qs = m_queue_sets.at(type);
-		return *qs->info.family;
-	}
-
-	std::uint32_t QueueAllocator::GetTotalQueue(CommandQueueType type) const noexcept {
-		return m_queue_sets.at(type)->info.num_available;
-	}
-
-	std::span<float const> QueueAllocator::GetPriorities(CommandQueueType type) const noexcept {
-		return m_queue_sets.at(type)->priorities;
-	}
-
-}
-
 #endif // !defined(__APPLE__)

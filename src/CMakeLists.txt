@@ -62,17 +62,6 @@ collect_cxx_modules(${ENGINE_SOURCE_DIR} ""
 	module_impls
 )
 
-option(
-	FYUU_BUILD_LEGACY_ASSET_SYSTEM
-	"Build the deprecated pre-C++26 Boost.Describe asset system"
-	OFF
-)
-if(NOT FYUU_BUILD_LEGACY_ASSET_SYSTEM)
-	list(FILTER sources EXCLUDE REGEX "[/\\\\]asset[/\\\\]")
-	list(FILTER modules EXCLUDE REGEX "[/\\\\]asset[/\\\\]")
-	list(FILTER module_impls EXCLUDE REGEX "[/\\\\]asset[/\\\\]")
-endif()
-
 target_sources(${PROJECT_NAME}
 	PUBLIC 
 		${PUBLIC_HEADERS}

@@ -73,33 +73,6 @@ namespace {
 	DXGI_FORMAT ExtractFormat(ResourceFlags const& flags);
 	UINT ExtractSampleCount(ResourceFlags const& flags);
 
-	std::shared_ptr<Backend::Scheduler::QueueState> CreateSchedulerQueue(
-		Backend::LogicalDevice const& ld,
-		D3D12_COMMAND_LIST_TYPE type,
-		float priority
-	) {
-		D3D12_COMMAND_QUEUE_DESC descriptor = {
-			.Type = type,
-			.Priority = priority >= 0.75f ?
-				D3D12_COMMAND_QUEUE_PRIORITY_HIGH :
-				D3D12_COMMAND_QUEUE_PRIORITY_NORMAL,
-			.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE,
-			.NodeMask = 0u
-		};
-		Microsoft::WRL::ComPtr<ID3D12CommandQueue> queue;
-		ThrowIfFailed(ld.impl->CreateCommandQueue(&descriptor, IID_PPV_ARGS(&queue)));
-		Microsoft::WRL::ComPtr<ID3D12Fence> fence;
-		ThrowIfFailed(ld.impl->CreateFence(0u, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)));
-		return std::make_shared<Backend::Scheduler::QueueState>(
-			ld.impl,
-			queue,
-			fence,
-			1u,
-			std::make_shared<Backend::Scheduler::CommandPool>(),
-			type
-		);
-	}
-
 	D3D12_DESCRIPTOR_RANGE_TYPE DescriptorRangeType(SlangPipelineBinding const& binding) {
 		if (binding.flags.Test(ResourceFlagBits::SamplerBinding)) {
 			if (binding.flags.Count() != 1) {
@@ -155,27 +128,45 @@ namespace {
 		if (serialized.empty()) {
 			std::vector<D3D12_DESCRIPTOR_RANGE1> ranges;
 			std::vector<D3D12_ROOT_PARAMETER1> parameters;
-			ranges.reserve(pipeline_interface.bindings.size());
-			parameters.reserve(pipeline_interface.bindings.size() + pipeline_interface.push_constants.size());
+			ranges.reserve(pipeline_interface.bindings.size() * 2u);
+			parameters.reserve(
+				pipeline_interface.bindings.size() * 2u + pipeline_interface.push_constants.size()
+			);
 
 			for (auto const& entry : pipeline_interface.bindings) {
-				ranges.push_back(
-					{
-						.RangeType = DescriptorRangeType(entry),
-						.NumDescriptors = entry.count,
-						.BaseShaderRegister = entry.slot,
-						.RegisterSpace = entry.space,
-						.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE,
-						.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND
-					}
-				);
-				parameters.push_back(
-					{
-						.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
-						.DescriptorTable = { .NumDescriptorRanges = 1, .pDescriptorRanges = &ranges.back() },
-						.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL
-					}
-				);
+				// A combined texture+sampler binding (Sampler2D) decomposes into a
+				// Texture2D at t<slot> and a SamplerState at s<slot>. They live in
+				// different descriptor-heap types, so it contributes two root
+				// parameters: the SRV table followed by the sampler table.
+				bool combined =
+					entry.flags.Test(ResourceFlagBits::TextureBinding) &&
+					entry.flags.Test(ResourceFlagBits::SamplerBinding);
+				auto AddRangeAndParameter = [&](D3D12_DESCRIPTOR_RANGE_TYPE type) {
+					ranges.push_back(
+						{
+							.RangeType = type,
+							.NumDescriptors = entry.count,
+							.BaseShaderRegister = entry.slot,
+							.RegisterSpace = entry.space,
+							.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE,
+							.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND
+						}
+					);
+					parameters.push_back(
+						{
+							.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
+							.DescriptorTable = { .NumDescriptorRanges = 1, .pDescriptorRanges = &ranges.back() },
+							.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL
+						}
+					);
+				};
+				if (combined) {
+					AddRangeAndParameter(D3D12_DESCRIPTOR_RANGE_TYPE_SRV);
+					AddRangeAndParameter(D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER);
+				}
+				else {
+					AddRangeAndParameter(DescriptorRangeType(entry));
+				}
 			}
 			for (auto const& range : pipeline_interface.push_constants) {
 				if (range.offset != 0 || range.size == 0 || range.size % sizeof(std::uint32_t) != 0) {
@@ -329,7 +320,12 @@ namespace {
 		return ExtractSampleCount(ResourceFlags(sample_count));
 	}
 
-	UINT QueryQualityLevels(ID3D12Device* device, DXGI_FORMAT format, UINT sample_cnt, D3D12_MULTISAMPLE_QUALITY_LEVEL_FLAGS flags = D3D12_MULTISAMPLE_QUALITY_LEVELS_FLAG_NONE) {
+	UINT QueryQualityLevels(
+		Microsoft::WRL::ComPtr<ID3D12Device> const& device,
+		DXGI_FORMAT format,
+		UINT sample_cnt,
+		D3D12_MULTISAMPLE_QUALITY_LEVEL_FLAGS flags = D3D12_MULTISAMPLE_QUALITY_LEVELS_FLAG_NONE
+	) {
 
 		struct MSAAQualityCacheKey {
 			ID3D12Device* device;
@@ -358,7 +354,7 @@ namespace {
 		> cache;
 		static std::mutex mutex;
 
-		MSAAQualityCacheKey key{ device, format, sample_cnt, flags };
+		MSAAQualityCacheKey key{ device.Get(), format, sample_cnt, flags };
 		if (std::unique_lock<std::mutex> lock(mutex); cache.Contains(key)) {
 			return cache.Get(key);
 		}
@@ -386,7 +382,11 @@ namespace {
 
 	}
 
-	UINT SelectSampleQuality(ID3D12Device* device, DXGI_FORMAT format, UINT sample_cnt) {
+	UINT SelectSampleQuality(
+		Microsoft::WRL::ComPtr<ID3D12Device> const& device,
+		DXGI_FORMAT format,
+		UINT sample_cnt
+	) {
 		if (QueryQualityLevels(device, format, sample_cnt) == 0u) {
 			throw std::invalid_argument(std::format(
 				"Sample count {} is not supported for DXGI format {}",
@@ -1139,7 +1139,7 @@ namespace fyuu_rhi::d3d12 {
 				return CD3DX12_RESOURCE_DESC::Tex2D(
 					format, width, static_cast<UINT>(height), static_cast<UINT16>(depth_arr_layers), 
 					static_cast<UINT16>(mip_lvl_cnt), sample_cnt,
-					SelectSampleQuality(ld.impl.Get(), format, sample_cnt),
+					SelectSampleQuality(ld.impl, format, sample_cnt),
 					res_flags, tex_layout
 				);
 			}
@@ -1152,7 +1152,7 @@ namespace fyuu_rhi::d3d12 {
 			return CD3DX12_RESOURCE_DESC::Tex2D(
 				format, width, static_cast<UINT>(height), static_cast<UINT16>(depth_arr_layers), 
 				static_cast<UINT16>(mip_lvl_cnt), sample_cnt,
-				SelectSampleQuality(ld.impl.Get(), format, sample_cnt),
+				SelectSampleQuality(ld.impl, format, sample_cnt),
 				res_flags, tex_layout
 			);
 			}();
@@ -1254,7 +1254,6 @@ namespace fyuu_rhi::d3d12 {
 			auto handle = ld.univ_alloc.Allocate();
 			ld.impl->CreateShaderResourceView(tex, &srv_desc, handle.CPU());
 			return {
-				res.impl,
 				std::move(handle),
 				View::Type::ShaderResource,
 				static_cast<std::uint32_t>(base_mip_lvl),
@@ -1302,7 +1301,6 @@ namespace fyuu_rhi::d3d12 {
 			auto handle = ld.univ_alloc.Allocate();
 			ld.impl->CreateUnorderedAccessView(tex	, nullptr, &uav_desc, handle.CPU());
 			return {
-				res.impl,
 				std::move(handle),
 				View::Type::UnorderedAccess,
 				static_cast<std::uint32_t>(base_mip_lvl),
@@ -1350,7 +1348,6 @@ namespace fyuu_rhi::d3d12 {
 			auto handle = ld.rtv_alloc.Allocate();
 			ld.impl->CreateRenderTargetView(tex, &rtv_desc, handle.CPU());
 			return {
-				res.impl,
 				std::move(handle),
 				View::Type::RenderTarget,
 				static_cast<std::uint32_t>(base_mip_lvl),
@@ -1392,7 +1389,6 @@ namespace fyuu_rhi::d3d12 {
 			auto handle = ld.dsv_alloc.Allocate();
 			ld.impl->CreateDepthStencilView(tex, &dsv_desc, handle.CPU());
 			return {
-				res.impl,
 				std::move(handle),
 				View::Type::DepthStencil,
 				static_cast<std::uint32_t>(base_mip_lvl),
@@ -1500,7 +1496,6 @@ namespace fyuu_rhi::d3d12 {
 		}
 
 		return {
-			res.impl,
 			std::move(handle),
 			is_srv ? View::Type::ShaderResource : View::Type::UnorderedAccess,
 			0u,
@@ -1542,8 +1537,11 @@ namespace fyuu_rhi::d3d12 {
 			.format = SLANG_DXIL,
 			.profile = QueryHighestSMLevel(ld)
 		};
+
+		auto adapter = GetPhysicalDevice(ld.impl);
+
 		DXGI_ADAPTER_DESC1 adapter_desc{};
-		ThrowIfFailed(ld.phys_dev->GetDesc1(&adapter_desc));
+		ThrowIfFailed(adapter->GetDesc1(&adapter_desc));
 		auto driver = QueryDXDriverVersion(adapter_desc);
 		auto cache_tag = std::format(
 			"d3d12-{:04x}-{:04x}-{}.{}.{}.{}",
@@ -1730,12 +1728,15 @@ namespace fyuu_rhi::d3d12 {
 		Backend::LogicalDevice const& ld,
 		ComputePipelineDescriptor const& descriptor
 	) {
+
+		auto adapter = GetPhysicalDevice(ld.impl);
+
 		slang::TargetDesc target{
 			.format = SLANG_DXIL,
 			.profile = QueryHighestSMLevel(ld)
 		};
 		DXGI_ADAPTER_DESC1 adapter_desc{};
-		ThrowIfFailed(ld.phys_dev->GetDesc1(&adapter_desc));
+		ThrowIfFailed(adapter->GetDesc1(&adapter_desc));
 		auto driver = QueryDXDriverVersion(adapter_desc);
 		auto cache_tag = std::format(
 			"d3d12-compute-{:04x}-{:04x}-{}.{}.{}.{}",
@@ -1822,11 +1823,54 @@ namespace fyuu_rhi::d3d12 {
 		result.root_signature = pipeline.root_signature;
 		result.resource_heap = ld.univ_alloc.GetHeap();
 		result.sampler_heap = ld.sampler_alloc.GetHeap();
-		for (std::uint32_t root_parameter = 0u;
-			root_parameter < pipeline.bindings.size();
-			++root_parameter) {
-			auto const& layout = pipeline.bindings[root_parameter];
-			if (layout.space != space) continue;
+		// Root-parameter indices follow the root signature: a combined binding
+		// contributes two parameters (SRV table + sampler table), so the counter
+		// advances by two for it, one otherwise.
+		std::uint32_t root_parameter = 0u;
+		for (auto const& layout : pipeline.bindings) {
+			auto const IsCombined = [&]() {
+				return layout.flags.Test(ResourceFlagBits::TextureBinding) &&
+					layout.flags.Test(ResourceFlagBits::SamplerBinding);
+			};
+			if (layout.space != space) {
+				// Bindings from other spaces still occupy root parameters.
+				root_parameter += IsCombined() ? 2u : 1u;
+				continue;
+			}
+			if (IsCombined()) {
+				// Sampler2D: an SRV table from the view plus a sampler table from
+				// the sampler, mirroring the two root parameters in the signature.
+				auto srv = ld.univ_alloc.Allocate(layout.count);
+				auto sampler_descriptors = ld.sampler_alloc.Allocate(layout.count);
+				for (std::uint32_t element = 0u; element < layout.count; ++element) {
+					typename NativePipelineResourceGroup<Backend>::Binding const* source = nullptr;
+					for (auto const& entry : native.bindings) {
+						if (entry.slot == layout.slot && entry.array_element == element) {
+							source = &entry;
+							break;
+						}
+					}
+					if (!source) {
+						throw std::invalid_argument("D3D12 resource groups require every descriptor array element");
+					}
+					auto combined = std::get_if<NativePipelineCombinedBinding<Backend>>(&source->value);
+					if (!combined) {
+						throw std::invalid_argument("D3D12 combined binding requires a combined view+sampler resource");
+					}
+					ld.impl->CopyDescriptorsSimple(
+						1u, srv.CPU(element), combined->view.get().CPU(),
+						D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV
+					);
+					ld.impl->CopyDescriptorsSimple(
+						1u, sampler_descriptors.CPU(element), combined->sampler.get().CPU(),
+						D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER
+					);
+				}
+				result.tables.emplace_back(root_parameter, std::move(srv));
+				result.tables.emplace_back(root_parameter + 1u, std::move(sampler_descriptors));
+				root_parameter += 2u;
+				continue;
+			}
 			bool sampler = layout.flags.Test(ResourceFlagBits::SamplerBinding);
 			auto descriptors = sampler ?
 				ld.sampler_alloc.Allocate(layout.count) :
@@ -1912,42 +1956,43 @@ namespace fyuu_rhi::d3d12 {
 				}
 			}
 			result.tables.emplace_back(root_parameter, std::move(descriptors));
+			root_parameter += 1u;
 		}
 		return result;
 	}
 
-	Backend::Scheduler Backend::CreateScheduler(
-		LogicalDevice const& ld,
-		SchedulerDescriptor const& descriptor
-	) {
-		using Flag = SchedulerFlagBits;
-		Backend::Scheduler::QueueCollection queues;
-		if (descriptor.flags.Test(Flag::Graphics)) {
-			queues.graphics = CreateSchedulerQueue(ld, D3D12_COMMAND_LIST_TYPE_DIRECT, descriptor.priority);
-		}
-		if (descriptor.flags.Test(Flag::Compute)) {
-			queues.compute = CreateSchedulerQueue(ld, D3D12_COMMAND_LIST_TYPE_COMPUTE, descriptor.priority);
-		}
-		if (descriptor.flags.Test(Flag::Copy)) {
-			queues.copy = CreateSchedulerQueue(ld, D3D12_COMMAND_LIST_TYPE_COPY, descriptor.priority);
-		}
-		if (!queues.graphics && !queues.compute && !queues.copy) {
-			throw std::invalid_argument("CreateScheduler(): no execution capability was requested");
-		}
-		return {
-			std::make_shared<Backend::Scheduler::Implementation>(
-				queues,
-				ld.phys_dev,
-				ld.presentation_cache,
-				ld.completion_service
-			)
-		};
-	}
-
-	Backend::CommandGraph Backend::CreateCommandGraph(
-		execution::CommandGraphDescriptor const& descriptor
-	) {
-		return execution::MakeCommandGraph<Backend>(descriptor);
+	Backend::SchedulerContext Backend::CreateScheduler(LogicalDevice const& ld) {
+		SchedulerContext result;
+		// Build queue roles locally, then publish them together with their execution
+		// mutex through one shared Implementation allocation.
+		SchedulerContext::Queues queues;
+		auto CreateQueue = [&](D3D12_COMMAND_LIST_TYPE type) {
+			// Every native queue owns an independent timeline fence and command-list pool.
+			auto context = std::make_shared<QueueContext>();
+			D3D12_COMMAND_QUEUE_DESC descriptor{ .Type = type };
+			ThrowIfFailed(ld.impl->CreateCommandQueue(&descriptor, IID_PPV_ARGS(&context->impl)));
+			ThrowIfFailed(ld.impl->CreateFence(0u, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&context->fence)));
+			if (type == D3D12_COMMAND_LIST_TYPE_DIRECT) {
+				// Only a direct queue can back DXGI swapchain presentation.
+				context->presentation_context = std::make_unique<QueueContext::PresentationContext>();
+			}
+			context->impl->SetPrivateDataInterface(__uuidof(ID3D12Device), ld.impl.Get());
+			return context;
+			};
+		auto graphics = CreateQueue(D3D12_COMMAND_LIST_TYPE_DIRECT);
+		// Present is a logical role of the graphics queue, not another native queue.
+		queues.emplace(execution::QueueType::Graphics, graphics);
+		queues.emplace(execution::QueueType::Present, graphics);
+		queues.emplace(
+			execution::QueueType::Compute,
+			CreateQueue(D3D12_COMMAND_LIST_TYPE_COMPUTE)
+		);
+		queues.emplace(
+			execution::QueueType::Transfer,
+			CreateQueue(D3D12_COMMAND_LIST_TYPE_COPY)
+		);
+		result.impl = std::make_shared<SchedulerContext::Implementation>(std::move(queues));
+		return result;
 	}
 
 }

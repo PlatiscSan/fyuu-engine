@@ -1,4 +1,4 @@
-/* d3d12_utility.cppm */
+﻿/* d3d12_utility.cppm */
 module;
 #include <version>
 #if !defined(__cpp_lib_modules)
@@ -12,6 +12,8 @@ module;
 #if defined(_WIN32)
 #include <Windows.h>
 #include <d3d12.h>
+#include <dxgi1_6.h>
+#include <wrl.h>
 #include <comdef.h>
 #include <wil/resource.h>
 #endif // defined(_WIN32)
@@ -77,13 +79,65 @@ namespace fyuu_rhi::d3d12 {
 
 	}
 
-	void WaitForFence(ID3D12Fence* fence, std::uint64_t value) {
+	/// Blocks without polling until the queue timeline reaches value.
+	void WaitForFence(Microsoft::WRL::ComPtr<ID3D12Fence> const& fence, std::uint64_t value) {
 		if (fence->GetCompletedValue() >= value) {
 			return;
 		}
 		auto event = CreateManagedEvent();
 		ThrowIfFailed(fence->SetEventOnCompletion(value, event.impl.get()));
 		event.impl.wait();
+	}
+
+	/// Recovers the device that owns a native queue without exposing a borrowed pointer.
+	Microsoft::WRL::ComPtr<ID3D12Device> GetLogicalDevice(Microsoft::WRL::ComPtr<ID3D12CommandQueue> const& queue) {
+		Microsoft::WRL::ComPtr<ID3D12Device> result;
+		ThrowIfFailed(
+			queue->GetDevice(IID_PPV_ARGS(&result))
+		);
+		return result;
+	}
+
+	/// Recovers the adapter retained on the device by CreateLogicalDevice.
+	Microsoft::WRL::ComPtr<IDXGIAdapter1> GetPhysicalDevice(Microsoft::WRL::ComPtr<ID3D12Device> const& device) {
+		UINT size = sizeof(IDXGIAdapter1*);
+		IDXGIAdapter1* adapter = nullptr;
+		ThrowIfFailed(
+			device->GetPrivateData(__uuidof(IDXGIAdapter1), &size, &adapter)
+		);
+		// GetPrivateData returns an owned interface reference, so Attach consumes it
+		// without performing a second AddRef.
+		Microsoft::WRL::ComPtr<IDXGIAdapter1> result;
+		result.Attach(adapter);
+		return result;
+	}
+
+	/// Walks from an adapter to the factory that enumerated it.
+	Microsoft::WRL::ComPtr<IDXGIFactory2> GetInstance(Microsoft::WRL::ComPtr<IDXGIAdapter1> const& adapter) {
+		Microsoft::WRL::ComPtr<IDXGIFactory2> result;
+		ThrowIfFailed(
+			adapter->GetParent(IID_PPV_ARGS(&result))
+		);
+		return result;
+	}
+
+	/// Queries optional tearing support; unsupported interfaces and failed queries are false.
+	bool TearingSupported(Microsoft::WRL::ComPtr<IDXGIFactory2> const& factory) noexcept {
+		Microsoft::WRL::ComPtr<IDXGIFactory5> factory5;
+		if (FAILED(factory->QueryInterface(IID_PPV_ARGS(&factory5)))) {
+			return false;
+		}
+		BOOL supported = FALSE;
+		if (FAILED(
+			factory5->CheckFeatureSupport(
+				DXGI_FEATURE_PRESENT_ALLOW_TEARING,
+				&supported,
+				sizeof(supported)
+			)
+		)) {
+			return false;
+		}
+		return supported == TRUE;
 	}
 
 }

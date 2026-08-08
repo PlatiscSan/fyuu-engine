@@ -25,7 +25,7 @@ namespace fyuu_rhi {
 }
 
 namespace fyuu_rhi::execution {
-	template <class Backend> class CommandGraphBindings;
+	template <class Backend, class Receiver> class CommandGraphBindings;
 }
 
 namespace fyuu_rhi::pipeline {
@@ -47,7 +47,7 @@ namespace fyuu_rhi::pipeline {
 
 			template <class U> friend class fyuu_rhi::LogicalDevice;
 			template <class U> friend class PipelineResourceGroup;
-			template <class U> friend class fyuu_rhi::execution::CommandGraphBindings;
+			template <class U, class Receiver> friend class fyuu_rhi::execution::CommandGraphBindings;
 
 			PipelineType* m_pipeline;
 
@@ -189,7 +189,7 @@ namespace fyuu_rhi::pipeline {
 			);
 
 			template <class U> friend class fyuu_rhi::LogicalDevice;
-			template <class U> friend class fyuu_rhi::execution::CommandGraphBindings;
+			template <class U, class Receiver> friend class fyuu_rhi::execution::CommandGraphBindings;
 
 			ResourceGroupType* m_resource_group;
 

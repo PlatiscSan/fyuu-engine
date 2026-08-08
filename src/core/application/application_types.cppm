@@ -10,6 +10,7 @@ export module fyuu_engine:application_types;
 #if defined(__cpp_lib_modules)
 import std;
 #endif // defined(__cpp_lib_modules)
+import fyuu_rhi;
 
 namespace fyuu_engine {
 
@@ -33,6 +34,11 @@ namespace fyuu_engine {
 		std::string graphics_api = "PlatformDefault";
 		bool vertical_sync = true;
 		std::uint32_t frames_in_flight = 3u;
+		fyuu_rhi::ClipSpace clip_space = fyuu_rhi::ClipSpace::YUp;
+		/// Clear colour for the render target at the start of each frame.
+		fyuu_rhi::execution::ColorClearValue clear_color{ 0.0f, 0.0f, 0.0f, 1.0f };
+		/// Base Dear ImGui font size in logical (DPI-independent) pixels.
+		float font_size = 13.0f;
 		void* user_data = nullptr;
 		void (*Initialize)(Runtime&) = nullptr;
 		void (*Tick)(Runtime&) = nullptr;

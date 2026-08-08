@@ -27,6 +27,7 @@ module;
 #include <optional>
 #include <source_location>
 #include <mutex>
+#include <memory>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -61,469 +62,544 @@ namespace {
 	constexpr auto kTriFmtPos = fyuu_rhi::ResourceFlagBits::R32G32B32A32Float;
 	constexpr auto kTriFmtTarget = fyuu_rhi::ResourceFlagBits::R8G8B8A8Unorm;
 
-		void InitializeRHILogger() noexcept {
-			fyuu_rhi::log::Trace = log::Trace;
-			fyuu_rhi::log::Info = log::Info;
-			fyuu_rhi::log::Warning = log::Warning;
-			fyuu_rhi::log::Error = log::Error;
-			fyuu_rhi::log::Fatal = log::Fatal;
+	void InitializeRHILogger() noexcept {
+		fyuu_rhi::log::Trace = log::Trace;
+		fyuu_rhi::log::Info = log::Info;
+		fyuu_rhi::log::Warning = log::Warning;
+		fyuu_rhi::log::Error = log::Error;
+		fyuu_rhi::log::Fatal = log::Fatal;
+	}
+
+	void LogPhysicalDevice(
+		fyuu_rhi::PhysicalDeviceInfo const& info,
+		std::source_location const& location = std::source_location::current()
+	) {
+		auto TypeName = [](fyuu_rhi::PhysicalDeviceInfo::Type type) -> std::string_view {
+			using Type = fyuu_rhi::PhysicalDeviceInfo::Type;
+			switch (type) {
+			case Type::DiscreteGPU: return "Discrete GPU";
+			case Type::IntegratedGPU: return "Integrated GPU";
+			case Type::CPU: return "CPU";
+			case Type::Virtual: return "Virtual";
+			default: return "Unknown";
+			}
+			};
+		auto OptionalHex = [](std::optional<std::uint32_t> value) {
+			return value ? std::format("0x{:04X}", *value) : std::string("N/A");
+			};
+		auto MemorySize = [](std::optional<std::size_t> bytes) {
+			if (!bytes) return std::string("N/A");
+			return std::format("{:.2f} GiB", *bytes / (1024.0 * 1024.0 * 1024.0));
+			};
+		log::Info(
+			std::format(
+				"Physical device: {} ({}, vendor {}, device {}, dedicated memory {})",
+				info.name,
+				TypeName(info.type),
+				OptionalHex(info.vendor_id),
+				OptionalHex(info.device_id),
+				MemorySize(info.dedicated_memory)
+			),
+			location
+		);
+	}
+
+	fyuu_rhi::ResourceFlags StagingBufferFlags() {
+		fyuu_rhi::ResourceFlags flags;
+		flags.Set(fyuu_rhi::ResourceFlagBits::CopySRC);
+		flags.Set(fyuu_rhi::ResourceFlagBits::CopyDST);
+		flags.Set(fyuu_rhi::ResourceFlagBits::HostVisible);
+		return flags;
+	}
+
+	template <class Backend>
+	struct GraphState {
+		std::mutex mutex;
+		std::condition_variable condition;
+		std::optional<fyuu_rhi::execution::CommandGraphResources<Backend>> resources;
+		std::exception_ptr error;
+		bool done = false;
+		bool stopped = false;
+
+		fyuu_rhi::execution::CommandGraphResources<Backend> Wait() {
+			std::unique_lock lock(mutex);
+			condition.wait(lock, [this] { return done; });
+			if (error) std::rethrow_exception(error);
+			if (stopped || !resources) {
+				throw std::runtime_error("Command graph execution was cancelled");
+			}
+			auto result = std::move(*resources);
+			resources.reset();
+			return result;
+		}
+	};
+
+	template <class Backend>
+	struct GraphReceiver {
+		std::shared_ptr<GraphState<Backend>> state;
+
+		struct Environment {};
+		[[nodiscard]] Environment get_env() const noexcept { return {}; }
+
+		void RecoverBindings(fyuu_rhi::execution::CommandGraphResources<Backend>&& resources) noexcept {
+			std::lock_guard lock(state->mutex);
+			state->resources.emplace(std::move(resources));
 		}
 
-		void LogPhysicalDevice(
-			fyuu_rhi::PhysicalDeviceInfo const& info,
-			std::source_location const& location = std::source_location::current()
-		) {
-			auto TypeName = [](fyuu_rhi::PhysicalDeviceInfo::Type type) -> std::string_view {
-				using Type = fyuu_rhi::PhysicalDeviceInfo::Type;
-				switch (type) {
-				case Type::DiscreteGPU: return "Discrete GPU";
-				case Type::IntegratedGPU: return "Integrated GPU";
-				case Type::CPU: return "CPU";
-				case Type::Virtual: return "Virtual";
-				default: return "Unknown";
-				}
-			};
-			auto OptionalHex = [](std::optional<std::uint32_t> value) {
-				return value ? std::format("0x{:04X}", *value) : std::string("N/A");
-			};
-			auto MemorySize = [](std::optional<std::size_t> bytes) {
-				if (!bytes) return std::string("N/A");
-				return std::format("{:.2f} GiB", *bytes / (1024.0 * 1024.0 * 1024.0));
-			};
-			log::Info(
-				std::format(
-					"Physical device: {} ({}, vendor {}, device {}, dedicated memory {})",
-					info.name,
-					TypeName(info.type),
-					OptionalHex(info.vendor_id),
-					OptionalHex(info.device_id),
-					MemorySize(info.dedicated_memory)
-				),
-				location
-			);
+		void set_value(fyuu_rhi::execution::CommandGraphResources<Backend>&& resources) && noexcept {
+			{
+				std::lock_guard lock(state->mutex);
+				state->resources.emplace(std::move(resources));
+				state->done = true;
+			}
+			state->condition.notify_one();
 		}
 
-		template <class Backend>
-		fyuu_rhi::Resource<Backend> SyncUpload(
-			fyuu_rhi::LogicalDevice<Backend>& logical_device,
-			fyuu_rhi::execution::Scheduler<Backend>& scheduler,
-			fyuu_rhi::Resource<Backend>&& dest,
-			std::span<std::byte const> data
-		) {
-			struct SyncState {
-				std::mutex mtx;
-				std::condition_variable cv;
-				std::optional<fyuu_rhi::Resource<Backend>> result;
-				std::exception_ptr error;
-				bool done = false;
-			} state;
-
-			struct Recv {
-				SyncState* s;
-				void set_value(fyuu_rhi::Resource<Backend> r) && noexcept {
-					{ std::lock_guard l(s->mtx); s->result.emplace(std::move(r)); s->done = true; }
-					s->cv.notify_one();
-				}
-				void set_error(std::exception_ptr e) && noexcept {
-					{ std::lock_guard l(s->mtx); s->error = std::move(e); s->done = true; }
-					s->cv.notify_one();
-				}
-				void set_stopped() && noexcept {
-					{ std::lock_guard l(s->mtx); s->done = true; }
-					s->cv.notify_one();
-				}
-				[[nodiscard]] std::stop_token get_stop_token() const noexcept { return {}; }
-			};
-
-			auto sender = fyuu_rhi::execution::Upload(logical_device, scheduler, std::move(dest), 0u, data);
-			auto op_state = std::move(sender).connect(Recv{ &state });
-			op_state.start();
-			std::unique_lock l(state.mtx);
-			state.cv.wait(l, [&] { return state.done; });
-			if (state.error) std::rethrow_exception(state.error);
-			return std::move(*state.result);
+		void set_error(std::exception_ptr error) && noexcept {
+			{
+				std::lock_guard lock(state->mutex);
+				state->error = std::move(error);
+				state->done = true;
+			}
+			state->condition.notify_one();
 		}
 
-		template <class Backend>
-		fyuu_rhi::Resource<Backend> SyncUploadTexture(
-			fyuu_rhi::LogicalDevice<Backend>& logical_device,
-			fyuu_rhi::execution::Scheduler<Backend>& scheduler,
-			fyuu_rhi::Resource<Backend>&& destination,
-			fyuu_rhi::TextureDataLayout const& layout,
-			fyuu_rhi::TextureRegion const& region,
-			std::span<std::byte const> data
-		) {
-			struct SyncState {
-				std::mutex mutex;
-				std::condition_variable condition;
-				std::optional<fyuu_rhi::Resource<Backend>> result;
-				std::exception_ptr error;
-				bool done = false;
-			} state;
-			struct Receiver {
-				SyncState* state;
-				void set_value(fyuu_rhi::Resource<Backend> resource) && noexcept {
-					{ std::lock_guard lock(state->mutex); state->result.emplace(std::move(resource)); state->done = true; }
-					state->condition.notify_one();
-				}
-				void set_error(std::exception_ptr error) && noexcept {
-					{ std::lock_guard lock(state->mutex); state->error = std::move(error); state->done = true; }
-					state->condition.notify_one();
-				}
-				void set_stopped() && noexcept {
-					{ std::lock_guard lock(state->mutex); state->done = true; }
-					state->condition.notify_one();
-				}
-				[[nodiscard]] std::stop_token get_stop_token() const noexcept { return {}; }
-			};
-			auto sender = fyuu_rhi::execution::Upload(
-				logical_device, scheduler, std::move(destination), layout, region, data
-			);
-			auto operation = std::move(sender).connect(Receiver{ &state });
-			operation.start();
-			std::unique_lock lock(state.mutex);
-			state.condition.wait(lock, [&state] { return state.done; });
-			if (state.error) std::rethrow_exception(state.error);
-			if (!state.result) throw std::runtime_error("Texture upload was cancelled");
-			return std::move(*state.result);
+		void set_stopped() && noexcept {
+			{
+				std::lock_guard lock(state->mutex);
+				state->stopped = true;
+				state->done = true;
+			}
+			state->condition.notify_one();
 		}
+	};
 
-		template <class Instance, class PhysicalDevice, class LogicalDevice, class Scheduler>
-		struct RenderingBackend {
-			using Backend = typename Scheduler::BackendType;
-			using Resource = decltype(std::declval<LogicalDevice&>().CreateTexture(
-				std::size_t{},
-				std::size_t{},
-				std::size_t{},
-				std::size_t{},
-				std::declval<fyuu_rhi::ResourceFlags const&>()
-			));
-			using View = decltype(std::declval<LogicalDevice&>().CreateTextureView(
-				std::declval<Resource const&>(),
-				std::size_t{},
-				std::size_t{},
-				std::size_t{},
-				std::size_t{},
-				std::declval<fyuu_rhi::ResourceFlags const&>()
-			));
-			using Pipeline = decltype(std::declval<LogicalDevice&>().CreateGraphicsPipeline(
-				std::declval<fyuu_rhi::pipeline::GraphicsPipelineDescriptor const&>()
-			));
-			using Sampler = decltype(std::declval<LogicalDevice&>().CreateSampler(
-				std::declval<fyuu_rhi::SamplerDescriptor const&>()
-			));
-			using ResourceGroup = fyuu_rhi::pipeline::PipelineResourceGroup<Backend>;
+	template <class Backend>
+	fyuu_rhi::Resource<Backend> SyncUpload(
+		fyuu_rhi::LogicalDevice<Backend>& logical_device,
+		fyuu_rhi::execution::CommandScheduler<Backend>& scheduler,
+		fyuu_rhi::Resource<Backend>&& dest,
+		std::span<std::byte const> data
+	) {
+		if (data.empty() || data.size() > dest.Size()) {
+			throw std::invalid_argument("SyncUpload data exceeds the destination buffer size");
+		}
+		using namespace fyuu_rhi::execution;
+		auto staging = logical_device.CreateBuffer(data.size(), StagingBufferFlags());
+		auto builder = scheduler.schedule();
+		auto staging_index = builder.RegisterResource();
+		auto destination_index = builder.RegisterResource();
+		auto transfer = builder.CreateNode(QueueType::Transfer);
+		transfer.Access({ staging_index, AccessMode::Read, ResourceUsage::CopySource, {} })
+			.Access({ destination_index, AccessMode::Write, ResourceUsage::CopyDestination, {} })
+			.Record(WriteBuffer{
+				staging_index,
+				0u,
+				std::vector<std::byte>(data.begin(), data.end())
+				})
+			.Record(CopyBuffer{ staging_index, destination_index, 0u, 0u, data.size() });
+		auto state = std::make_shared<GraphState<Backend>>();
+		auto operation = std::move(builder).connect(GraphReceiver<Backend>{ state });
+		operation.BindResource(staging_index, std::move(staging));
+		operation.BindResource(destination_index, std::move(dest));
+		operation.start();
+		auto resources = state->Wait();
+		return resources.TakeResource(destination_index);
+	}
 
-			struct FrameResources {
-				struct GuiVertex {
-					float position[2];
-					float uv[2];
-					std::uint32_t color;
-				};
-				struct GuiDraw {
-					std::int32_t x;
-					std::int32_t y;
-					std::uint32_t width;
-					std::uint32_t height;
-					std::uint32_t index_count;
-					std::uint32_t first_index;
-					std::int32_t vertex_offset;
-				};
-				struct GuiData {
-					std::vector<GuiVertex> vertices;
-					std::vector<ImDrawIdx> indices;
-					std::vector<GuiDraw> draws;
-				};
+	template <class Backend>
+	fyuu_rhi::Resource<Backend> SyncUploadTexture(
+		fyuu_rhi::LogicalDevice<Backend>& logical_device,
+		fyuu_rhi::execution::CommandScheduler<Backend>& scheduler,
+		fyuu_rhi::Resource<Backend>&& destination,
+		fyuu_rhi::TextureDataLayout const& layout,
+		fyuu_rhi::TextureRegion const& region,
+		std::span<std::byte const> data
+	) {
+		if (data.empty()) {
+			throw std::invalid_argument("SyncUploadTexture data must not be empty");
+		}
+		using namespace fyuu_rhi::execution;
+		auto staging_size = layout.offset + data.size();
+		auto staging = logical_device.CreateBuffer(staging_size, StagingBufferFlags());
+		auto builder = scheduler.schedule();
+		auto staging_index = builder.RegisterResource();
+		auto destination_index = builder.RegisterResource();
+		auto transfer = builder.CreateNode(QueueType::Transfer);
+		transfer.Access({ staging_index, AccessMode::Read, ResourceUsage::CopySource, {} })
+			.Access({ destination_index, AccessMode::Write, ResourceUsage::CopyDestination, {} })
+			.Record(WriteBuffer{
+				staging_index,
+				layout.offset,
+				std::vector<std::byte>(data.begin(), data.end())
+				})
+			.Record(CopyBufferToTexture{
+				staging_index,
+				destination_index,
+				{ layout.offset, layout.bytes_per_row, layout.rows_per_image },
+				region
+				});
+		auto state = std::make_shared<GraphState<Backend>>();
+		auto operation = std::move(builder).connect(GraphReceiver<Backend>{ state });
+		operation.BindResource(staging_index, std::move(staging));
+		operation.BindResource(destination_index, std::move(destination));
+		operation.start();
+		auto resources = state->Wait();
+		return resources.TakeResource(destination_index);
+	}
 
-				fyuu_rhi::execution::CommandGraphDescriptor descriptor;
-				Resource target;
-				View view;
+	template <class Resource> struct ResourceBackend;
+	template <class Backend>
+	struct ResourceBackend<fyuu_rhi::Resource<Backend>> {
+		using Type = Backend;
+	};
+
+	template <class Instance, class PhysicalDevice, class LogicalDevice>
+	struct RenderingBackend {
+		using Scheduler = decltype(std::declval<LogicalDevice&>().CreateScheduler());
+		using Resource = decltype(std::declval<LogicalDevice&>().CreateTexture(
+			std::size_t{},
+			std::size_t{},
+			std::size_t{},
+			std::size_t{},
+			std::declval<fyuu_rhi::ResourceFlags const&>()
+		));
+		using Backend = typename ResourceBackend<Resource>::Type;
+		using View = decltype(std::declval<LogicalDevice&>().CreateTextureView(
+			std::declval<Resource const&>(),
+			std::size_t{},
+			std::size_t{},
+			std::size_t{},
+			std::size_t{},
+			std::declval<fyuu_rhi::ResourceFlags const&>()
+		));
+		using Pipeline = decltype(std::declval<LogicalDevice&>().CreateGraphicsPipeline(
+			std::declval<fyuu_rhi::pipeline::GraphicsPipelineDescriptor const&>()
+		));
+		using Sampler = decltype(std::declval<LogicalDevice&>().CreateSampler(
+			std::declval<fyuu_rhi::SamplerDescriptor const&>()
+		));
+		using ResourceGroup = fyuu_rhi::pipeline::PipelineResourceGroup<Backend>;
+
+		struct FrameResources {
+			struct GuiVertex {
+				float position[2];
+				float uv[2];
+				std::uint32_t color;
+			};
+			struct GuiDraw {
+				std::int32_t x;
+				std::int32_t y;
 				std::uint32_t width;
 				std::uint32_t height;
-				Pipeline triangle_pipeline;
-				Pipeline gui_pipeline;
-				Resource triangle_vertices;
-				Resource font_texture;
-				View font_view;
-				Sampler font_sampler;
-				ResourceGroup font_group;
-				std::optional<Resource> gui_vertices;
-				std::optional<Resource> gui_indices;
-				std::optional<fyuu_rhi::execution::CommandGraph<Backend>> graph;
-				std::optional<fyuu_rhi::execution::ExecutableGraph<Backend>> executable;
-				std::optional<fyuu_rhi::execution::CommandGraphBindings<Backend>> bindings;
+				std::uint32_t index_count;
+				std::uint32_t first_index;
+				std::int32_t vertex_offset;
+			};
+			struct GuiData {
+				std::vector<GuiVertex> vertices;
+				std::vector<ImDrawIdx> indices;
+				std::vector<GuiDraw> draws;
+			};
 
-				static fyuu_rhi::ResourceFlags TargetFlags() {
-					fyuu_rhi::ResourceFlags flags;
-					flags.Set(fyuu_rhi::ResourceFlagBits::DeviceLocal);
-					flags.Set(fyuu_rhi::ResourceFlagBits::Texture2D);
-					flags.Set(fyuu_rhi::ResourceFlagBits::RenderAttachment);
-					flags.Set(fyuu_rhi::ResourceFlagBits::CopySRC);
-					flags.Set(fyuu_rhi::ResourceFlagBits::R8G8B8A8Unorm);
-					return flags;
-				}
+			Resource target;
+			View view;
+			std::uint32_t width;
+			std::uint32_t height;
+			Pipeline triangle_pipeline;
+			Pipeline gui_pipeline;
+			Resource triangle_vertices;
+			Resource font_texture;
+			View font_view;
+			Sampler font_sampler;
+			ResourceGroup font_group;
+			std::optional<Resource> gui_vertices;
+			std::optional<Resource> gui_indices;
+			GuiData gui_data;
+			/// Font atlas generation the font texture was uploaded from; when the
+			/// display DPI changes the atlas is rebuilt and the whole frame (and
+			/// thus the font texture) must be recreated to match it.
+			std::uint64_t font_generation = 0u;
 
-				static fyuu_rhi::ResourceFlags BufferFlags(fyuu_rhi::ResourceFlagBits usage) {
-					fyuu_rhi::ResourceFlags flags;
-					flags.Set(fyuu_rhi::ResourceFlagBits::DeviceLocal);
-					flags.Set(fyuu_rhi::ResourceFlagBits::CopyDST);
-					flags.Set(usage);
-					return flags;
-				}
+			static fyuu_rhi::ResourceFlags TargetFlags() {
+				fyuu_rhi::ResourceFlags flags;
+				flags.Set(fyuu_rhi::ResourceFlagBits::DeviceLocal);
+				flags.Set(fyuu_rhi::ResourceFlagBits::Texture2D);
+				flags.Set(fyuu_rhi::ResourceFlagBits::RenderAttachment);
+				flags.Set(fyuu_rhi::ResourceFlagBits::CopySRC);
+				flags.Set(fyuu_rhi::ResourceFlagBits::R8G8B8A8Unorm);
+				return flags;
+			}
 
-				static fyuu_rhi::ResourceFlags FontFlags() {
-					fyuu_rhi::ResourceFlags flags;
-					flags.Set(fyuu_rhi::ResourceFlagBits::DeviceLocal);
-					flags.Set(fyuu_rhi::ResourceFlagBits::Texture2D);
-					flags.Set(fyuu_rhi::ResourceFlagBits::TextureView2D);
-					flags.Set(fyuu_rhi::ResourceFlagBits::TextureBinding);
-					flags.Set(fyuu_rhi::ResourceFlagBits::CopyDST);
-					flags.Set(fyuu_rhi::ResourceFlagBits::R8G8B8A8Unorm);
-					return flags;
-				}
+			static fyuu_rhi::ResourceFlags BufferFlags(fyuu_rhi::ResourceFlagBits usage) {
+				fyuu_rhi::ResourceFlags flags;
+				flags.Set(fyuu_rhi::ResourceFlagBits::DeviceLocal);
+				flags.Set(fyuu_rhi::ResourceFlagBits::CopyDST);
+				flags.Set(usage);
+				return flags;
+			}
 
-				static GuiData CollectGuiData(ImDrawData const* draw_data) {
-					GuiData result;
-					if (!draw_data || draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f) {
-						return result;
-					}
-					result.vertices.reserve(static_cast<std::size_t>(draw_data->TotalVtxCount));
-					result.indices.reserve(static_cast<std::size_t>(draw_data->TotalIdxCount));
-					std::uint32_t vertex_base = 0u;
-					std::uint32_t index_base = 0u;
-					for (int list_index = 0; list_index < draw_data->CmdListsCount; ++list_index) {
-						auto const* list = draw_data->CmdLists[list_index];
-						for (auto const& source : list->VtxBuffer) {
-							result.vertices.push_back({
-								{
-									(source.pos.x - draw_data->DisplayPos.x) / draw_data->DisplaySize.x * 2.0f - 1.0f,
-									1.0f - (source.pos.y - draw_data->DisplayPos.y) / draw_data->DisplaySize.y * 2.0f
-								},
-								{ source.uv.x, source.uv.y },
-								source.col
-							});
-						}
-						result.indices.insert(result.indices.end(), list->IdxBuffer.begin(), list->IdxBuffer.end());
-						for (auto const& command : list->CmdBuffer) {
-							if (command.UserCallback || command.GetTexID() != 1u) continue;
-							float left = (command.ClipRect.x - draw_data->DisplayPos.x) * draw_data->FramebufferScale.x;
-							float top = (command.ClipRect.y - draw_data->DisplayPos.y) * draw_data->FramebufferScale.y;
-							float right = (command.ClipRect.z - draw_data->DisplayPos.x) * draw_data->FramebufferScale.x;
-							float bottom = (command.ClipRect.w - draw_data->DisplayPos.y) * draw_data->FramebufferScale.y;
-							left = std::max(left, 0.0f);
-							top = std::max(top, 0.0f);
-							right = std::min(right, draw_data->DisplaySize.x * draw_data->FramebufferScale.x);
-							bottom = std::min(bottom, draw_data->DisplaySize.y * draw_data->FramebufferScale.y);
-							if (right <= left || bottom <= top) continue;
-							result.draws.push_back({
-								static_cast<std::int32_t>(left), static_cast<std::int32_t>(top),
-								static_cast<std::uint32_t>(right - left), static_cast<std::uint32_t>(bottom - top),
-								command.ElemCount, index_base + command.IdxOffset,
-								static_cast<std::int32_t>(vertex_base + command.VtxOffset)
-							});
-						}
-						vertex_base += static_cast<std::uint32_t>(list->VtxBuffer.Size);
-						index_base += static_cast<std::uint32_t>(list->IdxBuffer.Size);
-					}
+			static fyuu_rhi::ResourceFlags FontFlags() {
+				fyuu_rhi::ResourceFlags flags;
+				flags.Set(fyuu_rhi::ResourceFlagBits::DeviceLocal);
+				flags.Set(fyuu_rhi::ResourceFlagBits::Texture2D);
+				flags.Set(fyuu_rhi::ResourceFlagBits::TextureView2D);
+				flags.Set(fyuu_rhi::ResourceFlagBits::TextureBinding);
+				flags.Set(fyuu_rhi::ResourceFlagBits::CopyDST);
+				flags.Set(fyuu_rhi::ResourceFlagBits::R8G8B8A8Unorm);
+				return flags;
+			}
+
+			static GuiData CollectGuiData(ImDrawData const* draw_data) {
+				GuiData result;
+				if (!draw_data || draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f) {
 					return result;
 				}
+				result.vertices.reserve(static_cast<std::size_t>(draw_data->TotalVtxCount));
+				result.indices.reserve(static_cast<std::size_t>(draw_data->TotalIdxCount));
+				std::uint32_t vertex_base = 0u;
+				std::uint32_t index_base = 0u;
+				for (int list_index = 0; list_index < draw_data->CmdListsCount; ++list_index) {
+					auto const* list = draw_data->CmdLists[list_index];
+					for (auto const& source : list->VtxBuffer) {
+						result.vertices.push_back({
+							{
+								(source.pos.x - draw_data->DisplayPos.x) / draw_data->DisplaySize.x * 2.0f - 1.0f,
+								1.0f - (source.pos.y - draw_data->DisplayPos.y) / draw_data->DisplaySize.y * 2.0f
+							},
+							{ source.uv.x, source.uv.y },
+							source.col
+							});
+					}
+					result.indices.insert(result.indices.end(), list->IdxBuffer.begin(), list->IdxBuffer.end());
+					for (auto const& command : list->CmdBuffer) {
+						if (command.UserCallback || command.GetTexID() != 1u) continue;
+						float left = (command.ClipRect.x - draw_data->DisplayPos.x) * draw_data->FramebufferScale.x;
+						float top = (command.ClipRect.y - draw_data->DisplayPos.y) * draw_data->FramebufferScale.y;
+						float right = (command.ClipRect.z - draw_data->DisplayPos.x) * draw_data->FramebufferScale.x;
+						float bottom = (command.ClipRect.w - draw_data->DisplayPos.y) * draw_data->FramebufferScale.y;
+						left = std::max(left, 0.0f);
+						top = std::max(top, 0.0f);
+						right = std::min(right, draw_data->DisplaySize.x * draw_data->FramebufferScale.x);
+						bottom = std::min(bottom, draw_data->DisplaySize.y * draw_data->FramebufferScale.y);
+						if (right <= left || bottom <= top) continue;
+						result.draws.push_back({
+							static_cast<std::int32_t>(left), static_cast<std::int32_t>(top),
+							static_cast<std::uint32_t>(right - left), static_cast<std::uint32_t>(bottom - top),
+							command.ElemCount, index_base + command.IdxOffset,
+							static_cast<std::int32_t>(vertex_base + command.VtxOffset)
+							});
+					}
+					vertex_base += static_cast<std::uint32_t>(list->VtxBuffer.Size);
+					index_base += static_cast<std::uint32_t>(list->IdxBuffer.Size);
+				}
+				return result;
+			}
 
-				static fyuu_rhi::execution::CommandGraphDescriptor BuildDescriptor(
-					std::uint32_t width,
-					std::uint32_t height,
-					bool vertical_sync,
-					std::uint32_t frames_in_flight,
-					std::span<GuiDraw const> gui_draws
-				) {
-					using namespace fyuu_rhi::execution;
-					CommandGraphBuilder builder;
-					auto resource = builder.RegisterResource();
-					auto view = builder.RegisterView();
-					auto presentation = builder.RegisterPresentationTarget();
-					auto vertex_buf = builder.RegisterResource();
-					auto pipeline_id = builder.RegisterPipeline();
-					auto gui_vertex_buf = builder.RegisterResource();
-					auto gui_index_buf = builder.RegisterResource();
-					auto font = builder.RegisterResource();
-					auto gui_pipeline_id = builder.RegisterPipeline();
-					auto font_group = builder.RegisterResourceGroup();
-					auto render = builder.AddNode(GraphNodeFlagBits::Graphics);
-					builder.AddAccess(render, {
-						.resource = resource,
-						.flags = GraphAccessFlagBits::Write |
-							GraphAccessFlagBits::ColorAttachment
-					});
-					builder.AddAccess(render, {
-						.resource = vertex_buf,
-						.flags = GraphAccessFlagBits::Read | GraphAccessFlagBits::Vertex
-					});
-					builder.AddAccess(render, { .resource = gui_vertex_buf,
-						.flags = GraphAccessFlagBits::Read | GraphAccessFlagBits::Vertex });
-					builder.AddAccess(render, { .resource = gui_index_buf,
-						.flags = GraphAccessFlagBits::Read | GraphAccessFlagBits::Index });
-					builder.AddAccess(render, { .resource = font,
-						.flags = GraphAccessFlagBits::Read | GraphAccessFlagBits::Sampled });
-					builder.AddCommand(render, BeginRenderingCommand{
-						.colors = {{
-							.resource = resource,
-							.view = view,
-							.load = false,
-							.store = true,
-							.clear_red = 0.0f,
-							.clear_green = 0.0f,
-							.clear_blue = 0.0f,
-							.clear_alpha = 1.0f
+			void SubmitRender(
+				Scheduler& scheduler,
+				typename Backend::PlatformHandle const& presentation_target,
+				ApplicationDescriptor const& application
+			) {
+				using namespace fyuu_rhi::execution;
+				bool gui = !gui_data.draws.empty();
+				auto builder = scheduler.schedule();
+				auto target_index = builder.RegisterResource();
+				auto vertex_index = builder.RegisterResource();
+				auto view_index = builder.RegisterView();
+				auto triangle_pipeline_index = builder.RegisterPipeline();
+				std::optional<std::size_t> gui_vertex_index;
+				std::optional<std::size_t> gui_index_index;
+				std::optional<std::size_t> font_index;
+				std::optional<std::size_t> gui_pipeline_index;
+				std::optional<std::size_t> font_group_index;
+				if (gui) {
+					gui_vertex_index = builder.RegisterResource();
+					gui_index_index = builder.RegisterResource();
+					font_index = builder.RegisterResource();
+					gui_pipeline_index = builder.RegisterPipeline();
+					font_group_index = builder.RegisterResourceGroup();
+				}
+
+				auto render = builder.CreateNode(QueueType::Graphics);
+				render.Access({ target_index, AccessMode::Write, ResourceUsage::ColorAttachment, {} })
+					.Access({ vertex_index, AccessMode::Read, ResourceUsage::VertexBuffer, {} });
+				if (gui) {
+					render.Access({ *gui_vertex_index, AccessMode::Read, ResourceUsage::VertexBuffer, {} })
+						.Access({ *gui_index_index, AccessMode::Read, ResourceUsage::IndexBuffer, {} })
+						.Access({ *font_index, AccessMode::Read, ResourceUsage::Sampled, {} });
+				}
+				render.Record(BindPipeline{ triangle_pipeline_index })
+					.Record(BindVertexBuffer{ vertex_index, 0u, 32u, 0u })
+					.Record(BeginRendering{
+						{ 0, 0, width, height },
+						{{
+							ColorAttachment{
+								target_index,
+								view_index,
+								LoadOperation::Clear,
+								StoreOperation::Store,
+								application.clear_color,
+								std::nullopt,
+								std::nullopt
+							}
 						}},
-						.width = width,
-						.height = height
-					});
-					builder.AddCommand(render, BindPipelineCommand{ .pipeline = pipeline_id });
-					builder.AddCommand(render, BindVertexBufferCommand{
-						.resource = vertex_buf, .slot = 0, .stride = 32, .offset = 0
-					});
-					builder.AddCommand(render, DrawCommand{ .vertex_count = 3, .instance_count = 1 });
-					if (!gui_draws.empty()) {
-						builder.AddCommand(render, BindPipelineCommand{ .pipeline = gui_pipeline_id });
-						builder.AddCommand(render, BindResourceGroupCommand{ .group = font_group, .index = 0u });
-						builder.AddCommand(render, BindVertexBufferCommand{
-							.resource = gui_vertex_buf, .slot = 0u, .stride = sizeof(GuiVertex), .offset = 0u });
-						builder.AddCommand(render, BindIndexBufferCommand{
-							.resource = gui_index_buf, .offset = 0u, .uint32 = sizeof(ImDrawIdx) == 4u });
-						for (auto const& draw : gui_draws) {
-							builder.AddCommand(render, SetScissorCommand{
-								.x = draw.x, .y = draw.y, .width = draw.width, .height = draw.height });
-							builder.AddCommand(render, DrawIndexedCommand{
-								.index_count = draw.index_count, .instance_count = 1u,
-								.first_index = draw.first_index, .vertex_offset = draw.vertex_offset });
-						}
+						{}
+						})
+					.Record(Viewport{ 0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f, application.clip_space })
+					.Record(Scissor{ 0, 0, width, height })
+					.Record(Draw{ 3u, 1u, 0u, 0u });
+				if (gui) {
+					render.Record(BindPipeline{ *gui_pipeline_index })
+						.Record(BindResourceGroup{ *font_group_index, 0u })
+						.Record(BindVertexBuffer{
+							*gui_vertex_index, 0u, static_cast<std::uint32_t>(sizeof(GuiVertex)), 0u })
+							.Record(BindIndexBuffer{
+								*gui_index_index,
+								sizeof(ImDrawIdx) == 4u ? IndexType::Uint32 : IndexType::Uint16,
+								0u
+								});
+					for (auto const& draw : gui_data.draws) {
+						render.Record(Scissor{ draw.x, draw.y, draw.width, draw.height })
+							.Record(DrawIndexed{
+								draw.index_count, 1u, draw.first_index, draw.vertex_offset, 0u
+								});
 					}
-					builder.AddCommand(render, EndRenderingCommand{});
-					auto present = builder.AddNode(GraphNodeFlagBits::Present);
-					builder.AddAccess(present, {
-						.resource = resource,
-						.flags = GraphAccessFlagBits::Read | GraphAccessFlagBits::Present
-					});
-					builder.AddCommand(present, PresentCommand{
-						.source = resource,
-						.target = presentation,
-						.vertical_sync = vertical_sync,
-						.frames_in_flight = frames_in_flight
-					});
-					return builder.Build();
 				}
+				render.Record(EndRendering{});
 
-				FrameResources(
-					LogicalDevice& logical_device,
-					Scheduler& scheduler,
-					typename Backend::PresentationTarget const& presentation_target,
-					ApplicationDescriptor const& application,
-					ImDrawData const* draw_data
-				) : target(logical_device.CreateTexture(
-						application.surface_width,
-						application.surface_height,
-						1u,
-						1u,
-						TargetFlags()
-					)),
-					view(logical_device.CreateTextureView(
-						target,
-						0u,
-						1u,
-						0u,
-						1u,
-						TargetFlags()
-					)),
-					width(application.surface_width),
-					height(application.surface_height),
-					triangle_pipeline(CreateTrianglePipeline(logical_device)),
-					gui_pipeline(CreateGuiPipeline(logical_device)),
-					triangle_vertices(logical_device.CreateBuffer(
-						sizeof(kTriangleVertices), BufferFlags(fyuu_rhi::ResourceFlagBits::VertexBuffer))),
-					font_texture(CreateFontTexture(logical_device, scheduler)),
-					font_view(logical_device.CreateTextureView(
-						font_texture, 0u, 1u, 0u, 1u, FontFlags())),
-					font_sampler(logical_device.CreateSampler({
-						.address_mode_u = fyuu_rhi::AddressMode::ClampToEdge,
-						.address_mode_v = fyuu_rhi::AddressMode::ClampToEdge,
-						.address_mode_w = fyuu_rhi::AddressMode::ClampToEdge,
-						.mag_filter = fyuu_rhi::FilterMode::Linear,
-						.min_filter = fyuu_rhi::FilterMode::Linear,
-						.mipmap_filter = fyuu_rhi::MipmapFilterMode::Linear,
-						.max_lod = 0.0f
+				auto present = builder.CreateNode(QueueType::Present, render);
+				present.Access({ target_index, AccessMode::Read, ResourceUsage::PresentationSource, {} })
+					.Record(Present{
+						target_index, 0u, application.frames_in_flight, application.vertical_sync
+						});
+
+				auto state = std::make_shared<GraphState<Backend>>();
+				auto operation = std::move(builder).connect(GraphReceiver<Backend>{ state });
+				operation.BindResource(target_index, std::move(target));
+				operation.BindResource(vertex_index, std::move(triangle_vertices));
+				operation.BindView(view_index, std::move(view));
+				operation.BindPipeline(triangle_pipeline_index, std::move(triangle_pipeline));
+				if (gui) {
+					operation.BindResource(*gui_vertex_index, std::move(*gui_vertices));
+					operation.BindResource(*gui_index_index, std::move(*gui_indices));
+					operation.BindResource(*font_index, std::move(font_texture));
+					operation.BindPipeline(*gui_pipeline_index, std::move(gui_pipeline));
+					operation.BindResourceGroup(*font_group_index, std::move(font_group));
+				}
+				operation.SetPresentationTarget(presentation_target);
+				operation.start();
+
+				auto resources = state->Wait();
+				target = resources.TakeResource(target_index);
+				triangle_vertices = resources.TakeResource(vertex_index);
+				view = resources.TakeView(view_index);
+				triangle_pipeline = resources.TakePipeline(triangle_pipeline_index);
+				if (gui) {
+					gui_vertices.emplace(resources.TakeResource(*gui_vertex_index));
+					gui_indices.emplace(resources.TakeResource(*gui_index_index));
+					font_texture = resources.TakeResource(*font_index);
+					gui_pipeline = resources.TakePipeline(*gui_pipeline_index);
+					font_group = resources.TakeResourceGroup(*font_group_index);
+				}
+			}
+
+			FrameResources(
+				LogicalDevice& logical_device,
+				Scheduler& scheduler,
+				ApplicationDescriptor const& application,
+				ImDrawData const* draw_data
+			) : target(logical_device.CreateTexture(
+				application.surface_width,
+				application.surface_height,
+				1u,
+				1u,
+				TargetFlags()
+			)),
+				view(logical_device.CreateTextureView(
+					target,
+					0u,
+					1u,
+					0u,
+					1u,
+					TargetFlags()
+				)),
+				width(application.surface_width),
+				height(application.surface_height),
+				triangle_pipeline(CreateTrianglePipeline(logical_device)),
+				gui_pipeline(CreateGuiPipeline(logical_device)),
+				triangle_vertices(logical_device.CreateBuffer(
+					sizeof(kTriangleVertices), BufferFlags(fyuu_rhi::ResourceFlagBits::VertexBuffer))),
+				font_texture(CreateFontTexture(logical_device, scheduler)),
+				font_view(logical_device.CreateTextureView(
+					font_texture, 0u, 1u, 0u, 1u, FontFlags())),
+				font_sampler(logical_device.CreateSampler({
+					.address_mode_u = fyuu_rhi::AddressMode::ClampToEdge,
+					.address_mode_v = fyuu_rhi::AddressMode::ClampToEdge,
+					.address_mode_w = fyuu_rhi::AddressMode::ClampToEdge,
+					.mag_filter = fyuu_rhi::FilterMode::Linear,
+					.min_filter = fyuu_rhi::FilterMode::Linear,
+					.mipmap_filter = fyuu_rhi::MipmapFilterMode::Linear,
+					.max_lod = 0.0f
 					})),
-					font_group(CreateFontGroup(logical_device, gui_pipeline, font_view, font_sampler)) {
-					triangle_vertices = SyncUpload(logical_device, scheduler,
-						std::move(triangle_vertices),
-						std::span<std::byte const>{
-							reinterpret_cast<std::byte const*>(kTriangleVertices),
-							sizeof(kTriangleVertices)
-						}
-					);
-					Rebuild(logical_device, scheduler, presentation_target, application, draw_data);
+				font_group(CreateFontGroup(logical_device, gui_pipeline, font_view, font_sampler)) {
+				triangle_vertices = SyncUpload(logical_device, scheduler,
+					std::move(triangle_vertices),
+					std::span<std::byte const>{
+					reinterpret_cast<std::byte const*>(kTriangleVertices),
+						sizeof(kTriangleVertices)
 				}
+				);
+				Rebuild(logical_device, scheduler, application, draw_data);
+			}
 
-				void Rebuild(
-					LogicalDevice& logical_device,
-					Scheduler& scheduler,
-					typename Backend::PresentationTarget const& presentation_target,
-					ApplicationDescriptor const& application,
-					ImDrawData const* draw_data
-				) {
-					auto gui = CollectGuiData(draw_data);
-					auto vertex_bytes = std::as_bytes(std::span(gui.vertices));
-					auto index_bytes = std::as_bytes(std::span(gui.indices));
-					std::vector<std::byte> aligned_index_bytes;
-					if constexpr (std::same_as<LogicalDevice, fyuu_rhi::WebGPULogicalDevice>) {
-						if (index_bytes.size() % 4u != 0u) {
-							aligned_index_bytes.resize((index_bytes.size() + 3u) & ~std::size_t{ 3u });
-							std::ranges::copy(index_bytes, aligned_index_bytes.begin());
-							index_bytes = aligned_index_bytes;
-						}
+			void Rebuild(
+				LogicalDevice& logical_device,
+				Scheduler& scheduler,
+				ApplicationDescriptor const& application,
+				ImDrawData const* draw_data
+			) {
+				auto gui = CollectGuiData(draw_data);
+				auto vertex_bytes = std::as_bytes(std::span(gui.vertices));
+				auto index_bytes = std::as_bytes(std::span(gui.indices));
+				std::vector<std::byte> aligned_index_bytes;
+				if constexpr (std::same_as<LogicalDevice, fyuu_rhi::WebGPULogicalDevice>) {
+					if (index_bytes.size() % 4u != 0u) {
+						aligned_index_bytes.resize((index_bytes.size() + 3u) & ~std::size_t{ 3u });
+						std::ranges::copy(index_bytes, aligned_index_bytes.begin());
+						index_bytes = aligned_index_bytes;
 					}
-					if (!gui_vertices || gui_vertices->Size() < vertex_bytes.size()) {
-						gui_vertices.emplace(logical_device.CreateBuffer(
-							std::max<std::size_t>(vertex_bytes.size(), 1u),
-							BufferFlags(fyuu_rhi::ResourceFlagBits::VertexBuffer)));
-					}
-					if (!gui_indices || gui_indices->Size() < index_bytes.size()) {
-						gui_indices.emplace(logical_device.CreateBuffer(
-							std::max<std::size_t>(index_bytes.size(), 1u),
-							BufferFlags(fyuu_rhi::ResourceFlagBits::IndexBuffer)));
-					}
-					if (!vertex_bytes.empty()) {
-						*gui_vertices = SyncUpload(logical_device, scheduler, std::move(*gui_vertices), vertex_bytes);
-					}
-					if (!index_bytes.empty()) {
-						*gui_indices = SyncUpload(logical_device, scheduler, std::move(*gui_indices), index_bytes);
-					}
-					descriptor = BuildDescriptor(width, height, application.vertical_sync,
-						application.frames_in_flight, gui.draws);
-					graph.emplace(logical_device.CreateCommandGraph(descriptor));
-					executable.emplace(logical_device.CompileCommandGraph(*graph));
-					bindings.emplace(descriptor);
-					bindings->Bind(fyuu_rhi::execution::GraphResourceID{ 0u }, target);
-					bindings->Bind(fyuu_rhi::execution::GraphResourceID{ 1u }, triangle_vertices);
-					bindings->Bind(fyuu_rhi::execution::GraphResourceID{ 2u }, *gui_vertices);
-					bindings->Bind(fyuu_rhi::execution::GraphResourceID{ 3u }, *gui_indices);
-					bindings->Bind(fyuu_rhi::execution::GraphResourceID{ 4u }, font_texture);
-					bindings->Bind(fyuu_rhi::execution::GraphViewID{ 0u }, view);
-					bindings->Bind(fyuu_rhi::execution::GraphPipelineID{ 0u }, triangle_pipeline);
-					bindings->Bind(fyuu_rhi::execution::GraphPipelineID{ 1u }, gui_pipeline);
-					bindings->Bind(fyuu_rhi::execution::GraphResourceGroupID{ 0u }, font_group);
-					bindings->Bind(fyuu_rhi::execution::GraphPresentationID{ 0u }, presentation_target);
 				}
+				if (!gui_vertices || gui_vertices->Size() < vertex_bytes.size()) {
+					gui_vertices.emplace(logical_device.CreateBuffer(
+						std::max<std::size_t>(vertex_bytes.size(), 1u),
+						BufferFlags(fyuu_rhi::ResourceFlagBits::VertexBuffer)));
+				}
+				if (!gui_indices || gui_indices->Size() < index_bytes.size()) {
+					gui_indices.emplace(logical_device.CreateBuffer(
+						std::max<std::size_t>(index_bytes.size(), 1u),
+						BufferFlags(fyuu_rhi::ResourceFlagBits::IndexBuffer)));
+				}
+				if (!vertex_bytes.empty()) {
+					*gui_vertices = SyncUpload(logical_device, scheduler, std::move(*gui_vertices), vertex_bytes);
+				}
+				if (!index_bytes.empty()) {
+					*gui_indices = SyncUpload(logical_device, scheduler, std::move(*gui_indices), index_bytes);
+				}
+				gui_data = std::move(gui);
+			}
 
-			private:
-				static constexpr float kTriangleVertices[] = {
-					// position            color
-					 0.0f,  0.5f, 0.0f, 1.0f,   1.0f, 0.0f, 0.0f, 1.0f,
-					 0.5f, -0.5f, 0.0f, 1.0f,   0.0f, 1.0f, 0.0f, 1.0f,
-					-0.5f, -0.5f, 0.0f, 1.0f,   0.0f, 0.0f, 1.0f, 1.0f,
-				};
+		private:
+			static constexpr float kTriangleVertices[] = {
+				// position            color
+				 0.0f,  0.5f, 0.0f, 1.0f,   1.0f, 0.0f, 0.0f, 1.0f,
+				 0.5f, -0.5f, 0.0f, 1.0f,   0.0f, 1.0f, 0.0f, 1.0f,
+				-0.5f, -0.5f, 0.0f, 1.0f,   0.0f, 0.0f, 1.0f, 1.0f,
+			};
 
-				static Pipeline CreateTrianglePipeline(LogicalDevice& ld) {
-					using namespace fyuu_rhi::pipeline;
-					static constexpr char const kShaderSource[] = R"(
+			static Pipeline CreateTrianglePipeline(LogicalDevice& ld) {
+				using namespace fyuu_rhi::pipeline;
+				static constexpr char const kShaderSource[] = R"(
 						struct VSOut { float4 pos : SV_Position; float3 color : COLOR; };
 						[shader("vertex")]
 						VSOut vs_main(float3 pos : POSITION, float3 color : COLOR) {
@@ -537,66 +613,66 @@ namespace {
 							return float4(input.color, 1.0);
 						}
 					)";
-					return ld.CreateGraphicsPipeline({
-						.program = {
-							.modules = {{{
-								SlangPipelineProgramDescriptor::Module{
-									.name = "tri",
-									.source = kShaderSource
-								}
-							}}},
-							.entry_points = {{
-								{.name = "vs_main", .stage = PipelineStage::Vertex},
-								{.name = "fs_main", .stage = PipelineStage::Fragment}
-							}}
-						},
-						.vertex = {
-							.buffers = {{ VertexBufferLayout{ .slot = 0, .stride = 32 } }},
-							.attributes = {{
-								{.location = 0, .slot = 0, .offset = 0,
-									.format = kTriFmtPos},
-								{.location = 1, .slot = 0, .offset = 16,
-									.format = kTriFmtPos}
-							}}
-						},
-						.color_targets = {{ ColorTargetState{ .format = kTriFmtTarget } }}
+				return ld.CreateGraphicsPipeline({
+					.program = {
+						.modules = {{{
+							SlangPipelineProgramDescriptor::Module{
+								.name = "tri",
+								.source = kShaderSource
+							}
+						}}},
+						.entry_points = {{
+							{.name = "vs_main", .stage = PipelineStage::Vertex},
+							{.name = "fs_main", .stage = PipelineStage::Fragment}
+						}}
+					},
+					.vertex = {
+						.buffers = {{ VertexBufferLayout{.slot = 0, .stride = 32 } }},
+						.attributes = {{
+							{.location = 0, .slot = 0, .offset = 0,
+								.format = kTriFmtPos},
+							{.location = 1, .slot = 0, .offset = 16,
+								.format = kTriFmtPos}
+						}}
+					},
+					.color_targets = {{ ColorTargetState{.format = kTriFmtTarget } }}
 					});
-				}
+			}
 
-				static Resource CreateFontTexture(LogicalDevice& logical_device, Scheduler& scheduler) {
-					unsigned char* pixels = nullptr;
-					int width = 0;
-					int height = 0;
-					ImGui::GetIO().Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
-					if (!pixels || width <= 0 || height <= 0) {
-						throw std::runtime_error("Dear ImGui did not produce a valid font atlas");
-					}
-					auto texture = logical_device.CreateTexture(
-						static_cast<std::size_t>(width), static_cast<std::size_t>(height), 1u, 1u, FontFlags());
-					fyuu_rhi::TextureDataLayout layout{
-						.offset = 0u,
-						.bytes_per_row = static_cast<std::uint32_t>(width * 4),
-						.rows_per_image = static_cast<std::uint32_t>(height)
-					};
-					fyuu_rhi::TextureRegion region{
-						.array_layer_count = 1u,
-						.width = static_cast<std::uint32_t>(width),
-						.height = static_cast<std::uint32_t>(height),
-						.depth = 1u
-					};
-					ImGui::GetIO().Fonts->SetTexID(1u);
-					return SyncUploadTexture(
-						logical_device, scheduler, std::move(texture), layout, region,
-						std::span<std::byte const>{
-							reinterpret_cast<std::byte const*>(pixels),
-							static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4u
-						}
-					);
+			static Resource CreateFontTexture(LogicalDevice& logical_device, Scheduler& scheduler) {
+				unsigned char* pixels = nullptr;
+				int width = 0;
+				int height = 0;
+				ImGui::GetIO().Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
+				if (!pixels || width <= 0 || height <= 0) {
+					throw std::runtime_error("Dear ImGui did not produce a valid font atlas");
 				}
+				auto texture = logical_device.CreateTexture(
+					static_cast<std::size_t>(width), static_cast<std::size_t>(height), 1u, 1u, FontFlags());
+				fyuu_rhi::TextureDataLayout layout{
+					.offset = 0u,
+					.bytes_per_row = static_cast<std::uint32_t>(width * 4),
+					.rows_per_image = static_cast<std::uint32_t>(height)
+				};
+				fyuu_rhi::TextureRegion region{
+					.array_layer_count = 1u,
+					.width = static_cast<std::uint32_t>(width),
+					.height = static_cast<std::uint32_t>(height),
+					.depth = 1u
+				};
+				ImGui::GetIO().Fonts->SetTexID(1u);
+				return SyncUploadTexture(
+					logical_device, scheduler, std::move(texture), layout, region,
+					std::span<std::byte const>{
+					reinterpret_cast<std::byte const*>(pixels),
+						static_cast<std::size_t>(width)* static_cast<std::size_t>(height) * 4u
+				}
+				);
+			}
 
-				static Pipeline CreateGuiPipeline(LogicalDevice& logical_device) {
-					using namespace fyuu_rhi::pipeline;
-					static constexpr char const combined_shader[] = R"(
+			static Pipeline CreateGuiPipeline(LogicalDevice& logical_device) {
+				using namespace fyuu_rhi::pipeline;
+				static constexpr char const combined_shader[] = R"(
 						Sampler2D font_texture : register(t0, space0);
 						struct VSOut {
 							float4 position : SV_Position;
@@ -616,285 +692,193 @@ namespace {
 							return input.color * font_texture.Sample(input.uv);
 						}
 					)";
-					static constexpr char const separate_shader[] = R"(
-						Texture2D<float4> font_texture : register(t0, space0);
-						SamplerState font_sampler : register(s1, space0);
-						struct VSOut {
-							float4 position : SV_Position;
-							float2 uv : TEXCOORD0;
-							float4 color : COLOR0;
-						};
-						[shader("vertex")]
-						VSOut vs_main(float2 position : POSITION, float2 uv : TEXCOORD0, float4 color : COLOR0) {
-							VSOut output;
-							output.position = float4(position, 0.0, 1.0);
-							output.uv = uv;
-							output.color = color;
-							return output;
+				// One combined shader for every backend: Sampler2D is the form
+				// that compiles on NVIDIA's desktop GL (its GLSL compiler rejects
+				// the separable texture2D/sampler form Slang emits for separate
+				// Texture2D + SamplerState). D3D12 decomposes the combined binding
+				// into an SRV + sampler pair; GL/Vulkan/WebGPU consume it directly.
+				return logical_device.CreateGraphicsPipeline({
+					.program = {
+						.modules = {{{ SlangPipelineProgramDescriptor::Module{.name = "imgui", .source = combined_shader } }}},
+						.entry_points = {{
+							{.name = "vs_main", .stage = PipelineStage::Vertex },
+							{.name = "fs_main", .stage = PipelineStage::Fragment }
+						}}
+					},
+					.vertex = {
+						.buffers = {{ VertexBufferLayout{.slot = 0u, .stride = sizeof(GuiVertex) } }},
+						.attributes = {{
+							{.location = 0u, .slot = 0u, .offset = 0u,
+								.format = fyuu_rhi::ResourceFlagBits::R32G32Float },
+							{.location = 1u, .slot = 0u, .offset = 8u,
+								.format = fyuu_rhi::ResourceFlagBits::R32G32Float },
+							{.location = 2u, .slot = 0u, .offset = 16u,
+								.format = fyuu_rhi::ResourceFlagBits::R8G8B8A8Unorm }
+						}}
+					},
+					.color_targets = {{ ColorTargetState{
+						.format = kTriFmtTarget,
+						.blend = BlendState{
+							.color = { BlendFactor::SourceAlpha, BlendFactor::OneMinusSourceAlpha, BlendOperation::Add },
+							.alpha = { BlendFactor::One, BlendFactor::OneMinusSourceAlpha, BlendOperation::Add }
 						}
-						[shader("fragment")]
-						float4 fs_main(VSOut input) : SV_Target0 {
-							return input.color * font_texture.Sample(font_sampler, input.uv);
-						}
-					)";
-					auto shader = []() constexpr {
-						if constexpr (std::same_as<LogicalDevice, fyuu_rhi::OpenGLLogicalDevice>) {
-							return combined_shader;
-						}
-						else {
-							return separate_shader;
-						}
-					}();
-					return logical_device.CreateGraphicsPipeline({
-						.program = {
-							.modules = {{{ SlangPipelineProgramDescriptor::Module{ .name = "imgui", .source = shader } }}},
-							.entry_points = {{
-								{ .name = "vs_main", .stage = PipelineStage::Vertex },
-								{ .name = "fs_main", .stage = PipelineStage::Fragment }
-							}}
-						},
-						.vertex = {
-							.buffers = {{ VertexBufferLayout{ .slot = 0u, .stride = sizeof(GuiVertex) } }},
-							.attributes = {{
-								{ .location = 0u, .slot = 0u, .offset = 0u,
-									.format = fyuu_rhi::ResourceFlagBits::R32G32Float },
-								{ .location = 1u, .slot = 0u, .offset = 8u,
-									.format = fyuu_rhi::ResourceFlagBits::R32G32Float },
-								{ .location = 2u, .slot = 0u, .offset = 16u,
-									.format = fyuu_rhi::ResourceFlagBits::R8G8B8A8Unorm }
-							}}
-						},
-						.color_targets = {{ ColorTargetState{
-							.format = kTriFmtTarget,
-							.blend = BlendState{
-								.color = { BlendFactor::SourceAlpha, BlendFactor::OneMinusSourceAlpha, BlendOperation::Add },
-								.alpha = { BlendFactor::One, BlendFactor::OneMinusSourceAlpha, BlendOperation::Add }
-							}
-						} }}
+					} }}
 					});
-				}
-
-				static ResourceGroup CreateFontGroup(
-					LogicalDevice& logical_device,
-					Pipeline const& pipeline,
-					View const& view,
-					Sampler const& sampler
-				) {
-					using Binding = fyuu_rhi::pipeline::PipelineResourceBinding<Backend>;
-					using Value = fyuu_rhi::pipeline::PipelineBindingValue<Backend>;
-					if constexpr (std::same_as<LogicalDevice, fyuu_rhi::OpenGLLogicalDevice>) {
-						std::array bindings{
-							Binding{ .slot = 0u, .value = Value::FromCombined(view, sampler) }
-						};
-						return logical_device.CreatePipelineResourceGroup(pipeline, 0u, bindings);
-					}
-					else {
-						std::array bindings{
-							Binding{ .slot = 0u, .value = Value::FromView(view) },
-							Binding{ .slot = 1u, .value = Value::FromSampler(sampler) }
-						};
-						return logical_device.CreatePipelineResourceGroup(pipeline, 0u, bindings);
-					}
-				}
-			};
-
-			struct Completion {
-				std::mutex mutex;
-				std::condition_variable condition;
-				std::exception_ptr error;
-				bool completed = false;
-				bool stopped = false;
-			};
-
-			struct Receiver {
-				Completion* completion;
-
-				void set_value() && noexcept {
-					{
-						std::unique_lock<std::mutex> lock(completion->mutex);
-						completion->completed = true;
-					}
-					completion->condition.notify_one();
-				}
-
-				void set_error(std::exception_ptr const& error) && noexcept {
-					{
-						std::unique_lock<std::mutex> lock(completion->mutex);
-						completion->error = error;
-						completion->completed = true;
-					}
-					completion->condition.notify_one();
-				}
-
-				void set_stopped() && noexcept {
-					{
-						std::unique_lock<std::mutex> lock(completion->mutex);
-						completion->stopped = true;
-						completion->completed = true;
-					}
-					completion->condition.notify_one();
-				}
-			};
-
-			Instance& instance;
-			PhysicalDevice physical_device;
-			LogicalDevice logical_device;
-			Scheduler scheduler;
-			std::optional<FrameResources> frame;
-
-			static PhysicalDevice SelectPhysicalDevice(Instance const& instance) {
-				auto physical_devices = instance.EnumeratePhysicalDevices();
-				return fyuu_rhi::BestPerformance(physical_devices);
 			}
 
-			static Scheduler CreateUnifiedScheduler(LogicalDevice& logical_device) {
-				fyuu_rhi::execution::SchedulerDescriptor descriptor;
-				descriptor.flags.Set(fyuu_rhi::execution::SchedulerFlagBits::Graphics);
-				descriptor.flags.Set(fyuu_rhi::execution::SchedulerFlagBits::Compute);
-				descriptor.flags.Set(fyuu_rhi::execution::SchedulerFlagBits::Copy);
-				return logical_device.CreateScheduler(descriptor);
-			}
-
-			explicit RenderingBackend(Instance& instance_)
-				: instance(instance_),
-				physical_device(SelectPhysicalDevice(instance_)),
-				logical_device(physical_device.CreateLogicalDevice()),
-				scheduler(CreateUnifiedScheduler(logical_device)) {
-				LogPhysicalDevice(physical_device.GetInfo());
-			}
-
-			void Render(
-				typename Backend::PresentationTarget const& presentation_target,
-				ApplicationDescriptor const& application,
-				ImDrawData const* draw_data
+			static ResourceGroup CreateFontGroup(
+				LogicalDevice& logical_device,
+				Pipeline const& pipeline,
+				View const& view,
+				Sampler const& sampler
 			) {
-				if (!frame || frame->width != application.surface_width ||
-					frame->height != application.surface_height) {
-					frame.emplace(logical_device, scheduler, presentation_target, application, draw_data);
-				}
-				else {
-					frame->Rebuild(logical_device, scheduler, presentation_target, application, draw_data);
-				}
-				Completion completion;
-					auto sender = fyuu_rhi::execution::Submit(
-						scheduler,
-						*frame->executable,
-						*frame->bindings
-					);
-				auto operation = sender.connect(Receiver{ &completion });
-				operation.start();
-				{
-					std::unique_lock<std::mutex> lock(completion.mutex);
-					completion.condition.wait(lock, [&completion]() noexcept {
-						return completion.completed;
-					});
-				}
-				if (completion.error) {
-					std::rethrow_exception(completion.error);
-				}
-				if (completion.stopped) {
-					throw std::runtime_error("Rendering submission was cancelled");
-				}
+				using Binding = fyuu_rhi::pipeline::PipelineResourceBinding<Backend>;
+				using Value = fyuu_rhi::pipeline::PipelineBindingValue<Backend>;
+				// One combined binding for every backend: view + sampler on slot 0,
+				// matching the Sampler2D shader. GL binds the texture and sampler
+				// object to unit 0; D3D12 splits it into an SRV + sampler pair.
+				std::array bindings{
+					Binding{.slot = 0u, .value = Value::FromCombined(view, sampler) }
+				};
+				return logical_device.CreatePipelineResourceGroup(pipeline, 0u, bindings);
 			}
 		};
 
-		fyuu_rhi::Version RHIApplicationVersion(ApplicationDescriptor const& application) noexcept {
-			return {
-				.variant = application.version.variant,
-				.major = application.version.major,
-				.minor = application.version.minor,
-				.patch = application.version.patch
-			};
+		Instance& instance;
+		PhysicalDevice physical_device;
+		LogicalDevice logical_device;
+		Scheduler scheduler;
+		std::optional<FrameResources> frame;
+
+		static PhysicalDevice SelectPhysicalDevice(Instance const& instance) {
+			auto physical_devices = instance.EnumeratePhysicalDevices();
+			return fyuu_rhi::BestPerformance(physical_devices);
 		}
 
-		constexpr fyuu_rhi::Version EngineVersion{
-			.variant = ENGINE_VER_VARIANT,
-			.major = ENGINE_VER_MAJOR,
-			.minor = ENGINE_VER_MINOR,
-			.patch = ENGINE_VER_PATCH
+		explicit RenderingBackend(Instance& instance_)
+			: instance(instance_),
+			physical_device(SelectPhysicalDevice(instance_)),
+			logical_device(physical_device.CreateLogicalDevice()),
+			scheduler(logical_device.CreateScheduler()) {
+			LogPhysicalDevice(physical_device.GetInfo());
+		}
+
+		void Render(
+			typename Backend::PlatformHandle const& presentation_target,
+			ApplicationDescriptor const& application,
+			ImDrawData const* draw_data,
+			std::uint64_t font_generation
+		) {
+			if (!frame || frame->width != application.surface_width ||
+				frame->height != application.surface_height ||
+				frame->font_generation != font_generation) {
+				frame.emplace(logical_device, scheduler, application, draw_data);
+				frame->font_generation = font_generation;
+			}
+			else {
+				frame->Rebuild(logical_device, scheduler, application, draw_data);
+			}
+			frame->SubmitRender(scheduler, presentation_target, application);
+		}
+	};
+
+	fyuu_rhi::Version RHIApplicationVersion(ApplicationDescriptor const& application) noexcept {
+		return {
+			.variant = application.version.variant,
+			.major = application.version.major,
+			.minor = application.version.minor,
+			.patch = application.version.patch
 		};
+	}
+
+	constexpr fyuu_rhi::Version EngineVersion{
+		.variant = ENGINE_VER_VARIANT,
+		.major = ENGINE_VER_MAJOR,
+		.minor = ENGINE_VER_MINOR,
+		.patch = ENGINE_VER_PATCH
+	};
 
 #if defined(__linux__)
-		class NotX11 : public std::runtime_error {
-		public:
-			NotX11() : std::runtime_error("SDL window is not using X11") {
+	class NotX11 : public std::runtime_error {
+	public:
+		NotX11() : std::runtime_error("SDL window is not using X11") {
 
-			}
-		};
-
-		std::pair<Display*, Window> X11Window(SDL_Window* window) {
-			auto properties = SDL_GetWindowProperties(window);
-			if (!properties) {
-				throw std::runtime_error(std::format(
-					"Calling SDL_GetWindowProperties(), SDL reports {}",
-					SDL_GetError()
-				));
-			}
-			auto display = static_cast<Display*>(SDL_GetPointerProperty(
-				properties,
-				SDL_PROP_WINDOW_X11_DISPLAY_POINTER,
-				nullptr
-			));
-			if (!display) {
-				throw NotX11{};
-			}
-			auto window_id = SDL_GetNumberProperty(
-				properties,
-				SDL_PROP_WINDOW_X11_WINDOW_NUMBER,
-				0
-			);
-			if (window_id == 0) {
-				throw std::runtime_error("SDL did not provide an X11 window handle");
-			}
-			return { display, static_cast<Window>(window_id) };
 		}
+	};
 
-		std::pair<wl_display*, wl_surface*> WaylandWindow(SDL_Window* window) {
-			auto properties = SDL_GetWindowProperties(window);
-			if (!properties) {
-				throw std::runtime_error(std::format(
-					"Calling SDL_GetWindowProperties(), SDL reports {}",
-					SDL_GetError()
-				));
-			}
-			auto display = static_cast<wl_display*>(SDL_GetPointerProperty(
-				properties,
-				SDL_PROP_WINDOW_WAYLAND_DISPLAY_POINTER,
-				nullptr
+	std::pair<Display*, Window> X11Window(SDL_Window* window) {
+		auto properties = SDL_GetWindowProperties(window);
+		if (!properties) {
+			throw std::runtime_error(std::format(
+				"Calling SDL_GetWindowProperties(), SDL reports {}",
+				SDL_GetError()
 			));
-			auto surface = static_cast<wl_surface*>(SDL_GetPointerProperty(
-				properties,
-				SDL_PROP_WINDOW_WAYLAND_SURFACE_POINTER,
-				nullptr
-			));
-			if (!display || !surface) {
-				throw std::runtime_error("SDL did not provide Wayland display and surface handles");
-			}
-			return { display, surface };
 		}
+		auto display = static_cast<Display*>(SDL_GetPointerProperty(
+			properties,
+			SDL_PROP_WINDOW_X11_DISPLAY_POINTER,
+			nullptr
+		));
+		if (!display) {
+			throw NotX11{};
+		}
+		auto window_id = SDL_GetNumberProperty(
+			properties,
+			SDL_PROP_WINDOW_X11_WINDOW_NUMBER,
+			0
+		);
+		if (window_id == 0) {
+			throw std::runtime_error("SDL did not provide an X11 window handle");
+		}
+		return { display, static_cast<Window>(window_id) };
+	}
+
+	std::pair<wl_display*, wl_surface*> WaylandWindow(SDL_Window* window) {
+		auto properties = SDL_GetWindowProperties(window);
+		if (!properties) {
+			throw std::runtime_error(std::format(
+				"Calling SDL_GetWindowProperties(), SDL reports {}",
+				SDL_GetError()
+			));
+		}
+		auto display = static_cast<wl_display*>(SDL_GetPointerProperty(
+			properties,
+			SDL_PROP_WINDOW_WAYLAND_DISPLAY_POINTER,
+			nullptr
+		));
+		auto surface = static_cast<wl_surface*>(SDL_GetPointerProperty(
+			properties,
+			SDL_PROP_WINDOW_WAYLAND_SURFACE_POINTER,
+			nullptr
+		));
+		if (!display || !surface) {
+			throw std::runtime_error("SDL did not provide Wayland display and surface handles");
+		}
+		return { display, surface };
+	}
 #endif // defined(__linux__)
 
-		template <class Backend>
-		typename Backend::PresentationTarget PresentationTarget(Platform const& platform) {
+	template <class Backend>
+	typename Backend::PlatformHandle PresentationTarget(Platform const& platform) {
 #if defined(_WIN32)
-			return reinterpret_cast<typename Backend::PresentationTarget>(
-				platform.NativeWindow()
+		return reinterpret_cast<typename Backend::PlatformHandle>(
+			platform.NativeWindow()
 			);
 #elif defined(__linux__)
-			try {
-				auto [display, window] = X11Window(platform.MainWindow());
-				return typename Backend::X11PresentationTarget{ display, window };
-			}
-			catch (NotX11 const&) {
-				auto [display, surface] = WaylandWindow(platform.MainWindow());
-				return typename Backend::WaylandPresentationTarget{ display, surface };
-			}
-#else
-			throw std::runtime_error("Presentation target is not connected on this platform");
-#endif // defined(_WIN32)
+		try {
+			auto [display, window] = X11Window(platform.MainWindow());
+			return typename Backend::X11PlatformHandle{ display, window };
 		}
-
+		catch (NotX11 const&) {
+			auto [display, surface] = WaylandWindow(platform.MainWindow());
+			return typename Backend::WaylandPlatformHandle{ display, surface };
+		}
+#else
+		throw std::runtime_error("Presentation target is not connected on this platform");
+#endif // defined(_WIN32)
 	}
+
+}
 
 namespace fyuu_engine {
 
@@ -904,29 +888,25 @@ namespace fyuu_engine {
 		using D3D12Backend = RenderingBackend<
 			fyuu_rhi::D3D12Instance,
 			fyuu_rhi::D3D12PhysicalDevice,
-			fyuu_rhi::D3D12LogicalDevice,
-			fyuu_rhi::execution::D3D12Scheduler
+			fyuu_rhi::D3D12LogicalDevice
 		>;
 #endif // defined(_WIN32)
 #if !defined(__APPLE__)
 		using VulkanBackend = RenderingBackend<
 			fyuu_rhi::VulkanInstance,
 			fyuu_rhi::VulkanPhysicalDevice,
-			fyuu_rhi::VulkanLogicalDevice,
-			fyuu_rhi::execution::VulkanScheduler
+			fyuu_rhi::VulkanLogicalDevice
 		>;
 		using OpenGLBackend = RenderingBackend<
 			fyuu_rhi::OpenGLInstance,
 			fyuu_rhi::OpenGLPhysicalDevice,
-			fyuu_rhi::OpenGLLogicalDevice,
-			fyuu_rhi::execution::OpenGLScheduler
+			fyuu_rhi::OpenGLLogicalDevice
 		>;
 #endif // !defined(__APPLE__)
 		using WebGPUBackend = RenderingBackend<
 			fyuu_rhi::WebGPUInstance,
 			fyuu_rhi::WebGPUPhysicalDevice,
-			fyuu_rhi::WebGPULogicalDevice,
-			fyuu_rhi::execution::WebGPUScheduler
+			fyuu_rhi::WebGPULogicalDevice
 		>;
 
 		using Backend = std::variant<
@@ -944,6 +924,12 @@ namespace fyuu_engine {
 		Backend m_backend;
 		std::chrono::steady_clock::time_point m_last_frame_time{};
 		bool m_imgui_initialized = false;
+		/// Font atlas state: base size from the application descriptor, the DPI
+		/// scale the atlas was rasterized at, and a generation counter bumped
+		/// whenever the atlas is rebuilt so the font texture is re-uploaded.
+		float m_font_size = 13.0f;
+		float m_font_scale = 1.0f;
+		std::uint64_t m_font_generation = 0u;
 
 		void InitializeD3D12(ApplicationDescriptor const& application) {
 #if defined(_WIN32)
@@ -1062,20 +1048,21 @@ namespace fyuu_engine {
 			io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
 			io.BackendPlatformName = "fyuu_sdl3";
 			io.BackendRendererName = "fyuu_rhi";
+			m_font_size = application.font_size;
 			int logical_width = 0;
 			int logical_height = 0;
 			int pixel_width = 0;
 			int pixel_height = 0;
 			SDL_GetWindowSize(platform.MainWindow(), &logical_width, &logical_height);
 			SDL_GetWindowSizeInPixels(platform.MainWindow(), &pixel_width, &pixel_height);
-			auto font_scale = std::max(
+			m_font_scale = std::max(
 				logical_width > 0 ? static_cast<float>(pixel_width) / logical_width : 1.0f,
 				logical_height > 0 ? static_cast<float>(pixel_height) / logical_height : 1.0f
 			);
 			ImFontConfig font_config;
-			font_config.SizePixels = 13.0f * font_scale;
+			font_config.SizePixels = m_font_size * m_font_scale;
 			io.Fonts->AddFontDefault(&font_config);
-			io.FontGlobalScale = 1.0f / font_scale;
+			io.FontGlobalScale = 1.0f / m_font_scale;
 			ImGui::StyleColorsDark();
 			auto const& api = application.graphics_api;
 			if (api == "platformdefault") {
@@ -1134,6 +1121,20 @@ namespace fyuu_engine {
 				logical_width > 0 ? static_cast<float>(pixel_width) / logical_width : 1.0f,
 				logical_height > 0 ? static_cast<float>(pixel_height) / logical_height : 1.0f
 			);
+			// Rebuild the font atlas when the display DPI changes so text stays
+			// crisp at the new scale; the render backend re-uploads the font
+			// texture because the generation counter changed.
+			float font_scale = std::max(io.DisplayFramebufferScale.x, io.DisplayFramebufferScale.y);
+			if (font_scale > m_font_scale + 0.01f || font_scale < m_font_scale - 0.01f) {
+				io.Fonts->Clear();
+				ImFontConfig font_config;
+				font_config.SizePixels = m_font_size * font_scale;
+				io.Fonts->AddFontDefault(&font_config);
+				io.FontGlobalScale = 1.0f / font_scale;
+				io.Fonts->Build();
+				m_font_scale = font_scale;
+				++m_font_generation;
+			}
 			auto now = std::chrono::steady_clock::now();
 			io.DeltaTime = m_last_frame_time.time_since_epoch().count() == 0
 				? 1.0f / 60.0f
@@ -1156,16 +1157,17 @@ namespace fyuu_engine {
 			if (!m_imgui_initialized) return;
 			ImGui::Render();
 			auto* draw_data = ImGui::GetDrawData();
-			auto RenderBackend = [&platform, &application, draw_data](auto& backend) {
+			auto RenderBackend = [&platform, &application, draw_data, font_generation = m_font_generation](auto& backend) {
 				using State = std::remove_cvref_t<decltype(backend)>;
 				if constexpr (!std::same_as<State, std::monostate>) {
 					backend.Render(
 						PresentationTarget<typename State::Backend>(platform),
 						application,
-						draw_data
+						draw_data,
+						font_generation
 					);
 				}
-			};
+				};
 			std::visit(RenderBackend, m_backend);
 		}
 

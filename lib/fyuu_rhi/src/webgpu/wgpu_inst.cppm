@@ -93,46 +93,4 @@ namespace fyuu_rhi::webgpu {
 
 	}
 
-#if defined(_WIN32)
-	wgpu::Surface Backend::CreateSurface(wgpu::Instance const& instance, HWND window_handle) {
-		wgpu::SurfaceSourceWindowsHWND win32_desc = {};
-		win32_desc.hinstance = GetModuleHandle(nullptr);
-		win32_desc.hwnd = window_handle;
-		wgpu::SurfaceDescriptor surface_desc = {};
-		surface_desc.nextInChain = &win32_desc;
-		return instance.CreateSurface(&surface_desc);
-	}
-#elif defined(__linux__)
-	wgpu::Surface Backend::CreateSurface(wgpu::Instance const& instance, Display* x11_dpy, Window x11_window) {
-		wgpu::SurfaceDescriptorFromXlibWindow xlib_desc = {};
-		xlib_desc.display = x11_dpy;
-		xlib_desc.window = x11_window;
-
-		wgpu::SurfaceDescriptor surface_desc = {};
-		surface_desc.nextInChain = &xlib_desc;
-
-		return instance.CreateSurface(surface_desc);
-	}
-	wgpu::Surface Backend::CreateSurface(wgpu::Instance const& instance, wl_display* display, wl_surface* surface) {
-		wgpu::SurfaceDescriptorFromWaylandSurface wayland_desc = {};
-		wayland_desc.display = display;
-		wayland_desc.surface = surface;
-
-		wgpu::SurfaceDescriptor surface_desc = {};
-		surface_desc.nextInChain = &wayland_desc;
-
-		return instance.CreateSurface(surface_desc);
-	}
-#elif defined(__ANDROID__)
-	wgpu::Surface Backend::CreateSurface(wgpu::Instance const& instance, ANativeWindow* window) {
-		wgpu::SurfaceDescriptorFromAndroidNativeWindow android_desc = {};
-		android_desc.window = window;
-
-		wgpu::SurfaceDescriptor surface_desc = {};
-		surface_desc.nextInChain = &android_desc;
-
-		return instance.CreateSurface(surface_desc);
-	}
-#endif // defined(_WIN32)
-
 }

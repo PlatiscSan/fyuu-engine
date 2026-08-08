@@ -9,7 +9,7 @@ export module fyuu_rhi:view;
 import std;
 #endif // defined(__cpp_lib_modules)
 namespace fyuu_rhi::execution {
-	template <class Backend> class CommandGraphBindings;
+	template <class Backend, class Receiver> class CommandGraphBindings;
 }
 namespace fyuu_rhi {
 
@@ -27,7 +27,7 @@ namespace fyuu_rhi {
 			);
 
 			template <class U> friend class LogicalDevice;
-			template <class U> friend class execution::CommandGraphBindings;
+			template <class U, class Receiver> friend class execution::CommandGraphBindings;
 
 			ViewType* m_view;
 

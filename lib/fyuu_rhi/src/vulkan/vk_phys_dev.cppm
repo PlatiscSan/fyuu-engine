@@ -100,6 +100,8 @@ namespace {
 			{ vk::KHRImageFormatListExtensionName, "" },
 			{ vk::KHRSwapchainMutableFormatExtensionName, "" },
 			{ vk::KHRSurfaceProtectedCapabilitiesExtensionName, "" },
+			{ vk::KHRPresentIdExtensionName, "" },
+			{ vk::KHRPresentWaitExtensionName, "" },
 			{ vk::KHRPresentModeFifoLatestReadyExtensionName, vk::KHRGetSurfaceCapabilities2ExtensionName },
 		};
 
@@ -162,7 +164,7 @@ namespace {
 				type |= CommandQueueType::Copy;
 			}
 
-			if (type != CommandQueueType::None) {
+			if (current_family.queueCount != 0u) {
 				queue_infos.push_back({ type, i, current_family.queueCount });
 			}
 		}
@@ -244,6 +246,8 @@ namespace fyuu_rhi::vulkan {
 		vk::PhysicalDeviceDynamicRenderingFeatures dynamic_rendering_features;
 		vk::PhysicalDeviceSynchronization2Features synchronization2_features;
 		vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR swapchain_maintenance_features;
+		vk::PhysicalDevicePresentIdFeaturesKHR present_id_features;
+		vk::PhysicalDevicePresentWaitFeaturesKHR present_wait_features;
 		vk::PhysicalDevicePresentModeFifoLatestReadyFeaturesKHR fifo_latest_ready_features;
 		void* feature_chain = nullptr;
 		bool swapchain_maintenance_available = IsDeviceExtensionEnabled(
@@ -254,6 +258,24 @@ namespace fyuu_rhi::vulkan {
 			enabled_extensions,
 			vk::KHRPresentModeFifoLatestReadyExtensionName
 		);
+		bool present_id_available = IsDeviceExtensionEnabled(
+			enabled_extensions,
+			vk::KHRPresentIdExtensionName
+		);
+		bool present_wait_available =
+			present_id_available &&
+			IsDeviceExtensionEnabled(
+				enabled_extensions,
+				vk::KHRPresentWaitExtensionName
+			);
+		if (present_id_available) {
+			present_id_features.pNext = feature_chain;
+			feature_chain = &present_id_features;
+		}
+		if (present_wait_available) {
+			present_wait_features.pNext = feature_chain;
+			feature_chain = &present_wait_features;
+		}
 		if (swapchain_maintenance_available) {
 			swapchain_maintenance_features.pNext = feature_chain;
 			feature_chain = &swapchain_maintenance_features;
@@ -295,36 +317,29 @@ namespace fyuu_rhi::vulkan {
 		bool fifo_latest_ready_supported =
 			fifo_latest_ready_available && fifo_latest_ready_features.presentModeFifoLatestReady;
 		fifo_latest_ready_features.presentModeFifoLatestReady = fifo_latest_ready_supported;
+		bool present_id_supported = present_id_available && present_id_features.presentId;
+		present_id_features.presentId = present_id_supported;
+		bool present_wait_supported =
+			present_wait_available &&
+			present_id_supported &&
+			present_wait_features.presentWait;
+		present_wait_features.presentWait = present_wait_supported;
 
 		
-		// --------------------------------------------------------------------
-		// Queue creation.
-		// We create one queue family per command type (graphics, compute, copy)
-		// as determined by the queue alloc. The alloc provides the
-		// family index, number of queues, and queue priorities.
-		// --------------------------------------------------------------------
+		// Create every queue exposed by every non-empty family. Vulkan fixes the
+		// queue count and priorities at device creation, so this preserves the
+		// complete queue pool for schedulers created later.
 		std::vector<vk::DeviceQueueCreateInfo> queue_create_infos;
-
-		std::unordered_set<std::uint32_t> queue_families;
-		for (CommandQueueType type : {
-			CommandQueueType::Graphics,
-			CommandQueueType::Compute,
-			CommandQueueType::Copy
-		}) {
-			if (!queue_alloc.Supports(type)) {
-				continue;
-			}
-
-			auto family = queue_alloc.GetFamily(type);
-			if (!queue_families.emplace(family).second) {
-				continue;
-			}
-
+		auto queue_create_plans = queue_alloc.GetCreatePlans();
+		queue_create_infos.reserve(queue_create_plans.size());
+		for (auto const& queue_create_plan : queue_create_plans) {
 			queue_create_infos.emplace_back(
 				vk::DeviceQueueCreateFlags{},
-				family,
-				queue_alloc.GetTotalQueue(type),
-				queue_alloc.GetPriorities(type).data(),
+				queue_create_plan.family,
+				static_cast<std::uint32_t>(
+					queue_create_plan.priorities.size()
+				),
+				queue_create_plan.priorities.data(),
 				nullptr
 			);
 		}
@@ -386,17 +401,24 @@ namespace fyuu_rhi::vulkan {
 				vk::StructureType::ePhysicalDevicePresentModeFifoLatestReadyFeaturesKHR
 			);
 		}
+		if (present_id_supported) {
+			enabled_features.emplace(
+				vk::StructureType::ePhysicalDevicePresentIdFeaturesKHR
+			);
+		}
+		if (present_wait_supported) {
+			enabled_features.emplace(
+				vk::StructureType::ePhysicalDevicePresentWaitFeaturesKHR
+			);
+		}
 
 		return {
 			phys_dev,
 			std::move(queue_alloc),
-			ToStrings(enabled_extensions),
 			std::move(enabled_features),
 			dev,
 			dev_dispatcher,
-			mem_alloc,
-			std::make_shared<LogicalDevice::PresentationCache>(),
-			execution::CompletionService::Instance()
+			mem_alloc
 		};
 	}
 

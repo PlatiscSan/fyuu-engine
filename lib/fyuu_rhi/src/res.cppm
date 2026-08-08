@@ -5,6 +5,9 @@ module;
 #include <concepts>
 #include <cstdint>
 #include <cstddef>
+#include <optional>
+#include <span>
+#include <stdexcept>
 #include <utility>
 #endif // !defined(__cpp_lib_modules)
 
@@ -14,7 +17,7 @@ import std;
 #endif // defined(__cpp_lib_modules)
 import :resource_types;
 namespace fyuu_rhi::execution {
-	template <class Backend> class CommandGraphBindings;
+	template <class Backend, class Receiver> class CommandGraphBindings;
 	template <class Backend, class Receiver> class ResourceMapOperationState;
 	template <class Backend, class Receiver> class ResourceUnmapOperationState;
 	template <class Backend> class AbandonedResourceMapping;
@@ -43,7 +46,7 @@ namespace fyuu_rhi {
 				"ResType must be Resource or const Resource");
 
 			template <class U> friend class LogicalDevice;
-			template <class U> friend class execution::CommandGraphBindings;
+			template <class U, class Receiver> friend class execution::CommandGraphBindings;
 			template <class U, class Receiver>
 			friend class execution::ResourceMapOperationState;
 			template <class U, class Receiver>

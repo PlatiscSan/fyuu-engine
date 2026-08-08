@@ -1,6 +1,5 @@
 /* the opengl pattern
 module;
-#include <boost/smart_ptr/intrusive_ptr.hpp>
 #include <version>
 #if !defined(__cpp_lib_modules)
 
@@ -37,21 +36,28 @@ namespace fyuu_rhi::opengl {
 module;
 #include <version>
 #if !defined(__cpp_lib_modules)
-#include <type_traits>
-#include <thread>
-#include <mutex>
-#include <memory>
-#include <unordered_map>
-#include <variant>
-#include <optional>
-#include <vector>
-#include <span>
-#include <cstdint>
-#include <utility>
-#include <deque>
-#include <condition_variable>
-#include <stop_token>
+#include <cstddef>
 #include <exception>
+#include <memory>
+#include <vector>
+
+#include <atomic>
+#include <condition_variable>
+#include <cstdint>
+#include <deque>
+#include <mutex>
+#include <thread>
+#include <type_traits>
+#include <unordered_map>
+#include <utility>
+
+#include <optional>
+#include <string_view>
+#include <variant>
+
+#include <compare>
+#include <span>
+#include <stop_token>
 #endif // !defined(__cpp_lib_modules)
 #if !defined(__APPLE__)
 #include "glad/glad.h"
@@ -78,61 +84,35 @@ import std;
 import :core_types;
 import :resource_types;
 import :sampler_types;
-import :scheduler_types;
 import :pipeline_types;
 import :native_pipeline_binding;
-import :native_command_graph;
-import :presentation_cache;
-import :completion_service;
-import :execution_pool;
+import :execution_types;
 
 namespace fyuu_rhi::opengl {
 	
 	using namespace fyuu_rhi::pipeline;
-	using namespace fyuu_rhi::execution;
-
 	export struct Backend {
-
 #if defined(_WIN32)
-		using PresentationTarget = HWND;
+		using PlatformHandle = HWND;
 #elif defined(__linux__)
-		struct X11PresentationTarget {
+		struct X11PlatformHandle {
 			Display* display;
 			Window window;
 
-			friend auto operator<=>(X11PresentationTarget const&, X11PresentationTarget const&) noexcept = default;
+			std::strong_ordering operator<=>(X11PlatformHandle const&) const noexcept = default;
 		};
 
-		struct WaylandPresentationTarget {
+		struct WaylandPlatformHandle {
 			wl_display* display;
 			wl_surface* surface;
 
-			friend auto operator<=>(WaylandPresentationTarget const&, WaylandPresentationTarget const&) noexcept = default;
+			std::strong_ordering operator<=>(WaylandPlatformHandle const&) const noexcept = default;
 		};
 
-		using PresentationTarget = std::variant<X11PresentationTarget, WaylandPresentationTarget>;
+		using PlatformHandle = std::variant<X11PlatformHandle, WaylandPlatformHandle>;
 #elif defined(__ANDROID__)
-		using PresentationTarget = ANativeWindow*;
-#endif
-		struct PresentationTargetHash {
-#if defined(_WIN32) || defined(__ANDROID__)
-			std::size_t operator()(PresentationTarget target) const noexcept {
-				return execution::HashNativePointer(target);
-			}
-#elif defined(__linux__)
-			std::size_t operator()(PresentationTarget const& target) const noexcept {
-				if (auto value = std::get_if<X11PresentationTarget>(&target)) {
-					auto display = execution::HashNativePointer(value->display);
-					auto window = std::hash<Window>{}(value->window);
-					return execution::CombineHashes(display, window);
-				}
-				auto const& value = std::get<WaylandPresentationTarget>(target);
-				auto display = execution::HashNativePointer(value.display);
-				auto surface = execution::HashNativePointer(value.surface);
-				return execution::CombineHashes(display, surface);
-			}
-#endif
-		};
+		using PlatformHandle = ANativeWindow*;
+#endif // defined(_WIN32)
 
 		struct Instance {
 #if defined(_WIN32)
@@ -167,114 +147,15 @@ namespace fyuu_rhi::opengl {
 		};
 
 		using PhysicalDevice = Instance const*;
-		struct PresentationEntry {
-			struct FrameState {
-				std::vector<GLsync> slots;
-				std::size_t next_slot = 0u;
-				int swap_interval = -1;
-			};
-
-			PresentationTarget target;
-			std::shared_ptr<FrameState> frames;
-#if defined(_WIN32)
-			HDC dc = nullptr;
-
-			PresentationEntry() noexcept = default;
-			PresentationEntry(PresentationEntry const&) = delete;
-			PresentationEntry& operator=(PresentationEntry const&) = delete;
-			PresentationEntry(PresentationEntry&& other) noexcept
-				: target(std::exchange(other.target, nullptr)),
-				frames(other.frames),
-				dc(std::exchange(other.dc, nullptr)) {
-
-			}
-			PresentationEntry& operator=(PresentationEntry&& other) noexcept {
-				std::swap(target, other.target);
-				std::swap(frames, other.frames);
-				std::swap(dc, other.dc);
-				return *this;
-			}
-			~PresentationEntry() noexcept {
-				if (target && dc) {
-					ReleaseDC(target, dc);
-				}
-			}
-#elif defined(__linux__)
-			std::variant<std::monostate, GLXDrawable, EGLSurface> drawable;
-#elif defined(__ANDROID__)
-			EGLSurface drawable = EGL_NO_SURFACE;
-#endif
-		};
-
-		using PresentationCache = execution::PresentationCache<
-			PresentationTarget,
-			PresentationEntry,
-			PresentationTargetHash
-		>;
-
 		struct LogicalDevice {
 			Instance const* instance = nullptr;
-			std::shared_ptr<PresentationCache> presentation_cache;
-			boost::intrusive_ptr<execution::CompletionService> completion_service;
 
 			explicit operator bool() const noexcept {
 				return instance != nullptr;
 			}
 		};
 
-		struct GLScheduler {
-			using CommandPool = execution::ExecutionPool<std::vector<GraphCommand>>;
-
-			struct QueueState {
-				struct Submission {
-					void* operation_state = nullptr;
-					GLsync (*Execute)(void*) = nullptr;
-					execution::GraphCompletion completion;
-					std::shared_ptr<void> keep_alive;
-				};
-
-				struct PendingCompletion {
-					GLsync sync = nullptr;
-					execution::GraphCompletion completion;
-					std::shared_ptr<void> keep_alive;
-				};
-
-				LogicalDevice impl;
-				std::shared_ptr<CommandPool> command_pool;
-				std::deque<Submission> submissions;
-				std::deque<PendingCompletion> pending_completions;
-				std::mutex mutex;
-				std::condition_variable condition;
-				bool ready = false;
-				std::exception_ptr startup_error;
-				std::jthread worker;
-
-				QueueState(
-					LogicalDevice const& logical_device_,
-					std::shared_ptr<CommandPool> const& command_pool_
-				);
-				void Enqueue(Submission const& submission);
-
-			private:
-				static void Run(std::stop_token stop_token, QueueState* self) noexcept;
-			};
-
-			struct QueueCollection {
-				std::shared_ptr<QueueState> graphics;
-				std::shared_ptr<QueueState> compute;
-				std::shared_ptr<QueueState> copy;
-
-				[[nodiscard]] std::shared_ptr<QueueState> const& Select(
-					execution::GraphNodeFlagBits capability
-				) const;
-			};
-
-			QueueCollection queues;
-		};
-
-		using Scheduler = std::shared_ptr<GLScheduler>;
-
-		struct GLResource {
+		struct Resource {
 			GLuint impl = 0;
 			GLenum target = 0u;
 			GLenum format = 0u;
@@ -286,43 +167,17 @@ namespace fyuu_rhi::opengl {
 				Texture
 			} type = Type::Buffer;
 
-			GLResource(GLuint impl_, Type type_, std::size_t size_) noexcept
-				: impl(impl_), size(size_), type(type_) {}
-			GLResource(
+			Resource(GLuint impl_, Type type_, std::size_t size_) noexcept;
+			Resource(
 				GLuint impl_, GLenum target_, GLenum format_, std::uint32_t width_,
 				std::uint32_t height_
-			) noexcept : impl(impl_), target(target_), format(format_), width(width_),
-				height(height_), type(Type::Texture) {}
-			GLResource(GLResource const&) = delete;
-			GLResource& operator=(GLResource const&) = delete;
-			GLResource(GLResource&& other) noexcept
-				: impl(std::exchange(other.impl, 0)), target(other.target), format(other.format),
-				size(other.size), width(other.width), height(other.height), type(other.type) {}
-			GLResource& operator=(GLResource&& other) noexcept {
-				std::swap(impl, other.impl);
-				std::swap(target, other.target);
-				std::swap(format, other.format);
-				std::swap(size, other.size);
-				std::swap(width, other.width);
-				std::swap(height, other.height);
-				type = other.type;
-				return *this;
-			}
-			~GLResource() noexcept {
-				switch (type) {
-				case fyuu_rhi::opengl::Backend::GLResource::Type::Buffer:
-					glDeleteBuffers(1u, &impl);
-					break;
-				case fyuu_rhi::opengl::Backend::GLResource::Type::Texture:
-					glDeleteTextures(1u, &impl);
-					break;
-				default:
-					break;
-				}
-			}
+			) noexcept;
+			Resource(Resource const&) = delete;
+			Resource& operator=(Resource const&) = delete;
+			Resource(Resource&& other) noexcept;
+			Resource& operator=(Resource&& other) noexcept;
+			~Resource() noexcept;
 		};
-
-		using Resource = GLResource;
 
 		struct GLTextureView {
 			GLuint impl = 0;
@@ -334,24 +189,12 @@ namespace fyuu_rhi::opengl {
 				GLenum target_,
 				GLenum format_,
 				bool owned_ = true
-			) noexcept : impl(impl_), target(target_), format(format_), owned(owned_) {}
+			) noexcept;
 			GLTextureView(GLTextureView const&) = delete;
 			GLTextureView& operator=(GLTextureView const&) = delete;
-			GLTextureView(GLTextureView&& other) noexcept
-				: impl(std::exchange(other.impl, 0)), target(other.target), format(other.format),
-				owned(std::exchange(other.owned, false)) {}
-			GLTextureView& operator=(GLTextureView&& other) noexcept {
-				std::swap(impl, other.impl);
-				std::swap(target, other.target);
-				std::swap(format, other.format);
-				std::swap(owned, other.owned);
-				return *this;
-			}
-			~GLTextureView() noexcept {
-				if (owned) {
-					glDeleteTextures(1u, &impl);
-				}
-			}
+			GLTextureView(GLTextureView&& other) noexcept;
+			GLTextureView& operator=(GLTextureView&& other) noexcept;
+			~GLTextureView() noexcept;
 		};
 
 		struct GLBufferView {
@@ -362,44 +205,27 @@ namespace fyuu_rhi::opengl {
 
 			GLuint impl = 0;
 			std::optional<Range> range; // fallback for no GLAD_GL_ARB_texture_buffer_range
-			GLBufferView(GLuint impl_, std::optional<Range> range_) noexcept
-				: impl(impl_), range(std::move(range_)) {}
+			GLBufferView(GLuint impl_, std::optional<Range> range_) noexcept;
 			GLBufferView(GLBufferView const&) = delete;
 			GLBufferView& operator=(GLBufferView const&) = delete;
-			GLBufferView(GLBufferView&& other) noexcept
-				: impl(std::exchange(other.impl, 0)), range(std::move(other.range)) {}
-			GLBufferView& operator=(GLBufferView&& other) noexcept {
-				std::swap(impl, other.impl);
-				range = std::move(other.range);
-				return *this;
-			}
-			~GLBufferView() noexcept {
-				glDeleteTextures(1u, &impl);
-			}
+			GLBufferView(GLBufferView&& other) noexcept;
+			GLBufferView& operator=(GLBufferView&& other) noexcept;
+			~GLBufferView() noexcept;
 		};
 
 		using View = std::variant<std::monostate, GLTextureView, GLBufferView>;
 
-		struct GLSampler {
+		struct Sampler {
 			GLuint impl = 0;
-			explicit GLSampler(GLuint impl_) noexcept : impl(impl_) {}
-			GLSampler(GLSampler const&) = delete;
-			GLSampler& operator=(GLSampler const&) = delete;
-			GLSampler(GLSampler&& other) noexcept : impl(std::exchange(other.impl, 0)) {}
-			GLSampler& operator=(GLSampler&& other) noexcept {
-				std::swap(impl, other.impl);
-				return *this;
-			}
-			~GLSampler() noexcept {
-				if (impl) {
-					glDeleteSamplers(1u, &impl);
-				}
-			}
+			explicit Sampler(GLuint impl_) noexcept;
+			Sampler(Sampler const&) = delete;
+			Sampler& operator=(Sampler const&) = delete;
+			Sampler(Sampler&& other) noexcept;
+			Sampler& operator=(Sampler&& other) noexcept;
+			~Sampler() noexcept;
 		};
 
-		using Sampler = GLSampler;
-
-		struct GLPipeline {
+		struct Pipeline {
 			GLuint impl = 0;
 			bool compute = false;
 			std::vector<VertexBufferLayout> vertex_buffers;
@@ -411,7 +237,7 @@ namespace fyuu_rhi::opengl {
 			std::vector<ColorTargetState> color_targets;
 			std::vector<PipelineBindingMetadata> bindings;
 
-			GLPipeline(
+			Pipeline(
 				GLuint impl_,
 				std::vector<VertexBufferLayout> vertex_buffers_,
 				std::vector<VertexAttribute> vertex_attributes_,
@@ -421,77 +247,202 @@ namespace fyuu_rhi::opengl {
 				std::optional<DepthStencilState> depth_stencil_,
 				std::vector<ColorTargetState> color_targets_,
 				std::vector<PipelineBindingMetadata> bindings_
-			) : impl(impl_),
-				vertex_buffers(std::move(vertex_buffers_)),
-				vertex_attributes(std::move(vertex_attributes_)),
-				primitive(primitive_),
-				rasterization(rasterization_),
-				multisample(multisample_),
-				depth_stencil(std::move(depth_stencil_)),
-				color_targets(std::move(color_targets_)),
-				bindings(std::move(bindings_)) {}
+			);
+			Pipeline(GLuint impl_, std::vector<PipelineBindingMetadata> bindings_);
 
-			GLPipeline(GLuint impl_, std::vector<PipelineBindingMetadata> bindings_)
-				: impl(impl_), compute(true), bindings(std::move(bindings_)) {
-
-			}
-
-			GLPipeline(GLPipeline const&) = delete;
-			GLPipeline& operator=(GLPipeline const&) = delete;
-			GLPipeline(GLPipeline&& other) noexcept
-				: impl(std::exchange(other.impl, 0)), compute(other.compute),
-				vertex_buffers(std::move(other.vertex_buffers)),
-				vertex_attributes(std::move(other.vertex_attributes)),
-				primitive(other.primitive),
-				rasterization(other.rasterization),
-				multisample(other.multisample),
-				depth_stencil(std::move(other.depth_stencil)),
-				color_targets(std::move(other.color_targets)),
-				bindings(std::move(other.bindings)) {}
-			GLPipeline& operator=(GLPipeline&& other) noexcept {
-				std::swap(impl, other.impl);
-				std::swap(compute, other.compute);
-				vertex_buffers = std::move(other.vertex_buffers);
-				vertex_attributes = std::move(other.vertex_attributes);
-				primitive = other.primitive;
-				rasterization = other.rasterization;
-				multisample = other.multisample;
-				depth_stencil = std::move(other.depth_stencil);
-				color_targets = std::move(other.color_targets);
-				bindings = std::move(other.bindings);
-				return *this;
-			}
-
-			~GLPipeline() noexcept {
-				if (impl) {
-					glDeleteProgram(impl);
-				}
-			}
+			Pipeline(Pipeline const&) = delete;
+			Pipeline& operator=(Pipeline const&) = delete;
+			Pipeline(Pipeline&& other) noexcept;
+			Pipeline& operator=(Pipeline&& other) noexcept;
+			~Pipeline() noexcept;
 		};
-
-		using Pipeline = GLPipeline;
 
 		using PipelineResourceGroup = NativePipelineResourceGroup<Backend>;
-		using CommandGraph = std::shared_ptr<execution::NativeCommandGraph<Backend>>;
-		using ExecutableGraph = std::shared_ptr<execution::NativeExecutableGraph<Backend>>;
-		struct GraphExecution {
-			struct Batch {
-				struct BarrierPoint {
-					std::size_t command_offset = 0u;
-					GLbitfield bits = 0u;
-				};
 
-				std::shared_ptr<GLScheduler::QueueState> queue;
-				GLScheduler::CommandPool::Lease commands;
-				std::vector<BarrierPoint> barriers;
+
+		class CompletionToken {
+		public:
+			/// Defined in the execution partition, where SchedulerContext::Implementation
+			/// is complete. Unlike the Vulkan token, the completion state is written by
+			/// the GL thread and read by the polling thread, so Deleter must hand the
+			/// state back to the scheduler's pending list before destroying it:
+			///   struct Implementation {
+			///       std::shared_ptr<SchedulerContext::Implementation> scheduler;
+			///       std::atomic<bool> complete = false;
+			///       std::atomic<bool> stopped = false;
+			///       std::exception_ptr error;
+			///   };
+			/// Public because Submission and the scheduler reference it by pointer.
+			struct Implementation;
+		private:
+			struct Deleter {
+				void operator()(Implementation* impl) const noexcept;
 			};
+			std::unique_ptr<Implementation, Deleter> impl;
 
-			Scheduler scheduler;
-			ExecutableGraph graph;
-			std::shared_ptr<void const> binding_snapshot;
-			std::vector<Batch> batches;
+			explicit CompletionToken(std::unique_ptr<Implementation, Deleter> impl_) noexcept
+				: impl(std::move(impl_)) {}
+			friend struct Backend;
+
+		public:
+			CompletionToken() noexcept = default;
+			CompletionToken(CompletionToken const&) = delete;
+			CompletionToken& operator=(CompletionToken const&) = delete;
+			CompletionToken(CompletionToken&&) noexcept = default;
+			CompletionToken& operator=(CompletionToken&&) noexcept = default;
+			~CompletionToken() noexcept;
+
+			[[nodiscard]] bool Poll() noexcept;
+			[[nodiscard]] std::exception_ptr Error() const noexcept;
+			[[nodiscard]] bool IsStopped() const noexcept;
 		};
 
+		/// One submission replayed by the scheduler thread. The plan is snapshotted:
+		/// ExecuteCommands returns before replay, so caller-owned spans are invalid.
+		struct Submission {
+			/// GL object names plus metadata; Backend::Resource is not copyable, so
+			/// only the fields replay needs are mirrored here.
+			struct ResourceSnapshot {
+				GLuint impl;
+				GLenum target;
+				GLenum format;
+				std::size_t size;
+				std::uint32_t width;
+				std::uint32_t height;
+				enum class Type : std::uint8_t { Buffer, Texture } type;
+			};
+
+			struct ViewSnapshot {
+				GLuint impl = 0;
+				GLenum target = 0u;
+				GLenum format = 0u;
+				bool texture = false;         // else buffer view (texture buffer)
+			};
+
+			struct SamplerSnapshot {
+				GLuint impl = 0;
+			};
+
+			struct PipelineSnapshot {
+				GLuint impl = 0;
+				bool compute = false;
+				std::vector<VertexBufferLayout> vertex_buffers;
+				std::vector<VertexAttribute> vertex_attributes;
+				PrimitiveState primitive;
+				RasterizationState rasterization;
+				std::optional<DepthStencilState> depth_stencil;
+				/// First color target's blend state; OpenGL applies it as fixed-function
+				/// blending at pipeline bind time.
+				std::optional<BlendState> blend;
+				ColorWriteMask write_mask = ColorWriteMask::All;
+				std::vector<PipelineBindingMetadata> bindings;
+			};
+
+			struct GroupBindingSnapshot {
+				std::uint32_t slot = 0u;
+				std::uint32_t array_element = 0u;
+				GLuint buffer = 0;            // nonzero → glBindBufferBase
+				GLuint view = 0;              // nonzero → texture/image bind
+				GLenum view_target = 0u;      // texture target or GL_TEXTURE_BUFFER
+				GLenum view_format = 0u;      // internal format, for glBindImageTexture
+				GLuint sampler = 0;           // nonzero → glBindSampler
+			};
+
+			struct GroupSnapshot {
+				std::vector<GroupBindingSnapshot> bindings;
+			};
+
+			execution::ExecutionPlan plan;                   // deep copy
+			std::vector<ResourceSnapshot> resources;
+			std::vector<ViewSnapshot> views;
+			std::vector<SamplerSnapshot> samplers;
+			std::vector<PipelineSnapshot> pipelines;
+			std::vector<GroupSnapshot> groups;
+			std::vector<PlatformHandle> presentation_targets;
+			/// Exclusively owned by the token; the GL thread writes completion only
+			/// through this raw pointer, retired by CompletionToken::Deleter.
+			CompletionToken::Implementation* token_state = nullptr;
+		};
+
+		struct SchedulerContext {
+			/// Owns the dedicated GL thread and render context. GL executes
+			/// synchronously and context-affine, so the thread is the backend's
+			/// only "queue".
+			/// The submission queue lives on the GL thread's stack and is published
+			/// through the atomics below (run the D3D12 CompletionService pattern),
+			/// so its lifetime is exactly the thread's. The pending list stays a
+			/// member because CompletionToken::Deleter may run after the thread ends.
+			struct Implementation {
+				/// Published by Run() from the GL thread stack; cleared to nullptr
+				/// before the thread exits so no one touches freed stack objects.
+				std::atomic<std::mutex*> mutex = nullptr;
+				std::atomic<std::condition_variable*> condition = nullptr;
+				std::atomic<std::deque<Submission>*> submissions = nullptr;
+
+				/// One submitted batch awaiting GPU completion. GLsync is
+				/// context-bound, so only the GL thread may wait on or delete it.
+				struct PendingSync {
+					GLsync sync;
+					CompletionToken::Implementation* state;   // raw; token owns it
+				};
+				/// Guards pending: the GL thread's complete store and the token's
+				/// Deleter removal share this lock so destruction never races a write.
+				std::mutex pending_mutex;
+				std::deque<PendingSync> pending;
+
+				/// GL-thread-only cache of vertex arrays, keyed by program. Vertex
+				/// arrays are context-specific, so they live per scheduler.
+				std::unordered_map<GLuint, GLuint> vertex_arrays;
+
+				/// Per-window present state, touched only by the GL thread. A context
+				/// may be made current on any drawable sharing its pixel format, so
+				/// each presentation target owns an HDC/surface for its window.
+				struct PresentTarget {
+					PlatformHandle handle{};
+#if defined(_WIN32)
+					HDC dc = nullptr;
+#elif defined(__ANDROID__) || defined(__linux__)
+					/// EGL path only; GLX presents on the window drawable directly.
+					EGLSurface surface = EGL_NO_SURFACE;
+#endif
+				};
+				std::vector<PresentTarget> present_targets;
+
+				std::exception_ptr fatal_error;
+				/// Set by Run() after the render context binds successfully; checked by
+				/// ExecuteCommands so submissions never post into a dead thread.
+				std::atomic<bool> context_ready = false;
+				Instance const* instance = nullptr;          // rc / shared_rc / gl_handle
+
+				/// Must be the LAST member: its destructor (join) runs first during
+				/// destruction, so Run() still sees every other member alive.
+				std::jthread thread;
+
+				Implementation() = default;
+				Implementation(Implementation const&) = delete;
+				Implementation& operator=(Implementation const&) = delete;
+
+				void Run(std::stop_token stop);
+				void ReapSignaled();
+				void DrainPendingOnShutdown();
+			};
+
+			std::shared_ptr<Implementation> impl;
+
+			std::strong_ordering operator<=>(SchedulerContext const&) const noexcept = default;
+		};
+
+		static CompletionToken ExecuteCommands(
+			SchedulerContext const& scheduler,
+			execution::ExecutionPlan const& plan,
+			std::span<PlatformHandle const> presentation_targets,
+			std::span<std::reference_wrapper<Resource> const> resources,
+			std::span<std::reference_wrapper<View> const> views,
+			std::span<std::reference_wrapper<Sampler> const> samplers,
+			std::span<std::reference_wrapper<Pipeline> const> pipelines,
+			std::span<std::reference_wrapper<PipelineResourceGroup> const> resource_groups,
+			execution::StopTokenView stop_token
+		);
 #if defined(_WIN32)
 		static Instance CreateInstance(std::string_view app_name, Version const& app_ver, std::string_view engine_name, Version const& engine_ver, HWND window_handle);
 #elif defined(__linux__)
@@ -511,12 +462,6 @@ namespace fyuu_rhi::opengl {
 
 		static LogicalDevice CreateLogicalDevice(PhysicalDevice const& phys_dev) noexcept;
 
-		static Scheduler CreateScheduler(LogicalDevice const& ld, SchedulerDescriptor const& descriptor);
-		static CommandGraph CreateCommandGraph(
-			execution::CommandGraphDescriptor const& descriptor
-		);
-		static ExecutableGraph CompileCommandGraph(CommandGraph const& graph);
-
 		static Resource CreateBuffer(LogicalDevice const& ld, std::size_t size_in_bytes, ResourceFlags const& flags);
 
 		static Resource CreateTexture(LogicalDevice const& ld, std::size_t width, std::size_t height, std::size_t depth_arr_layers, std::size_t mip_lvl_cnt, ResourceFlags const& flags);
@@ -530,6 +475,8 @@ namespace fyuu_rhi::opengl {
 		static Pipeline CreateGraphicsPipeline(LogicalDevice const& ld, GraphicsPipelineDescriptor const& descriptor);
 		static Pipeline CreateComputePipeline(LogicalDevice const& ld, ComputePipelineDescriptor const& descriptor);
 
+		static SchedulerContext CreateScheduler(LogicalDevice const& ld);
+
 		static PipelineResourceGroup CreatePipelineResourceGroup(
 			LogicalDevice const& ld,
 			Pipeline const& pipeline,
@@ -539,31 +486,5 @@ namespace fyuu_rhi::opengl {
 
 	};
 
-	Backend::GraphExecution CreateGraphExecution(
-		Backend::Scheduler const& scheduler,
-		Backend::ExecutableGraph const& graph
-	);
-	void StartGraphExecution(
-		Backend::GraphExecution& graph_execution,
-		execution::GraphCompletion const& completion
-	);
-	void StartSchedulerExecution(
-		Backend::Scheduler const& scheduler,
-		execution::SchedulerCompletion const& completion
-	);
-	void StartDeferredDestroy(
-		Backend::Scheduler const& scheduler,
-		execution::DeferredDestroy const& deferred_destroy
-	);
-	void StartMapResource(
-		Backend::Scheduler const& scheduler,
-		Backend::Resource& resource,
-		execution::ResourceMapRequest const& request
-	);
-	void StartUnmapResource(
-		Backend::Scheduler const& scheduler,
-		Backend::Resource& resource,
-		execution::ResourceUnmapRequest const& request
-	);
 }
 #endif // !defined(__APPLE__)

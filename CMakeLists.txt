@@ -89,6 +89,7 @@ add_subdirectory(lib/plastic)
 add_subdirectory(lib/vulkan_hpp)
 add_subdirectory(lib/PixEvents-cmake)
 add_subdirectory(lib/fyuu_rhi)
+add_subdirectory(lib/fyuu_asset)
 
 # Collect public headers and module interfaces
 

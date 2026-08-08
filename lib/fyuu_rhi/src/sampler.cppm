@@ -8,6 +8,11 @@ export module fyuu_rhi:sampler;
 #if defined(__cpp_lib_modules)
 import std;
 #endif // defined(__cpp_lib_modules)
+
+namespace fyuu_rhi::execution {
+	template <class Backend, class Receiver> class CommandGraphBindings;
+}
+
 namespace fyuu_rhi {
 
 	export template <class Backend> class Sampler {
@@ -24,6 +29,8 @@ namespace fyuu_rhi {
 			);
 
 			template <class U> friend class LogicalDevice;
+			template <class U, class Receiver>
+			friend class execution::CommandGraphBindings;
 
 			SamplerType* m_sampler;
 

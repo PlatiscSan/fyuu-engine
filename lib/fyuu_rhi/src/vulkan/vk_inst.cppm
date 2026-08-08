@@ -312,32 +312,11 @@ namespace fyuu_rhi::vulkan {
 	std::vector<Backend::PhysicalDevice> Backend::EnumeratePhysicalDevices(Backend::Instance const& instance) {
 		auto WrapPhysicalDevice = [&instance](vk::PhysicalDevice phys_dev) -> Backend::PhysicalDevice {
 			return { instance, vk::SharedPhysicalDevice(phys_dev, instance.impl) };
-		};
+			};
 		return instance.impl->enumeratePhysicalDevices(instance.dispatcher) |
 			std::ranges::views::transform(WrapPhysicalDevice) |
 			std::ranges::to<std::vector<Backend::PhysicalDevice>>();
 	}
-
-#if defined(_WIN32)
-	vk::SharedSurfaceKHR Backend::CreateSurface(Backend::Instance const& instance, HWND window_handle) {
-		vk::Win32SurfaceCreateInfoKHR info({}, GetModuleHandle(nullptr), window_handle, nullptr);
-		return vk::SharedSurfaceKHR(instance.impl->createWin32SurfaceKHR(info, nullptr, instance.dispatcher), instance.impl, { nullptr, instance.dispatcher });
-	}
-#elif defined(__linux__)
-	vk::SharedSurfaceKHR Backend::CreateSurface(Backend::Instance const& instance, Display* x11_dpy, Window x11_window) {
-		vk::XlibSurfaceCreateInfoKHR info({}, x11_dpy, x11_window);
-		return vk::SharedSurfaceKHR(instance.impl->createXlibSurfaceKHR(info, nullptr, instance.dispatcher), instance.impl, { nullptr, instance.dispatcher });
-	}
-	vk::SharedSurfaceKHR Backend::CreateSurface(Backend::Instance const& instance, wl_display* display, wl_surface* surface) {
-		vk::WaylandSurfaceCreateInfoKHR info({}, display, surface);
-		return vk::SharedSurfaceKHR(instance.impl->createWaylandSurfaceKHR(info, nullptr, instance.dispatcher), instance.impl, { nullptr, instance.dispatcher });
-	}
-#elif defined(__ANDROID__)
-	vk::SharedSurfaceKHR Backend::CreateSurface(Backend::Instance const& instance, ANativeWindow* window) {
-		vk::AndroidSurfaceCreateInfoKHR info({}, window);
-		return vk::SharedSurfaceKHR(instance.impl->createAndroidSurfaceKHR(info, nullptr, instance.dispatcher), instance.impl, { nullptr, instance.dispatcher });
-	}
-#endif // defined(_WIN32)
 
 }
 

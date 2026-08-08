@@ -16,6 +16,7 @@ export module fyuu_engine:runtime;
 import std;
 #endif // defined(__cpp_lib_modules)
 export import :application_types;
+import fyuu_rhi;
 import :log;
 import :platform;
 import :rendering_system;
@@ -188,6 +189,12 @@ namespace fyuu_engine {
 
 		[[nodiscard]] ApplicationDescriptor const& Application() const noexcept {
 			return m_application;
+		}
+
+		/// Updates the render-target clear colour. An app's UI widget (e.g. an
+		/// ImGui ColorEdit) can call this each frame to change the background.
+		void SetClearColor(fyuu_rhi::execution::ColorClearValue const& color) noexcept {
+			m_application.clear_color = color;
 		}
 
 		[[nodiscard]] void* UserData() const noexcept {

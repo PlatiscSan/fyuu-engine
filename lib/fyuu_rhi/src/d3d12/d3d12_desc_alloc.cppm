@@ -29,8 +29,20 @@ namespace {
 		std::condition_variable m_condition;
 
 	public:
-		DescriptorHeap(ID3D12Device* dev, D3D12_DESCRIPTOR_HEAP_TYPE type, std::size_t total_desc, bool shader_visible)
-			: DirectX::DescriptorHeap(dev, type, shader_visible ? D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE : D3D12_DESCRIPTOR_HEAP_FLAG_NONE, total_desc),
+		DescriptorHeap(
+			Microsoft::WRL::ComPtr<ID3D12Device> const& device,
+			D3D12_DESCRIPTOR_HEAP_TYPE type,
+			std::size_t total_desc,
+			bool shader_visible
+		)
+			: DirectX::DescriptorHeap(
+				device.Get(),
+				type,
+				shader_visible ?
+					D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE :
+					D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
+				total_desc
+			),
 			m_allocated(total_desc, false) {
 		}
 
@@ -195,11 +207,11 @@ namespace fyuu_rhi::d3d12 {
 
 	public:
 		DescriptorAllocator(
-			ID3D12Device* dev,
+			Microsoft::WRL::ComPtr<ID3D12Device> const& device,
 			D3D12_DESCRIPTOR_HEAP_TYPE type,
 			std::size_t total_desc,
 			bool shader_visible
-		) : m_heap(std::make_shared<DescriptorHeap>(dev, type, total_desc, shader_visible)) {
+		) : m_heap(std::make_shared<DescriptorHeap>(device, type, total_desc, shader_visible)) {
 		}
 
 		DescriptorAllocator(DescriptorAllocator const& other) noexcept = default;
@@ -235,11 +247,11 @@ namespace fyuu_rhi::d3d12 {
 	};
 
 	inline DescriptorAllocator CreateUniversalViewAllocator(
-		ID3D12Device* dev,
+		Microsoft::WRL::ComPtr<ID3D12Device> const& device,
 		std::size_t total_desc = 65536u
 	) {
 		return DescriptorAllocator(
-			dev,
+			device,
 			D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
 			total_desc,
 			true
@@ -247,11 +259,11 @@ namespace fyuu_rhi::d3d12 {
 	}
 
 	inline DescriptorAllocator CreateRTVAllocator(
-		ID3D12Device* dev,
+		Microsoft::WRL::ComPtr<ID3D12Device> const& device,
 		std::size_t total_desc = 2048u
 	)  {
 		return DescriptorAllocator(
-			dev,
+			device,
 			D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
 			total_desc,
 			false
@@ -259,11 +271,11 @@ namespace fyuu_rhi::d3d12 {
 	}
 
 	inline DescriptorAllocator CreateDSVAllocator(
-		ID3D12Device* dev,
+		Microsoft::WRL::ComPtr<ID3D12Device> const& device,
 		std::size_t total_desc = 2048u
 	) {
 		return DescriptorAllocator(
-			dev,
+			device,
 			D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
 			total_desc,
 			false
@@ -271,11 +283,11 @@ namespace fyuu_rhi::d3d12 {
 	}
 	
 	inline DescriptorAllocator CreateSamplerAllocator(
-		ID3D12Device* dev,
+		Microsoft::WRL::ComPtr<ID3D12Device> const& device,
 		std::size_t total_desc = 2048u
 	) {
 		return DescriptorAllocator(
-			dev,
+			device,
 			D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
 			total_desc,
 			true

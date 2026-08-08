@@ -63,16 +63,29 @@ namespace {
 			throw std::invalid_argument("DeviceLocal HostVisible or DeviceReadback are set simultaneously");
 		}
 	
-		if (flags.Test(ResourceFlagBits::HostVisible)) {
-			wgpu_flags |= wgpu::BufferUsage::MapWrite;
+		// WebGPU separates GPU-resident buffers from mappable ones: a buffer with
+		// shader usage (Vertex/Index/Uniform/Storage/...) cannot also be mappable.
+		// If shader usage is requested the buffer is device-local; host data must
+		// arrive through a separate staging buffer via CopyBufferToBuffer.
+		bool has_gpu_usage =
+			flags.Test(ResourceFlagBits::UniformTexelBuffer) ||
+			flags.Test(ResourceFlagBits::StorageTexelBuffer) ||
+			flags.Test(ResourceFlagBits::UniformBuffer) ||
+			flags.Test(ResourceFlagBits::StorageBuffer) ||
+			flags.Test(ResourceFlagBits::IndexBuffer) ||
+			flags.Test(ResourceFlagBits::VertexBuffer) ||
+			flags.Test(ResourceFlagBits::IndirectBuffer);
+		if (!has_gpu_usage) {
+			if (flags.Test(ResourceFlagBits::HostVisible)) {
+				wgpu_flags |= wgpu::BufferUsage::MapWrite;
+				// WebGPU: a MapWrite buffer may only also be CopySrc.
+				wgpu_flags &= wgpu::BufferUsage::MapWrite | wgpu::BufferUsage::CopySrc;
+			}
+			else if (flags.Test(ResourceFlagBits::DeviceReadback)) {
+				wgpu_flags |= wgpu::BufferUsage::MapRead;
+			}
 		}
-		else if (flags.Test(ResourceFlagBits::DeviceReadback)) {
-			wgpu_flags |= wgpu::BufferUsage::MapRead;
-		}
-		else {
 
-		}
-	
 		return wgpu_flags;
 
 	}
@@ -770,39 +783,12 @@ namespace fyuu_rhi::webgpu {
 		return result;
 	}
 
-	Backend::Scheduler Backend::CreateScheduler(
-		LogicalDevice const& ld,
-		SchedulerDescriptor const& descriptor
-	) {
-		using Flag = SchedulerFlagBits;
-		if (!descriptor.flags.Test(Flag::Graphics) &&
-			!descriptor.flags.Test(Flag::Compute) &&
-			!descriptor.flags.Test(Flag::Copy)) {
-			throw std::invalid_argument("CreateScheduler(): no execution capability was requested");
-		}
-		auto queue = std::make_shared<WebGPUScheduler::QueueState>(ld.impl, ld.GetQueue());
-		WebGPUScheduler::QueueCollection queues;
-		if (descriptor.flags.Test(Flag::Graphics)) {
-			queues.graphics = queue;
-		}
-		if (descriptor.flags.Test(Flag::Compute)) {
-			queues.compute = queue;
-		}
-		if (descriptor.flags.Test(Flag::Copy)) {
-			queues.copy = queue;
-		}
-		return std::make_shared<WebGPUScheduler>(
-			queues,
-			ld.adapter,
-			ld.presentation_cache,
-			ld.completion_service
-		);
-	}
-
-	Backend::CommandGraph Backend::CreateCommandGraph(
-		execution::CommandGraphDescriptor const& descriptor
-	) {
-		return execution::MakeCommandGraph<Backend>(descriptor);
+	Backend::SchedulerContext Backend::CreateScheduler(LogicalDevice const& ld) {
+		SchedulerContext result;
+		result.impl = std::make_shared<SchedulerContext::Implementation>();
+		result.impl->instance = ld.adapter.GetInstance();
+		result.impl->device = ld.impl;
+		return result;
 	}
 
 }

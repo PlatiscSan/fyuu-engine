@@ -1,6 +1,5 @@
-/* the vulkan pattern
+﻿/* the vulkan pattern
 module;
-#include <boost/smart_ptr/intrusive_ptr.hpp>
 #include <version>
 #if !defined(__cpp_lib_modules)
 
@@ -23,18 +22,27 @@ namespace fyuu_rhi::vulkan {
 module;
 #include <version>
 #if !defined(__cpp_lib_modules)
-#include <type_traits>
+#include <functional>
+#include <exception>
+#include <deque>
+#include <map>
 #include <memory>
-#include <vector>
-#include <unordered_set>
 #include <mutex>
-#include <string_view>
+#include <type_traits>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+
+#include <atomic>
+#include <cstdint>
 #include <optional>
+#include <string_view>
 #include <variant>
+
+#include <compare>
 #include <format>
 #include <ranges>
 #include <span>
-#include <utility>
 #endif // !defined(__cpp_lib_modules)
 #if !defined(__APPLE__)
 #if defined(_WIN32)
@@ -62,62 +70,67 @@ import :core_types;
 import :vulkan_queue_allocator;
 import :resource_types;
 import :sampler_types;
-import :scheduler_types;
 import :pipeline_types;
 import :native_pipeline_binding;
-import :native_command_graph;
-import :presentation_cache;
-import :completion_service;
-import :execution_pool;
+import :execution_types;
+
+import plastic.static_hash_table;
+import plastic.static_list;
+import plastic.lru;
 
 namespace fyuu_rhi::vulkan {
 
 	using namespace fyuu_rhi::pipeline;
-	using namespace fyuu_rhi::execution;
-
 	export struct Backend {
-
 #if defined(_WIN32)
-		using PresentationTarget = HWND;
+		using PlatformHandle = HWND;
 #elif defined(__linux__)
-		struct X11PresentationTarget {
+		struct X11PlatformHandle {
 			Display* display;
 			Window window;
 
-			friend auto operator<=>(X11PresentationTarget const&, X11PresentationTarget const&) noexcept = default;
+			std::strong_ordering operator<=>(X11PlatformHandle const&) const noexcept = default;
 		};
 
-		struct WaylandPresentationTarget {
+		struct WaylandPlatformHandle {
 			wl_display* display;
 			wl_surface* surface;
 
-			friend auto operator<=>(WaylandPresentationTarget const&, WaylandPresentationTarget const&) noexcept = default;
+			std::strong_ordering operator<=>(WaylandPlatformHandle const&) const noexcept = default;
 		};
 
-		using PresentationTarget = std::variant<X11PresentationTarget, WaylandPresentationTarget>;
+		using PlatformHandle = std::variant<X11PlatformHandle, WaylandPlatformHandle>;
 #elif defined(__ANDROID__)
-		using PresentationTarget = ANativeWindow*;
+		using PlatformHandle = ANativeWindow*;
+#endif // defined(_WIN32)
+		struct PlatformHandleHash {
+			std::size_t operator()(PlatformHandle const& value) const noexcept {
+#if defined(__linux__)
+				return std::visit(
+					[](auto const& handle) {
+						using Handle = std::remove_cvref_t<decltype(handle)>;
+						std::size_t first;
+						std::size_t second;
+						if constexpr (std::same_as<Handle, X11PlatformHandle>) {
+							first = std::hash<Display*>{}(handle.display);
+							second = std::hash<Window>{}(handle.window);
+						}
+						else {
+							first = std::hash<wl_display*>{}(handle.display);
+							second = std::hash<wl_surface*>{}(handle.surface);
+						}
+						return first ^ (
+							second + 0x9e3779b9u + (first << 6u) + (first >> 2u)
+						);
+					},
+					value
+				);
+#else
+				return std::hash<PlatformHandle>{}(value);
 #endif
-
-		struct PresentationTargetHash {
-#if defined(_WIN32) || defined(__ANDROID__)
-			std::size_t operator()(PresentationTarget target) const noexcept {
-				return execution::HashNativePointer(target);
 			}
-#elif defined(__linux__)
-			std::size_t operator()(PresentationTarget const& target) const noexcept {
-				if (auto value = std::get_if<X11PresentationTarget>(&target)) {
-					auto display = execution::HashNativePointer(value->display);
-					auto window = std::hash<Window>{}(value->window);
-					return execution::CombineHashes(display, window);
-				}
-				auto const& value = std::get<WaylandPresentationTarget>(target);
-				auto display = execution::HashNativePointer(value.display);
-				auto surface = execution::HashNativePointer(value.surface);
-				return execution::CombineHashes(display, surface);
-			}
-#endif
 		};
+
 
 		struct Instance {
 			vk::detail::DispatchLoaderDynamic const& dispatcher;
@@ -131,150 +144,131 @@ namespace fyuu_rhi::vulkan {
 			vk::SharedPhysicalDevice impl;
 		};
 
-		using Surface = vk::SharedSurfaceKHR;
-
 		struct VMAAllocator {
 			vk::SharedDevice device;
 			VmaAllocator impl;
+			~VMAAllocator() noexcept;
+		};
 
-			VMAAllocator(vk::SharedDevice const& device_, VmaAllocator impl_) noexcept
-				: device(device_), impl(impl_) {
+		struct PresentationContext {
 
-			}
+			struct BackBufferSynchronization {
+				vk::SharedSemaphore acquire_semaphore;
+				/// @brief	used to signal the vk::aquireImageKHR command if vk::EXTSwapchainMaintenance1 is not supported,
+				///			or be submitted by vk::SwapchainPresentFenceInfoKHR.
+				vk::SharedFence fence;
+				std::uint64_t presentation_id;
+			};
 
-			~VMAAllocator() noexcept {
-				if (impl) {
-					vmaDestroyAllocator(impl);
-				}
-			}
+			struct SwapChain {
+				vk::SharedSurfaceKHR surface;
+				vk::SharedSwapchainKHR impl;
+				std::vector<vk::Image> back_buffers;
+				std::vector<BackBufferSynchronization> sync_objs;
+				std::size_t current_back_buffer_index;
+				std::size_t last_back_buffer_index;
+				std::uint64_t next_presentation_id;
+				/// Present queue family pinned at creation. Present batches reserve
+				/// this family through QueueRequest::allowed_families, so ownership
+				/// transfers on present images never cross families.
+				std::uint32_t present_family = VK_QUEUE_FAMILY_IGNORED;
+				/// Recreation criteria captured from the presentation request.
+				vk::Format format = vk::Format::eUndefined;
+				vk::Extent2D extent{ 0u, 0u };
+				std::uint32_t buffer_count = 0u;
+				vk::PresentModeKHR present_mode = vk::PresentModeKHR::eFifo;
+				/// Set by OUT_OF_DATE acquire/present results; recreated on next access.
+				bool out_of_date = false;
+				bool swapchain_maintenance1_supported;
+				bool fifo_latest_ready_supported;
+				bool present_id_supported;
+			};
+
+			using List = plastic::ds::StaticList<std::pair<PlatformHandle const, SwapChain>, 32u>;
+			using HashTable = plastic::ds::StaticHashTable<
+				PlatformHandle const,
+				List::iterator,
+				32u,
+				PlatformHandleHash
+			>;
+
+			plastic::ds::LRUCache<HashTable, List, 32u> cache;
+			std::mutex mutex;
+
 		};
 
 		struct LogicalDevice {
-			struct PresentationEntry {
-				struct FrameSlot {
-					vk::Image image;
-					vk::SharedSemaphore render_finished;
-					bool initialized = false;
-				};
-
-				vk::SharedSurfaceKHR surface;
-				vk::SharedSwapchainKHR swapchain;
-				std::vector<FrameSlot> frames;
-				vk::Format format = vk::Format::eUndefined;
-				vk::ColorSpaceKHR color_space = vk::ColorSpaceKHR::eSrgbNonlinear;
-				vk::Extent2D extent;
-				vk::PresentModeKHR present_mode = vk::PresentModeKHR::eFifo;
-				std::vector<vk::PresentModeKHR> compatible_present_modes;
-				std::uint32_t requested_frames_in_flight = 3u;
-				std::shared_ptr<std::mutex> mutex = std::make_shared<std::mutex>();
-			};
-
-			using PresentationCache = execution::PresentationCache<
-				PresentationTarget,
-				PresentationEntry,
-				PresentationTargetHash
-			>;
-
 			PhysicalDevice phys_dev;
 			QueueAllocator queue_alloc;
-			std::vector<std::string> enabled_extensions;
 			std::unordered_set<vk::StructureType> enabled_features;
 			vk::SharedDevice impl;
 			std::shared_ptr<vk::detail::DispatchLoaderDynamic> dispatcher;
 			std::shared_ptr<VMAAllocator> mem_alloc;
-			std::shared_ptr<PresentationCache> presentation_cache;
-			boost::intrusive_ptr<execution::CompletionService> completion_service;
 		};
 
-		struct VulkanScheduler {
-			struct CommandEntry {
-				vk::SharedCommandPool command_pool;
-				vk::SharedCommandBuffer impl;
-				bool recording = false;
-			};
-
-			using CommandPool = execution::ExecutionPool<CommandEntry>;
-			struct TimelineSynchronization {
-				vk::SharedSemaphore semaphore;
-				std::atomic_uint64_t next_value = 1u;
-
-				explicit TimelineSynchronization(vk::SharedSemaphore const& semaphore_) noexcept
-					: semaphore(semaphore_) {
-
-				}
-
-				TimelineSynchronization(TimelineSynchronization const&) = delete;
-				TimelineSynchronization& operator=(TimelineSynchronization const&) = delete;
-				TimelineSynchronization(TimelineSynchronization&& other) noexcept
-					: semaphore(other.semaphore),
-					next_value(other.next_value.exchange(0u, std::memory_order_relaxed)) {
-
-				}
-				TimelineSynchronization& operator=(TimelineSynchronization&&) = delete;
-			};
-
-			struct BinarySynchronizationPool {
-				using SemaphorePool = execution::ExecutionPool<vk::SharedSemaphore>;
-				using FencePool = execution::ExecutionPool<vk::SharedFence>;
-
-				vk::SharedDevice device;
-				std::shared_ptr<vk::detail::DispatchLoaderDynamic> dispatcher;
-				std::shared_ptr<SemaphorePool> semaphores;
-				std::shared_ptr<FencePool> fences;
-
-				BinarySynchronizationPool(
-					vk::SharedDevice const& device_,
-					std::shared_ptr<vk::detail::DispatchLoaderDynamic> const& dispatcher_
-				) noexcept : device(device_),
-					dispatcher(dispatcher_),
-					semaphores(std::make_shared<SemaphorePool>()),
-					fences(std::make_shared<FencePool>()) {
-
-				}
-
-				[[nodiscard]] SemaphorePool::Lease AcquireSemaphore();
-				[[nodiscard]] FencePool::Lease AcquireFence();
-			};
-
-			struct QueueState {
-				vk::SharedDevice device;
-				std::shared_ptr<vk::detail::DispatchLoaderDynamic> dispatcher;
-				ManagedQueue allocation;
-				vk::SharedQueue impl;
-				std::variant<
-					TimelineSynchronization,
-					std::shared_ptr<BinarySynchronizationPool>
-				> synchronization;
-				std::shared_ptr<CommandPool> command_pool;
-				CommandQueueType capability = CommandQueueType::None;
-				std::uint32_t family = 0u;
-				std::uint32_t index = 0u;
-				std::shared_ptr<std::mutex> submission_mutex = std::make_shared<std::mutex>();
-			};
-
-			struct QueueCollection {
-				std::shared_ptr<QueueState> graphics;
-				std::shared_ptr<QueueState> compute;
-				std::shared_ptr<QueueState> copy;
-
-				[[nodiscard]] std::shared_ptr<QueueState> const& Select(
-					execution::GraphNodeFlagBits capability
-				) const;
-			};
-
-			struct Implementation {
-				QueueCollection queues;
-				PhysicalDevice physical_device;
-				std::shared_ptr<LogicalDevice::PresentationCache> presentation_cache;
-				std::shared_ptr<BinarySynchronizationPool> presentation_synchronization;
-				std::unordered_set<std::string> enabled_extensions;
-				std::unordered_set<vk::StructureType> enabled_features;
-				boost::intrusive_ptr<execution::CompletionService> completion_service;
-			};
-			std::shared_ptr<Implementation> impl;
+		struct TimelineCompletion {
+			vk::SharedSemaphore semaphore;
+			std::uint64_t value;
 		};
 
-		using Scheduler = std::shared_ptr<VulkanScheduler>;
+		struct BinaryCompletion {
+			vk::SharedFence fence;
+		};
+
+		struct BinaryCompletionPointAllocator final
+			: public std::enable_shared_from_this<BinaryCompletionPointAllocator> {
+			struct ManagedBinaryCompletionPoint {
+				std::shared_ptr<BinaryCompletionPointAllocator> owner;
+				vk::SharedFence fence;
+				/// Semaphores waited by the submission guarded by fence. They become
+				/// reusable only after that consumer submission completes.
+				std::vector<vk::SharedSemaphore> consumed_semaphores;
+				/// Set only after the native submit succeeds. An unsubmitted fence can
+				/// never signal and must be destroyed instead of waited or recycled.
+				bool submitted = false;
+				ManagedBinaryCompletionPoint(
+					std::shared_ptr<BinaryCompletionPointAllocator> const& owner_,
+					vk::SharedFence const& fence_,
+					std::vector<vk::SharedSemaphore>&& consumed_semaphores_
+				) noexcept : owner(owner_),
+					fence(fence_),
+					consumed_semaphores(std::move(consumed_semaphores_)) {
+				}
+				ManagedBinaryCompletionPoint(ManagedBinaryCompletionPoint const&) = delete;
+				ManagedBinaryCompletionPoint& operator=(ManagedBinaryCompletionPoint const&) = delete;
+				ManagedBinaryCompletionPoint(ManagedBinaryCompletionPoint&&) noexcept = default;
+				ManagedBinaryCompletionPoint& operator=(ManagedBinaryCompletionPoint&&) noexcept = default;
+				~ManagedBinaryCompletionPoint() noexcept;
+			};
+			vk::SharedDevice device;
+			std::shared_ptr<vk::detail::DispatchLoaderDynamic> dispatcher;
+			std::deque<vk::SharedFence> fences;
+			std::deque<vk::SharedSemaphore> semaphores;
+			std::mutex mutex;
+			ManagedBinaryCompletionPoint AllocateCompletionPoint(std::size_t consumed_semaphore_count);
+		};
+
+		using CompletionPoint = std::variant<
+			std::monostate,
+			TimelineCompletion,
+			BinaryCompletion
+		>;
+
+		/// Device-level state shared by every scheduler accessing one native
+		/// resource. Layout alone is insufficient for exclusive-sharing Vulkan
+		/// resources because queue-family ownership persists across graphs.
+		struct ResourceState {
+			/// Current exclusive owner, or VK_QUEUE_FAMILY_IGNORED before the first
+			/// ownership claim and for resources using concurrent sharing.
+			std::uint32_t owner_family = VK_QUEUE_FAMILY_IGNORED;
+			/// Physical queue that performed the last successful resource access.
+			std::optional<QueueIdentifier> last_queue;
+			/// Completion of the last successful submission using this resource.
+			CompletionPoint completion;
+			/// Scheduler phase 1 locks resource states in stable resource-ID order
+			/// and retains the locks until phase 3 publishes the new state.
+			std::mutex mutex;
+		};
 
 		struct Resource {
 			struct Buffer {
@@ -282,70 +276,42 @@ namespace fyuu_rhi::vulkan {
 				VkBufferCreateInfo buf_info;
 				VkBuffer vk_handle;
 				VmaAllocation alloc;
+				/// Indirect because ResourceState carries a mutex; each native
+				/// resource has exactly one state owner.
+				std::unique_ptr<ResourceState> state;
 				Buffer(
 					std::shared_ptr<VMAAllocator> const& mem_alloc_,
 					VkBufferCreateInfo buf_info_,
 					VkBuffer vk_handle_,
 					VmaAllocation alloc_
-				) noexcept : mem_alloc(mem_alloc_), buf_info(buf_info_),
-					vk_handle(vk_handle_), alloc(alloc_) {}
+				);
 				Buffer(Buffer const&) = delete;
 				Buffer& operator=(Buffer const&) = delete;
-				Buffer(Buffer&& other) noexcept
-					: mem_alloc(std::move(other.mem_alloc)), buf_info(other.buf_info),
-					vk_handle(std::exchange(other.vk_handle, nullptr)),
-					alloc(std::exchange(other.alloc, nullptr)) {}
-				Buffer& operator=(Buffer&& other) noexcept {
-					std::swap(mem_alloc, other.mem_alloc);
-					std::swap(buf_info, other.buf_info);
-					std::swap(vk_handle, other.vk_handle);
-					std::swap(alloc, other.alloc);
-					return *this;
-				}
-				~Buffer() noexcept {
-					if (mem_alloc && vk_handle && alloc) {
-						vmaDestroyBuffer(mem_alloc->impl, vk_handle, alloc);
-					}
-				}
+				Buffer(Buffer&& other) noexcept;
+				Buffer& operator=(Buffer&& other) noexcept;
+				~Buffer() noexcept;
 			};
 			struct Texture {
 				std::shared_ptr<VMAAllocator> mem_alloc;
-				VkImageCreateInfo buf_info;
+				VkImageCreateInfo tex_info;
 				VkImage vk_handle;
 				VmaAllocation alloc;
-				mutable std::atomic<vk::ImageLayout> curr_layout;
+				/// Stable layout restored after each graph; guarded by state->mutex.
+				vk::ImageLayout layout = vk::ImageLayout::eUndefined;
+				/// Indirect because ResourceState carries a mutex; each native
+				/// resource has exactly one state owner.
+				std::unique_ptr<ResourceState> state;
 				Texture(
 					std::shared_ptr<VMAAllocator> const& mem_alloc_,
-					VkImageCreateInfo buf_info_,
+					VkImageCreateInfo tex_info_,
 					VkImage vk_handle_,
-					VmaAllocation alloc_,
-					vk::ImageLayout curr_layout_
-				) noexcept : mem_alloc(mem_alloc_), buf_info(buf_info_),
-					vk_handle(vk_handle_), alloc(alloc_), curr_layout(curr_layout_) {}
+					VmaAllocation alloc_
+				);
 				Texture(Texture const&) = delete;
 				Texture& operator=(Texture const&) = delete;
-				Texture(Texture&& other) noexcept
-					: mem_alloc(std::move(other.mem_alloc)), buf_info(other.buf_info),
-					vk_handle(std::exchange(other.vk_handle, nullptr)),
-					alloc(std::exchange(other.alloc, nullptr)),
-					curr_layout(other.curr_layout.exchange({}, std::memory_order::relaxed)) {}
-				Texture& operator=(Texture&& other) noexcept {
-					std::swap(mem_alloc, other.mem_alloc);
-					std::swap(buf_info, other.buf_info);
-					std::swap(vk_handle, other.vk_handle);
-					std::swap(alloc, other.alloc);
-					auto layout = curr_layout.exchange(
-						other.curr_layout.load(std::memory_order_relaxed),
-						std::memory_order_relaxed
-					);
-					other.curr_layout.store(layout, std::memory_order_relaxed);
-					return *this;
-				}
-				~Texture() noexcept {
-					if (mem_alloc && vk_handle && alloc) {
-						vmaDestroyImage(mem_alloc->impl, vk_handle, alloc);
-					}
-				}
+				Texture(Texture&& other) noexcept;
+				Texture& operator=(Texture&& other) noexcept;
+				~Texture() noexcept;
 			};
 			std::variant<std::monostate, Buffer, Texture> impl;
 		};
@@ -370,6 +336,11 @@ namespace fyuu_rhi::vulkan {
 			std::vector<PipelineBindingMetadata> bindings;
 			vk::SharedPipelineLayout layout;
 			vk::SharedRenderPass compatible_render_pass;
+			/// Legacy render-pass compatibility cannot be queried back from Vulkan.
+			/// Preserve the pipeline's attachment signature for recording-time checks.
+			std::vector<vk::Format> color_formats;
+			vk::Format depth_stencil_format = vk::Format::eUndefined;
+			vk::SampleCountFlagBits samples = vk::SampleCountFlagBits::e1;
 			vk::SharedPipeline impl;
 		};
 
@@ -379,46 +350,92 @@ namespace fyuu_rhi::vulkan {
 			vk::DescriptorSet set;
 			vk::SharedPipelineLayout layout;
 		};
-		using CommandGraph = std::shared_ptr<execution::NativeCommandGraph<Backend>>;
-		using ExecutableGraph = std::shared_ptr<execution::NativeExecutableGraph<Backend>>;
-		struct GraphExecution {
-			struct Batch {
-				struct PresentationRequest {
-					PresentationTarget target;
-					execution::GraphResourceID source_id;
-					Backend::Resource::Texture const* source;
-					bool vertical_sync = true;
-					std::uint32_t frames_in_flight = 3u;
-				};
 
-				struct InFlightPresentation {
-					LogicalDevice::PresentationCache::Lease entry;
-					VulkanScheduler::CommandPool::Lease commands;
-					VulkanScheduler::BinarySynchronizationPool::SemaphorePool::Lease image_available;
-					std::optional<
-						VulkanScheduler::BinarySynchronizationPool::FencePool::Lease
-					> present_fence;
-				};
-
-				std::shared_ptr<VulkanScheduler::QueueState> queue;
-				VulkanScheduler::CommandPool::Lease commands;
-				std::vector<vk::SharedRenderPass> render_passes;
-				std::vector<vk::SharedFramebuffer> framebuffers;
-				std::optional<VulkanScheduler::BinarySynchronizationPool::FencePool::Lease> fence;
-				std::uint64_t synchronization_value = 0u;
-				std::vector<PresentationRequest> presentation_requests;
-				std::vector<InFlightPresentation> in_flight_presentations;
-			};
-			struct BinaryDependency {
-				execution::SubmissionBatchID source;
-				execution::SubmissionBatchID destination;
-				VulkanScheduler::BinarySynchronizationPool::SemaphorePool::Lease semaphore;
+		struct SchedulerContext {
+			/// One command pool exists per queue family first used by this scheduler.
+			/// The pool and its command buffers are externally synchronized together.
+			struct CommandPoolContext {
+				vk::SharedCommandPool impl;
+				std::deque<vk::CommandBuffer> command_buffers;
+				std::mutex mutex;
 			};
 
-			Scheduler scheduler;
-			ExecutableGraph graph;
-			std::vector<Batch> batches;
-			std::vector<BinaryDependency> binary_dependencies;
+			struct Implementation {
+
+				using TimelineMap = std::unordered_map<QueueIdentifier, TimelineCompletion>;
+
+				vk::SharedPhysicalDevice physical_device;
+				vk::SharedDevice device;
+				std::shared_ptr<vk::detail::DispatchLoaderDynamic> dispatcher;
+				/// QueueAllocator copies share the device-level queue registry and load
+				/// accounting. No queue is reserved by SchedulerContext construction.
+				QueueAllocator queue_allocator;
+				/// Entries are inserted on first use. Node-based maps keep contexts with
+				/// mutexes and Vulkan handles at stable addresses.
+				std::unordered_map<std::uint32_t, CommandPoolContext> command_pools;
+				std::variant<std::monostate, std::shared_ptr<BinaryCompletionPointAllocator>, TimelineMap> completion_points;
+				/// Swap chains and their acquire/present synchronization are scheduler
+				/// private and are populated only by presentation work in phase 1.
+				/// Keyed by present queue family: a swap chain is pinned to one family
+				/// at creation, while the assigned queue index may vary per transaction.
+				std::unordered_map<std::uint32_t, PresentationContext> presentations;
+				/// Serializes phase 1 and phase 3 state publication for this scheduler.
+				/// Batch command recording between those phases remains parallel.
+				std::mutex execution_mutex;
+				/// Selects timeline points or the per-edge semaphore/per-batch fence
+				/// fallback. Neither path creates a synchronization object eagerly.
+				bool timeline_semaphore_supported;
+				bool synchronization2_supported;
+				/// Rendering is independently selected from synchronization and
+				/// completion. Keeping the feature bit here makes all eight feature
+				/// combinations follow the same scheduler implementation.
+				bool dynamic_rendering_supported;
+
+				Implementation(
+					vk::SharedPhysicalDevice const& physical_device_,
+					vk::SharedDevice const& device_,
+					std::shared_ptr<vk::detail::DispatchLoaderDynamic> const& dispatcher_,
+					QueueAllocator const& queue_allocator_
+				) : physical_device(physical_device_),
+					device(device_),
+					dispatcher(dispatcher_),
+					queue_allocator(queue_allocator_),
+					timeline_semaphore_supported(false),
+					synchronization2_supported(false),
+					dynamic_rendering_supported(false) {}
+			};
+
+			std::shared_ptr<Implementation> impl;
+
+			std::strong_ordering operator<=>(SchedulerContext const& other) const noexcept = default;
+		};
+
+		class CompletionToken final {
+			/// Defined in the execution partition, where Implementation is complete.
+			/// A custom deleter keeps destruction independent of that completeness
+			/// while avoiding the shared_ptr control block: the implementation is
+			/// owned exclusively by the token and never shared.
+			struct Implementation;
+			struct Deleter {
+				void operator()(Implementation* impl) const noexcept;
+			};
+			std::unique_ptr<Implementation, Deleter> impl;
+
+			explicit CompletionToken(std::unique_ptr<Implementation, Deleter>&& impl_) noexcept
+				: impl(std::move(impl_)) {}
+			friend struct Backend;
+
+		public:
+			CompletionToken() noexcept = default;
+			CompletionToken(CompletionToken const&) = delete;
+			CompletionToken& operator=(CompletionToken const&) = delete;
+			CompletionToken(CompletionToken&&) noexcept = default;
+			CompletionToken& operator=(CompletionToken&&) noexcept = default;
+			~CompletionToken() noexcept;
+
+			[[nodiscard]] bool Poll() noexcept;
+			[[nodiscard]] std::exception_ptr Error() const noexcept;
+			[[nodiscard]] bool IsStopped() const noexcept;
 		};
 
 		static Instance CreateInstance(
@@ -430,24 +447,9 @@ namespace fyuu_rhi::vulkan {
 
 		static std::vector<PhysicalDevice> EnumeratePhysicalDevices(Instance const& instance);
 
-#if defined(_WIN32)
-		static vk::SharedSurfaceKHR CreateSurface(Instance const& instance, HWND window_handle);
-#elif defined(__linux__)
-		static vk::SharedSurfaceKHR CreateSurface(Instance const& instance, Display* x11_dpy, Window x11_window);
-		static vk::SharedSurfaceKHR CreateSurface(Instance const& instance, wl_display* display, wl_surface* surface);
-#elif defined(__ANDROID__)
-		static vk::SharedSurfaceKHR CreateSurface(Instance const& instance, ANativeWindow* window);
-#endif // defined(_WIN32)
-
 		static PhysicalDeviceInfo GetPhysicalDeviceInfo(PhysicalDevice const& phys_dev);
 
 		static LogicalDevice CreateLogicalDevice(PhysicalDevice const& phys_dev);
-
-		static Scheduler CreateScheduler(LogicalDevice& ld, SchedulerDescriptor const& descriptor);
-		static CommandGraph CreateCommandGraph(
-			execution::CommandGraphDescriptor const& descriptor
-		);
-		static ExecutableGraph CompileCommandGraph(CommandGraph const& graph);
 
 		static Resource CreateBuffer(LogicalDevice const& ld, std::size_t size_in_bytes, ResourceFlags const& flags);
 
@@ -460,6 +462,7 @@ namespace fyuu_rhi::vulkan {
 		static vk::SharedSampler CreateSampler(LogicalDevice const& ld, SamplerDescriptor const& descriptor);
 
 		static Pipeline CreateGraphicsPipeline(LogicalDevice const& ld, GraphicsPipelineDescriptor const& descriptor);
+
 		static Pipeline CreateComputePipeline(LogicalDevice const& ld, ComputePipelineDescriptor const& descriptor);
 
 		static PipelineResourceGroup CreatePipelineResourceGroup(
@@ -469,33 +472,21 @@ namespace fyuu_rhi::vulkan {
 			std::span<NativePipelineResourceBinding<Backend> const> bindings
 		);
 
+		static SchedulerContext CreateScheduler(LogicalDevice const& ld);
+
+		static CompletionToken ExecuteCommands(
+			SchedulerContext const& scheduler,
+			execution::ExecutionPlan const& plan,
+			std::span<PlatformHandle const> presentation_targets,
+			std::span<std::reference_wrapper<Resource> const> resources,
+			std::span<std::reference_wrapper<View> const> views,
+			std::span<std::reference_wrapper<Sampler> const> samplers,
+			std::span<std::reference_wrapper<Pipeline> const> pipelines,
+			std::span<std::reference_wrapper<PipelineResourceGroup> const> resource_groups,
+			execution::StopTokenView stop_token
+		);
+
 	};
 
-	Backend::GraphExecution CreateGraphExecution(
-		Backend::Scheduler const& scheduler,
-		Backend::ExecutableGraph const& graph
-	);
-	void StartGraphExecution(
-		Backend::GraphExecution& graph_execution,
-		execution::GraphCompletion const& completion
-	);
-	void StartSchedulerExecution(
-		Backend::Scheduler const& scheduler,
-		execution::SchedulerCompletion const& completion
-	);
-	void StartDeferredDestroy(
-		Backend::Scheduler const& scheduler,
-		execution::DeferredDestroy const& deferred_destroy
-	);
-	void StartMapResource(
-		Backend::Scheduler const& scheduler,
-		Backend::Resource& resource,
-		execution::ResourceMapRequest const& request
-	);
-	void StartUnmapResource(
-		Backend::Scheduler const& scheduler,
-		Backend::Resource& resource,
-		execution::ResourceUnmapRequest const& request
-	);
 }
 #endif // !defined(__APPLE__)

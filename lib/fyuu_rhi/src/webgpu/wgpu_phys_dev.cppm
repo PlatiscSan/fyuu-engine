@@ -107,12 +107,7 @@ namespace fyuu_rhi::webgpu {
 			);
 		}
 
-		return {
-			device,
-			adapter,
-			std::make_shared<LogicalDevice::PresentationCache>(),
-			execution::CompletionService::Instance()
-		};
+		return { device, adapter };
 
 	}
 

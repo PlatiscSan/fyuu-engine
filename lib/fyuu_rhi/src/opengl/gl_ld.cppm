@@ -422,9 +422,17 @@ namespace {
 		glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
 		if (compiled == GL_FALSE) {
 			auto diagnostics = GetShaderInfoLog(shader);
+			// The driver compiles exactly this source, so dump it: shader
+			// diagnostics are not actionable without the shader that failed.
+			std::string source_text(source, static_cast<std::size_t>(length));
 			glDeleteShader(shader);
 			throw std::runtime_error(
-				std::format("Failed to compile OpenGL pipeline entry point '{}': {}", entry.name, diagnostics)
+				std::format(
+					"Failed to compile OpenGL pipeline entry point '{}': {}\nShader source:\n{}",
+					entry.name,
+					diagnostics,
+					source_text
+				)
 			);
 		}
 		return shader;
@@ -525,539 +533,6 @@ namespace {
 		std::memcpy(serialized.data() + sizeof(GLenum), bytes.data(), written);
 		cache::WriteFileAtomically(path, serialized);
 	}
-//
-//	GLenum ToGLShaderType(EShLanguage stage) noexcept {
-//		switch (stage) {	
-//		case EShLangVertex:			return GL_VERTEX_SHADER;
-//		case EShLangTessControl:	return GL_TESS_CONTROL_SHADER;
-//		case EShLangTessEvaluation:	return GL_TESS_EVALUATION_SHADER;
-//		case EShLangGeometry:		return GL_GEOMETRY_SHADER;
-//		case EShLangFragment:		return GL_FRAGMENT_SHADER;
-//		case EShLangCompute:		return GL_COMPUTE_SHADER;
-//		case EShLangTask:			return GL_TASK_SHADER_NV;
-//		case EShLangMesh:			return GL_MESH_SHADER_NV;
-//		default:					return 0;
-//		}
-//	}
-//
-//	GLuint CompileOpenGLDialect(
-//		Backend::LogicalDevice const& ld,
-//		std::string_view src,
-//		ShaderCompilationOptions const& options,
-//		std::string_view entry,
-//		EShLanguage stage
-//	) {
-//
-//		GLuint program;
-//		char const* raw_src = src.data();
-//		GLenum gl_stage = ToGLShaderType(stage);
-//
-//		if (GL_ARB_separate_shader_objects) {
-//
-//			program = glCreateShaderProgramv(gl_stage, 1u, &raw_src);
-//
-//			if (!program) {
-//#if defined(NDEBUG)
-//				throw std::runtime_error("CreateBuffer(): Calling glCreateShaderProgramv() but failed");
-//#else
-//				throw std::runtime_error(
-//					std::format("CreateBuffer(): Calling glCreateShaderProgramv() but failed, OpenGL reports {}", glGetError())
-//				);
-//#endif // defined(NDEBUG)
-//			}
-//
-//		}
-//		else {
-//
-//			GLuint shader = glCreateShader(gl_stage);
-//			if (!shader) {
-//#if defined(NDEBUG)
-//				throw std::runtime_error("CreateBuffer(): Calling glCreateShader() but failed");
-//#else
-//				throw std::runtime_error(
-//					std::format("CreateBuffer(): Calling glCreateShader() but failed, OpenGL reports {}", glGetError())
-//				);
-//#endif // defined(NDEBUG)
-//			}
-//
-//			glCompileShader(shader);
-//			GLint compiled = 0u;
-//			glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
-//			if (!compiled) {
-//				GLint log_len;
-//				glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &log_len);
-//				std::string log(log_len + 1, 0u);
-//				glGetShaderInfoLog(shader, log_len, nullptr, log.data());
-//				glDeleteShader(shader);
-//				throw std::runtime_error(
-//					std::format("CreateBuffer(): Calling glCompileShader() but failed, OpenGL reports: {}", log)
-//				);
-//			}
-//
-//			program = glCreateProgram();
-//			if (!program) {
-//				glDeleteShader(shader);
-//#if defined(NDEBUG)
-//				throw std::runtime_error("CreateBuffer(): Calling glCreateProgram() but failed");
-//#else
-//				throw std::runtime_error(
-//					std::format("CreateBuffer(): Calling glCreateProgram() but failed, OpenGL reports {}", glGetError())
-//				);
-//#endif // defined(NDEBUG)
-//			}
-//
-//			glProgramParameteri(program, GL_PROGRAM_SEPARABLE, GL_TRUE);
-//			glAttachShader(program, shader);
-//			glLinkProgram(program);
-//
-//			GLint link_status = 0u;
-//			glGetProgramiv(program, GL_LINK_STATUS, &link_status);
-//			if (!link_status) {
-//				GLint log_len;
-//				glGetProgramiv(program, GL_INFO_LOG_LENGTH, &log_len);
-//				std::string log(log_len + 1, 0u);
-//				glGetProgramInfoLog(program, log_len, nullptr, log.data());
-//
-//				glDetachShader(program, shader);
-//				glDeleteProgram(program);
-//				glDeleteShader(shader);
-//
-//				throw std::runtime_error(
-//					std::format("CreateBuffer(): Calling glLinkProgram() but failed, OpenGL reports: {}", log)
-//				);
-//
-//			}
-//
-//			glDetachShader(program, shader);
-//			glDeleteShader(shader);
-//
-//		}
-//
-//		return program;
-//
-//	}
-//
-//	std::uint32_t ShadingVersion() noexcept {
-//
-//		auto ver = reinterpret_cast<char const*>(glGetString(GL_SHADING_LANGUAGE_VERSION));
-//
-//		if (!ver) {
-//			return 100u;
-//		}
-//
-//		while (*ver && (*ver < '0' || *ver > '9')) {
-//			++ver;
-//		}
-//		if (!*ver) {
-//			return 100u;
-//		}
-//
-//		std::uint32_t major = 0;
-//		while (*ver >= '0' && *ver <= '9') {
-//			major = major * 10 + (*ver - '0');
-//			++ver;
-//		}
-//
-//		if (*ver != '.') {
-//			return 100u;
-//		}
-//		++ver;
-//
-//		std::uint32_t minor = 0;
-//		while (*ver >= '0' && *ver <= '9') {
-//			minor = minor * 10 + (*ver - '0');
-//			++ver;
-//		}
-//
-//		return major * 100 + minor;
-//
-//	}
-//
-//	GLuint CompileVulkanDialect(
-//		Backend::LogicalDevice const& ld, 
-//		std::string_view src, 
-//		ShaderCompilationOptions const& options, 
-//		std::string_view entry, 
-//		EShLanguage stage,
-//		int version
-//	) {
-//		shader::InitializeGlslang();
-//		glslang::TShader shader(stage);
-//
-//		std::string preamble;
-//		auto macro_lines = options.macro_defs |
-//			std::views::transform(
-//				[](auto const& macro) {
-//					auto const& [name, value] = macro;
-//					if (value.empty()) {
-//						return std::format("#define {}\n", name);
-//					}
-//					else {
-//						return std::format("#define {} {}\n", name, value);
-//					}
-//				}
-//			);
-//
-//		for (auto const& line : macro_lines) {
-//			preamble += line;
-//		}
-//
-//		if (!preamble.empty()) {
-//			shader.setPreamble(preamble.c_str());
-//		}
-//
-//		std::array shader_strings = { src.data() };
-//		shader.setStrings(shader_strings.data(), static_cast<int>(shader_strings.size()));
-//
-//		shader.setEnvInput(glslang::EShSourceGlsl, stage, glslang::EShClient::EShClientVulkan, version);
-//#if !defined(_NDEBUG)
-//		shader.setDebugInfo(true);
-//#endif // !defined(_NDEBUG)
-//
-//		// TODO: better environment setting based on target platform
-//
-//		shader.setEnvClient(glslang::EShClientVulkan, glslang::EShTargetVulkan_1_2);
-//		shader.setEnvTarget(glslang::EShTargetSpv, glslang::EShTargetSpv_1_5);
-//
-//		shader.setEntryPoint(entry.data());
-//
-//		EShMessages messages = static_cast<EShMessages>(EShMsgSpvRules | EShMsgVulkanRules | EShMsgDefault);
-//		if (!shader.parse(shader::GlslangResourceLimits(), 100, false, messages)) {
-//			throw std::runtime_error(
-//				std::format(
-//					"CompileVulkanDialect(): Calling glslang::TShader::parse() but failed, compiler reports: {}", 
-//					shader.getInfoLog()
-//				)
-//			);
-//		}
-//
-//		glslang::TProgram program;
-//		program.addShader(&shader);
-//
-//		if (!program.link(messages)) {
-//			throw std::runtime_error(
-//				std::format(
-//					"CompileVulkanDialect(): Calling glslang::TProgram::link() but failed, linker reports: {}", 
-//					program.getInfoLog()
-//				)
-//			);
-//		}
-//
-//		std::vector<std::uint32_t> spirv;
-//#if !defined(_NDEBUG)
-//		glslang::SpvOptions spv_options = {
-//			.generateDebugInfo = true,
-//			.stripDebugInfo = false,
-//			.disableOptimizer = true,
-//			.optimizeSize = false,
-//			.disassemble = true,
-//			.validate = true,
-//			.emitNonSemanticShaderDebugInfo = true,
-//			.emitNonSemanticShaderDebugSource = true
-//		};
-//#else
-//		glslang::SpvOptions spv_options = {
-//			.generateDebugInfo = false,
-//			.stripDebugInfo = true,
-//			.disableOptimizer = false,
-//			.optimizeSize = true,
-//			.disassemble = false,
-//			.validate = false,
-//			.emitNonSemanticShaderDebugInfo = false,
-//			.emitNonSemanticShaderDebugSource = false,
-//		};
-//#endif // !defined(_NDEBUG)
-//
-//		glslang::TIntermediate* intermediate = program.getIntermediate(stage);
-//		glslang::GlslangToSpv(*intermediate, spirv, &spv_options);
-//
-//		spirv_cross::CompilerGLSL compiler(std::move(spirv));
-//
-//#if defined(__linux__)
-//		bool is_es = std::holds_alternative<Backend::Instance::EGL>(ld->gl_handle);
-//#endif // defined(__linux__)
-//
-//		compiler.set_common_options(
-//			{
-//				.version = ShadingVersion(),
-//				.es = 
-//#if defined(_WIN32)
-//					false,
-//#elif defined(__linux__)
-//					is_es
-//#elif defined(__ANDROID__)
-//					true,
-//#endif defined(_WIN32)
-//#if defined(NDEBUG)
-//				.force_temporary = false,
-//#else
-//				.force_temporary = true,
-//#endif // defined(NDEBUG)
-//				.emit_push_constant_as_uniform_buffer = true,
-//				.emit_line_directives =
-//#if defined(NDEBUG)
-//					false,
-//#else
-//					true,
-//#endif // defined(NDEBUG)
-//				.force_zero_initialized_variables =
-//#if defined(NDEBUG)
-//					false,
-//#else
-//					true,
-//#endif // defined(NDEBUG)
-//				.vertex = {
-//					true, // Vulkan [0,w] → OpenGL [-w,w]
-//					false,
-//					true
-//				},
-//#if defined(_WIN32)
-//				.fragment = {
-//					spirv_cross::CompilerGLSL::Options::Precision::DontCare,
-//					spirv_cross::CompilerGLSL::Options::Precision::DontCare
-//				}
-//#elif defined(__linux__)
-//				.fragment = {
-//					is_es ? spirv_cross::CompilerGLSL::Options::Precision::Mediump : spirv_cross::CompilerGLSL::Options::Precision::DontCare,
-//					is_es ? spirv_cross::CompilerGLSL::Options::Precision::Highp : spirv_cross::CompilerGLSL::Options::Precision::DontCare
-//				}
-//#elif defined(__ANDROID__)
-//				.fragment = {}
-//#endif defined(_WIN32)
-//			}
-//		);
-//
-//		return CompileOpenGLDialect(ld, compiler.compile(), options, entry, stage);
-//
-//	}
-//
-//	GLuint CompileGLSL(Backend::LogicalDevice const& ld, std::string_view src, ShaderCompilationOptions const& options, std::string_view entry) {
-//
-//		auto&& [stage, dialect, version, rcmd_sm_ver, use_16bit_types] = shader::ParseGLSLShader(src);		
-//
-//		switch (dialect) {
-//		case glslang::EShClient::EShClientVulkan:
-//			return CompileVulkanDialect(ld, src, options, entry, *stage, version);
-//		case glslang::EShClient::EShClientOpenGL:
-//			return CompileOpenGLDialect(ld, src, options, entry, *stage);
-//		default:
-//			throw std::runtime_error("CompileGLSL(): Calling ParseGLSLShader() but unable to parse GLSL dialect");
-//		}
-//
-//	}
-//
-//	GLuint CompileHLSL(Backend::LogicalDevice const& ld, std::string_view src, ShaderCompilationOptions const& options, std::string_view entry) {
-//
-//		auto&& [tp_str, _] = shader::DetectTargetProfile(src);
-//		std::wstring_view profile(tp_str);
-//
-//		if (profile.empty()) {
-//			throw std::runtime_error("CompileHLSL(): Calling DetectTargetProfile() but empty profile returned");
-//		}
-//
-//		EShLanguage stage;
-//		if (profile.find(L"vs_") == 0)
-//			stage = EShLangVertex;
-//		else if (profile.find(L"ps_") == 0)
-//			stage = EShLangFragment;
-//		else if (profile.find(L"cs_") == 0)
-//			stage = EShLangCompute;
-//		else if (profile.find(L"gs_") == 0)
-//			stage = EShLangGeometry;
-//		else if (profile.find(L"ds_") == 0)          // domain shader (tessellation evaluation)
-//			stage = EShLangTessEvaluation;
-//		else if (profile.find(L"hs_") == 0)          // hull shader (tessellation control)
-//			stage = EShLangTessControl;
-//		else if (profile.find(L"as_") == 0)          // amplification shader (task)
-//			stage = EShLangTask;
-//		else if (profile.find(L"ms_") == 0)          // mesh shader
-//			stage = EShLangMesh;
-//		else
-//			throw std::runtime_error("CompileHLSL(): Unsupported or unknown HLSL shader stage");
-//
-//		shader::InitializeGlslang();
-//		
-//		glslang::TShader shader(stage);
-//
-//		std::array shader_strings = { src.data() };
-//
-//		shader.setStrings(shader_strings.data(), static_cast<int>(shader_strings.size()));
-//		shader.setEnvInput(glslang::EShSourceHlsl, stage, glslang::EShClientOpenGL, ShadingVersion());
-//
-//		shader.setEnvClient(glslang::EShClientOpenGL, glslang::EShTargetOpenGL_450);
-//		shader.setEnvTarget(glslang::EShTargetSpv, glslang::EShTargetSpv_1_0);
-//
-//		shader.setEntryPoint(entry.data());
-//
-//		EShMessages messages = static_cast<EShMessages>(EShMsgSpvRules | EShMsgDefault);
-//		if (!shader.parse(shader::GlslangResourceLimits(), 100, false, messages)) {
-//			throw std::runtime_error(std::format("Calling glslang::TShader::parse() but failed, compiler reports: {}", shader.getInfoLog()));
-//		}
-//
-//		glslang::TProgram program;
-//		program.addShader(&shader);
-//
-//		if (!program.link(messages)) {
-//			throw std::runtime_error(std::format("Calling glslang::TProgram::link() but failed, linker reports: {}", program.getInfoLog()));
-//		}
-//
-//		std::vector<std::uint32_t> spirv;
-//#if !defined(_NDEBUG)
-//		glslang::SpvOptions spv_options = {
-//			.generateDebugInfo = true,
-//			.stripDebugInfo = false,
-//			.disableOptimizer = true,
-//			.optimizeSize = false,
-//			.disassemble = true,
-//			.validate = true,
-//			.emitNonSemanticShaderDebugInfo = true,
-//			.emitNonSemanticShaderDebugSource = true
-//		};
-//#else
-//		glslang::SpvOptions spv_options = {
-//			.generateDebugInfo = false,
-//			.stripDebugInfo = true,
-//			.disableOptimizer = false,
-//			.optimizeSize = true,
-//			.disassemble = false,
-//			.validate = false,
-//			.emitNonSemanticShaderDebugInfo = false,
-//			.emitNonSemanticShaderDebugSource = false,
-//		};
-//#endif // !defined(_NDEBUG)
-//
-//		glslang::TIntermediate* intermediate = program.getIntermediate(stage);
-//		glslang::GlslangToSpv(*intermediate, spirv, &spv_options);
-//
-//		if (GLAD_GL_ARB_gl_spirv) {
-//
-//			GLuint gl_shader = glCreateShader(ToGLShaderType(stage));
-//			if (!gl_shader) {
-//#if defined(NDEBUG)
-//				throw std::runtime_error("CompileHLSL(): Calling glCreateShader() but failed");
-//#else
-//				throw std::runtime_error(
-//					std::format("CompileHLSL(): Calling glCreateShader() but failed, OpenGL reports {}", glGetError())
-//				);
-//#endif // defined(NDEBUG)
-//			}
-//
-//			glShaderBinary(1u, &gl_shader, GL_SHADER_BINARY_FORMAT_SPIR_V_ARB, spirv.data(), static_cast<GLsizei>(spirv.size() * sizeof(std::uint32_t)));
-//			glSpecializeShaderARB(gl_shader, entry.data(), 0u, nullptr, nullptr);
-//
-//			GLint status = 0u;
-//			glGetShaderiv(gl_shader, GL_COMPILE_STATUS, &status);
-//			if (!status) {
-//				GLint log_len;
-//				glGetShaderiv(gl_shader, GL_INFO_LOG_LENGTH, &log_len);
-//				std::string log(log_len + 1, 0u);
-//				glGetShaderInfoLog(gl_shader, log_len, nullptr, log.data());
-//				glDeleteShader(gl_shader);
-//				throw std::runtime_error(
-//					std::format("CompileHLSL(): Calling glSpecializeShaderARB() but failed, OpenGL reports {}", log)
-//				);
-//			}
-//
-//			GLuint gl_program = glCreateProgram();
-//			if (!gl_program) {
-//				glDeleteShader(gl_shader);
-//#if defined(NDEBUG)
-//				throw std::runtime_error("CreateBuffer(): Calling glCreateProgram() but failed");
-//#else
-//				throw std::runtime_error(
-//					std::format("CreateBuffer(): Calling glCreateProgram() but failed, OpenGL reports {}", glGetError())
-//				);
-//#endif // defined(NDEBUG)
-//			}
-//
-//			glProgramParameteri(gl_program, GL_PROGRAM_SEPARABLE, GL_TRUE);
-//			glAttachShader(gl_program, gl_shader);
-//			glLinkProgram(gl_program);
-//
-//			GLint link_status = 0u;
-//			glGetProgramiv(gl_program, GL_LINK_STATUS, &link_status);
-//			if (!link_status) {
-//				GLint log_len;
-//				glGetProgramiv(gl_program, GL_INFO_LOG_LENGTH, &log_len);
-//				std::string log(log_len + 1, 0u);
-//				glGetProgramInfoLog(gl_program, log_len, nullptr, log.data());
-//
-//				glDetachShader(gl_program, gl_shader);
-//				glDeleteProgram(gl_program);
-//				glDeleteShader(gl_shader);
-//
-//				throw std::runtime_error(
-//					std::format("CreateBuffer(): Calling glLinkProgram() but failed, OpenGL reports: {}", log)
-//				);
-//
-//			}
-//
-//			glDetachShader(gl_program, gl_shader);
-//			glDeleteShader(gl_shader);
-//
-//			return gl_program;
-//
-//		}
-//
-//		spirv_cross::CompilerGLSL compiler(std::move(spirv));
-//
-//#if defined(__linux__)
-//		bool is_es = std::holds_alternative<Backend::Instance::EGL>(ld->gl_handle);
-//#endif // defined(__linux__)
-//
-//		compiler.set_common_options(
-//			{
-//				.version = ShadingVersion(),
-//				.es =
-//#if defined(_WIN32)
-//					false,
-//#elif defined(__linux__)
-//					is_es
-//#elif defined(__ANDROID__)
-//					true,
-//#endif defined(_WIN32)
-//#if defined(NDEBUG)
-//				.force_temporary = false,
-//#else
-//				.force_temporary = true,
-//#endif // defined(NDEBUG)
-//				.emit_push_constant_as_uniform_buffer = true,
-//				.emit_line_directives =
-//#if defined(NDEBUG)
-//					false,
-//#else
-//					true,
-//#endif // defined(NDEBUG)
-//				.force_zero_initialized_variables =
-//#if defined(NDEBUG)
-//					false,
-//#else
-//					true,
-//#endif // defined(NDEBUG)
-//				.vertex = {
-//					true, // Vulkan [0,w] → OpenGL [-w,w]
-//					false,
-//					true
-//				},
-//#if defined(_WIN32)
-//				.fragment = {
-//					spirv_cross::CompilerGLSL::Options::Precision::DontCare,
-//					spirv_cross::CompilerGLSL::Options::Precision::DontCare
-//				}
-//#elif defined(__linux__)
-//				.fragment = {
-//					is_es ? spirv_cross::CompilerGLSL::Options::Precision::Mediump : spirv_cross::CompilerGLSL::Options::Precision::DontCare,
-//					is_es ? spirv_cross::CompilerGLSL::Options::Precision::Highp : spirv_cross::CompilerGLSL::Options::Precision::DontCare
-//				}
-//#elif defined(__ANDROID__)
-//				.fragment = {}
-//#endif defined(_WIN32)
-//			}
-//		);
-//
-//		return CompileOpenGLDialect(ld, compiler.compile(), options, entry, stage);
-//
-//	}
 
 }
 
@@ -1065,8 +540,44 @@ namespace fyuu_rhi::opengl {
 
 	using namespace fyuu_rhi::pipeline;
 
+	/// Makes the instance's main context (which shares with the scheduler's render
+	/// context via shared_rc) current on the calling thread. Host-side buffer and
+	/// texture creation must run under this context so the objects land in the
+	/// scheduler's share group; the per-thread shared context created by
+	/// ShareContextOnThisThread does not reliably share with the scheduler.
+	void MakeHostContextCurrent(Backend::Instance const& instance) {
+#if defined(_WIN32)
+		if (!wglMakeCurrent(instance.dc, instance.rc)) {
+			throw std::runtime_error("OpenGL: failed to make host context current");
+		}
+#else
+		std::visit(
+			[&](auto&& arg) {
+				using T = std::decay_t<decltype(arg)>;
+				if constexpr (std::same_as<T, Backend::Instance::EGL>) {
+					if (!eglMakeCurrent(arg.display, arg.draw, arg.read, arg.context)) {
+						throw std::runtime_error("OpenGL: failed to make host EGL context current");
+					}
+				}
+#if defined(__linux__)
+				else if constexpr (std::same_as<T, Backend::Instance::GLX>) {
+					if (!glXMakeCurrent(arg.dpy, arg.drawable, arg.ctx)) {
+						throw std::runtime_error("OpenGL: failed to make host GLX context current");
+					}
+				}
+#endif // defined(__linux__)
+			},
+			instance.gl_handle
+		);
+#endif
+	}
+
 	Backend::Resource Backend::CreateBuffer(Backend::LogicalDevice const& ld, std::size_t size_in_bytes, ResourceFlags const& flags) {
 
+		// Host-side buffer creation may run on any thread (e.g. the engine thread
+		// allocating a per-frame staging buffer); bind the instance's main context
+		// (shared with the scheduler) so the object lands in the share group.
+		MakeHostContextCurrent(*ld.instance);
 		GLuint buf = 0u;
 		GLbitfield buffer_flags = ExtractBufferStorageFlags(flags);
 
@@ -1083,6 +594,16 @@ namespace fyuu_rhi::opengl {
 #endif // defined(NDEBUG)
 			}
 			glNamedBufferStorage(buf, size_in_bytes, nullptr, buffer_flags);
+			// Diagnostic: the allocation must succeed on this (host) context. If it
+			// came back 0 the host context was not actually current/valid here.
+			GLint64 created_size = 0;
+			glGetNamedBufferParameteri64v(buf, GL_BUFFER_SIZE, &created_size);
+			if (created_size != static_cast<GLint64>(size_in_bytes)) {
+				throw std::runtime_error(std::format(
+					"OpenGL CreateBuffer requested {} bytes but allocated {} (buf {})",
+					size_in_bytes, created_size, buf
+				));
+			}
 		}
 		else {
 			// Fallback for older OpenGL versions - create buffer and bind to set storage
@@ -1119,12 +640,15 @@ namespace fyuu_rhi::opengl {
 		}
 		glFlush();
 
-		return Backend::GLResource(buf, Backend::GLResource::Type::Buffer, size_in_bytes);
+		return Backend::Resource(buf, Backend::Resource::Type::Buffer, size_in_bytes);
 
 	}
 
 	Backend::Resource Backend::CreateTexture(Backend::LogicalDevice const& ld, std::size_t width, std::size_t height, std::size_t depth_arr_layers, std::size_t mip_lvl_cnt, ResourceFlags const& flags) {
 
+		// Same as CreateBuffer: host-side texture creation needs the instance's
+		// main (scheduler-shared) context current.
+		MakeHostContextCurrent(*ld.instance);
 		GLsizei sample_cnt = ExtractSampleCount(flags);
 		GLenum target = ExtractTextureTarget(flags, depth_arr_layers, sample_cnt);
 		GLenum internal_format = ExtractInternalFormat(flags);
@@ -1278,7 +802,7 @@ namespace fyuu_rhi::opengl {
 		glBindTexture(target, 0);
 		glFlush();
 
-		return Backend::GLResource(
+		return Backend::Resource(
 			tex, target, internal_format, static_cast<std::uint32_t>(width),
 			static_cast<std::uint32_t>(height)
 		);
@@ -1287,7 +811,7 @@ namespace fyuu_rhi::opengl {
 
 	Backend::View Backend::CreateTextureView(Backend::LogicalDevice const& ld, Resource const& res, std::size_t base_mip_lvl, std::size_t mip_lvl_cnt, std::size_t base_arr_layer, std::size_t arr_layer_cnt, ResourceFlags const& flags) {
 		
-		if (res.type != Backend::GLResource::Type::Texture) {
+		if (res.type != Backend::Resource::Type::Texture) {
 			throw std::invalid_argument("CreateTextureView(): source is not a texture");
 		}
 
@@ -1342,7 +866,7 @@ namespace fyuu_rhi::opengl {
 
 	Backend::View Backend::CreateBufferView(Backend::LogicalDevice const& ld, Resource const& res, std::size_t offset, std::size_t range, ResourceFlags const& flags) {
 		
-		if (res.type != Backend::GLResource::Type::Buffer) {
+		if (res.type != Backend::Resource::Type::Buffer) {
 			throw std::invalid_argument("CreateBufferView(): source resource is not a buffer");
 		}
 
@@ -1464,7 +988,7 @@ namespace fyuu_rhi::opengl {
 		std::array border_color = { 0.0f, 0.0f, 0.0f, 0.0f };
 		glSamplerParameterfv(sampler, GL_TEXTURE_BORDER_COLOR, border_color.data());
 
-		return Backend::GLSampler(sampler);
+		return Backend::Sampler(sampler);
 
 	}
 
@@ -1564,7 +1088,7 @@ namespace fyuu_rhi::opengl {
 			}
 		}
 
-		return Backend::GLPipeline(
+		return Backend::Pipeline(
 			program,
 			std::vector<VertexBufferLayout>(descriptor.vertex.buffers.begin(), descriptor.vertex.buffers.end()),
 			std::vector<VertexAttribute>(descriptor.vertex.attributes.begin(), descriptor.vertex.attributes.end()),
@@ -1643,7 +1167,7 @@ namespace fyuu_rhi::opengl {
 				SaveProgramBinary(program, cache_path);
 			}
 		}
-		return Backend::GLPipeline(
+		return Backend::Pipeline(
 			program,
 			MakePipelineBindingMetadata(slang_program.Interface())
 		);
@@ -1663,42 +1187,6 @@ namespace fyuu_rhi::opengl {
 		}
 
 		return MakePipelineResourceGroup<Backend>(pipeline.bindings, space, bindings);
-	}
-
-	Backend::Scheduler Backend::CreateScheduler(
-		LogicalDevice const& ld,
-		SchedulerDescriptor const& descriptor
-	) {
-		using Flag = SchedulerFlagBits;
-		if (!ld) {
-			throw std::invalid_argument("CreateScheduler(): logical device must not be null");
-		}
-		if (!descriptor.flags.Test(Flag::Graphics) &&
-			!descriptor.flags.Test(Flag::Compute) &&
-			!descriptor.flags.Test(Flag::Copy)) {
-			throw std::invalid_argument("CreateScheduler(): no execution capability was requested");
-		}
-		auto queue = std::make_shared<GLScheduler::QueueState>(
-			ld,
-			std::make_shared<GLScheduler::CommandPool>()
-		);
-		GLScheduler::QueueCollection queues;
-		if (descriptor.flags.Test(Flag::Graphics)) {
-			queues.graphics = queue;
-		}
-		if (descriptor.flags.Test(Flag::Compute)) {
-			queues.compute = queue;
-		}
-		if (descriptor.flags.Test(Flag::Copy)) {
-			queues.copy = queue;
-		}
-		return std::make_shared<GLScheduler>(queues);
-	}
-
-	Backend::CommandGraph Backend::CreateCommandGraph(
-		execution::CommandGraphDescriptor const& descriptor
-	) {
-		return execution::MakeCommandGraph<Backend>(descriptor);
 	}
 
 }

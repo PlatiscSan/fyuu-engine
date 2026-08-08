@@ -65,16 +65,6 @@ namespace {
 	using namespace fyuu_rhi::pipeline;
 	using namespace fyuu_rhi::vulkan;
 
-	QueuePriority GetSchedulerQueuePriority(float priority) noexcept {
-		if (priority >= 0.75f) {
-			return QueuePriority::High;
-		}
-		if (priority >= 0.25f) {
-			return QueuePriority::Medium;
-		}
-		return QueuePriority::Low;
-	}
-
 	struct GetTextureHandle {
 		vk::Image operator()(Backend::Resource::Texture const& resource) const {
 			return resource.vk_handle;
@@ -782,56 +772,6 @@ namespace {
 		}
 	}
 
-	using VulkanSchedulerSynchronization = std::variant<
-		Backend::VulkanScheduler::TimelineSynchronization,
-		std::shared_ptr<Backend::VulkanScheduler::BinarySynchronizationPool>
-	>;
-
-	VulkanSchedulerSynchronization CreateSchedulerSynchronization(Backend::LogicalDevice const& ld) {
-		if (ld.enabled_features.contains(
-			vk::StructureType::ePhysicalDeviceTimelineSemaphoreFeatures
-		)) {
-			vk::SemaphoreTypeCreateInfo type_info(vk::SemaphoreType::eTimeline, 0u);
-			vk::SemaphoreCreateInfo semaphore_info({}, &type_info);
-			auto semaphore = ld.impl->createSemaphore(semaphore_info, nullptr, *ld.dispatcher);
-			return VulkanSchedulerSynchronization(
-				std::in_place_type<Backend::VulkanScheduler::TimelineSynchronization>,
-				vk::SharedSemaphore(semaphore, ld.impl, { nullptr, *ld.dispatcher })
-			);
-		}
-
-		return VulkanSchedulerSynchronization(
-			std::in_place_type<std::shared_ptr<Backend::VulkanScheduler::BinarySynchronizationPool>>,
-			std::make_shared<Backend::VulkanScheduler::BinarySynchronizationPool>(
-				ld.impl,
-				ld.dispatcher
-			)
-		);
-	}
-
-	std::shared_ptr<Backend::VulkanScheduler::QueueState> CreateSchedulerQueue(
-		Backend::LogicalDevice& ld,
-		CommandQueueType capability,
-		QueuePriority priority
-	) {
-		auto allocation = ld.queue_alloc.Allocate(capability, priority);
-		auto info = allocation.GetInfo();
-		auto queue = ld.impl->getQueue(info.family, info.index, *ld.dispatcher);
-		auto synchronization = CreateSchedulerSynchronization(ld);
-		return std::make_shared<Backend::VulkanScheduler::QueueState>(
-			ld.impl,
-			ld.dispatcher,
-			std::move(allocation),
-			vk::SharedQueue(queue, ld.impl),
-			std::move(synchronization),
-			std::make_shared<Backend::VulkanScheduler::CommandPool>(),
-			capability,
-			info.family,
-			info.index
-		);
-	}
-
-
 }
 
 namespace fyuu_rhi::vulkan {
@@ -839,7 +779,6 @@ namespace fyuu_rhi::vulkan {
 	using namespace fyuu_rhi::pipeline;
 
 	Backend::Resource Backend::CreateBuffer(LogicalDevice const& ld, std::size_t size_in_bytes, ResourceFlags const& flags) {
-		
 		VmaAllocationCreateInfo alloc_create_info{
 			ExtractAllocationFlags(flags),
 			ExtractMemoryUsage(flags),
@@ -875,12 +814,18 @@ namespace fyuu_rhi::vulkan {
 			throw std::runtime_error(std::format("Calling vmaCreateBuffer() failed, VMA reported: {}", vk::to_string(result)));
 		}
 
-		return { Backend::Resource::Buffer(ld.mem_alloc, buf_info, buf, alloc) };
+		return {
+			Backend::Resource::Buffer(
+				ld.mem_alloc,
+				buf_info,
+				buf,
+				alloc
+			)
+		};
 
 	}
 
 	Backend::Resource Backend::CreateTexture(LogicalDevice const& ld, std::size_t width, std::size_t height, std::size_t depth_arr_layers, std::size_t mip_lvl_cnt, ResourceFlags const& flags) {
-		
 		VmaAllocationCreateInfo alloc_create_info{
 			ExtractAllocationFlags(flags),
 			ExtractMemoryUsage(flags),
@@ -930,8 +875,7 @@ namespace fyuu_rhi::vulkan {
 				ld.mem_alloc,
 				tex_info,
 				tex,
-				alloc,
-				vk::ImageLayout::eUndefined
+				alloc
 			)
 		};
 
@@ -1118,6 +1062,11 @@ namespace fyuu_rhi::vulkan {
 			}
 			blend_attachments.push_back(attachment);
 		}
+		pipeline.color_formats = color_formats;
+		pipeline.depth_stencil_format = depth_format;
+		pipeline.samples = static_cast<vk::SampleCountFlagBits>(
+			multisample.rasterizationSamples
+		);
 		vk::PipelineColorBlendStateCreateInfo blend({}, false, vk::LogicOp::eCopy, blend_attachments);
 		std::array dynamic_states{ vk::DynamicState::eViewport, vk::DynamicState::eScissor };
 		vk::PipelineDynamicStateCreateInfo dynamic({}, dynamic_states);
@@ -1373,65 +1322,6 @@ namespace fyuu_rhi::vulkan {
 			.set = descriptor_sets.front(),
 			.layout = pipeline.layout
 		};
-	}
-
-	Backend::Scheduler Backend::CreateScheduler(
-		LogicalDevice& ld,
-		SchedulerDescriptor const& descriptor
-	) {
-		using Flag = SchedulerFlagBits;
-		VulkanScheduler::QueueCollection queues;
-		auto priority = GetSchedulerQueuePriority(descriptor.priority);
-		if (descriptor.flags.Test(Flag::Graphics)) {
-			queues.graphics = CreateSchedulerQueue(ld, CommandQueueType::Graphics, priority);
-		}
-		if (descriptor.flags.Test(Flag::Compute)) {
-			queues.compute = CreateSchedulerQueue(ld, CommandQueueType::Compute, priority);
-		}
-		if (descriptor.flags.Test(Flag::Copy)) {
-			queues.copy = CreateSchedulerQueue(ld, CommandQueueType::Copy, priority);
-		}
-		if (!queues.graphics && !queues.compute && !queues.copy) {
-			throw std::invalid_argument("CreateScheduler(): no execution capability was requested");
-		}
-		if (queues.graphics && queues.compute &&
-			queues.graphics->family == queues.compute->family &&
-			queues.graphics->index == queues.compute->index) {
-			queues.compute = queues.graphics;
-		}
-		if (queues.graphics && queues.copy &&
-			queues.graphics->family == queues.copy->family &&
-			queues.graphics->index == queues.copy->index) {
-			queues.copy = queues.graphics;
-		}
-		else if (queues.compute && queues.copy &&
-			queues.compute->family == queues.copy->family &&
-			queues.compute->index == queues.copy->index) {
-			queues.copy = queues.compute;
-		}
-		auto scheduler = std::make_shared<VulkanScheduler>();
-		scheduler->impl = std::make_shared<VulkanScheduler::Implementation>(
-			queues,
-			ld.phys_dev,
-			ld.presentation_cache,
-			std::make_shared<VulkanScheduler::BinarySynchronizationPool>(
-				ld.impl,
-				ld.dispatcher
-			),
-			std::unordered_set<std::string>(
-				ld.enabled_extensions.begin(),
-				ld.enabled_extensions.end()
-			),
-			ld.enabled_features,
-			ld.completion_service
-		);
-		return scheduler;
-	}
-
-	Backend::CommandGraph Backend::CreateCommandGraph(
-		execution::CommandGraphDescriptor const& descriptor
-	) {
-		return execution::MakeCommandGraph<Backend>(descriptor);
 	}
 
 }

@@ -1,6 +1,5 @@
 /* the webgpu pattern
 module;
-#include <boost/smart_ptr/intrusive_ptr.hpp>
 #include <version>
 #if !defined(__cpp_lib_modules)
 
@@ -19,16 +18,23 @@ namespace fyuu_rhi::webgpu {
 module;
 #include <version>
 #if !defined(__cpp_lib_modules)
-#include <atomic>
-#include <string>
+#include <exception>
 #include <memory>
-#include <mutex>
+#include <string>
 #include <vector>
+
+#include <atomic>
+#include <cstdint>
+#include <mutex>
+#include <utility>
+
+#include <optional>
+#include <string_view>
 #include <variant>
+
+#include <compare>
 #include <format>
 #include <span>
-#include <cstdint>
-#include <utility>
 #endif // !defined(__cpp_lib_modules)
 #if defined(_WIN32)
 #include <Windows.h>
@@ -48,121 +54,94 @@ import std;
 import :core_types;
 import :resource_types;
 import :sampler_types;
-import :scheduler_types;
 import :pipeline_types;
 import :native_pipeline_binding;
-import :native_command_graph;
-import :presentation_cache;
-import :completion_service;
+import :execution_types;
 
 namespace fyuu_rhi::webgpu {
 	using namespace fyuu_rhi::pipeline;
-	using namespace fyuu_rhi::execution;
-
 	struct Backend {
 #if defined(_WIN32)
-		using PresentationTarget = HWND;
+		using PlatformHandle = HWND;
 #elif defined(__linux__)
-		struct X11PresentationTarget {
+		struct X11PlatformHandle {
 			Display* display;
 			Window window;
 
-			friend auto operator<=>(X11PresentationTarget const&, X11PresentationTarget const&) noexcept = default;
+			std::strong_ordering operator<=>(X11PlatformHandle const&) const noexcept = default;
 		};
 
-		struct WaylandPresentationTarget {
+		struct WaylandPlatformHandle {
 			wl_display* display;
 			wl_surface* surface;
 
-			friend auto operator<=>(WaylandPresentationTarget const&, WaylandPresentationTarget const&) noexcept = default;
+			std::strong_ordering operator<=>(WaylandPlatformHandle const&) const noexcept = default;
 		};
 
-		using PresentationTarget = std::variant<X11PresentationTarget, WaylandPresentationTarget>;
+		using PlatformHandle = std::variant<X11PlatformHandle, WaylandPlatformHandle>;
 #elif defined(__ANDROID__)
-		using PresentationTarget = ANativeWindow*;
-#endif
-		struct PresentationTargetHash {
-#if defined(_WIN32) || defined(__ANDROID__)
-			std::size_t operator()(PresentationTarget target) const noexcept {
-				return execution::HashNativePointer(target);
-			}
-#elif defined(__linux__)
-			std::size_t operator()(PresentationTarget const& target) const noexcept {
-				if (auto value = std::get_if<X11PresentationTarget>(&target)) {
-					auto display = execution::HashNativePointer(value->display);
-					auto window = std::hash<Window>{}(value->window);
-					return execution::CombineHashes(display, window);
-				}
-				auto const& value = std::get<WaylandPresentationTarget>(target);
-				auto display = execution::HashNativePointer(value.display);
-				auto surface = execution::HashNativePointer(value.surface);
-				return execution::CombineHashes(display, surface);
-			}
-#endif
+		using PlatformHandle = ANativeWindow*;
+#endif // defined(_WIN32)
+
+		struct SchedulerContext {
+			/// Owns the device, queue and the dedicated event pump. Defined in the
+			/// exported traits so factories can construct it.
+			struct Implementation {
+				wgpu::Instance instance;
+				wgpu::Device device;
+
+				/// Per-window presentation state; the current texture is acquired
+				/// in phase 1 and must be presented before the next acquisition.
+				struct SurfaceState {
+					PlatformHandle handle{};
+					wgpu::Surface surface;
+					std::uint32_t width = 0u;
+					std::uint32_t height = 0u;
+					wgpu::TextureFormat format = wgpu::TextureFormat::Undefined;
+				};
+				std::vector<SurfaceState> surfaces;
+				std::mutex surface_mutex;
+			};
+
+			std::shared_ptr<Implementation> impl;
+
+			std::strong_ordering operator<=>(SchedulerContext const&) const noexcept = default;
 		};
+
+		class CompletionToken {
+			/// Defined in the execution partition. Exclusively owned by the token;
+			/// the completion callback holds a raw pointer and fires before the
+			/// token is destroyed (the front end polls to completion first).
+			struct Implementation;
+			struct Deleter {
+				void operator()(Implementation* impl) const noexcept;
+			};
+			std::unique_ptr<Implementation, Deleter> impl;
+
+			explicit CompletionToken(std::unique_ptr<Implementation, Deleter> impl_) noexcept
+				: impl(std::move(impl_)) {}
+			friend struct Backend;
+
+		public:
+			CompletionToken() noexcept = default;
+			CompletionToken(CompletionToken const&) = delete;
+			CompletionToken& operator=(CompletionToken const&) = delete;
+			CompletionToken(CompletionToken&&) noexcept = default;
+			CompletionToken& operator=(CompletionToken&&) noexcept = default;
+			~CompletionToken() noexcept;
+
+			[[nodiscard]] bool Poll() noexcept;
+			[[nodiscard]] std::exception_ptr Error() const noexcept;
+			[[nodiscard]] bool IsStopped() const noexcept;
+		};
+
 		using Instance = wgpu::Instance;
 		using PhysicalDevice = wgpu::Adapter;
 		using Surface = wgpu::Surface;
 		struct LogicalDevice {
-			struct PresentationEntry {
-				using FrameSlot = std::atomic_bool;
-
-				struct FrameState {
-					std::vector<std::shared_ptr<FrameSlot>> slots;
-					std::size_t next_slot = 0u;
-					std::mutex mutex;
-				};
-
-				wgpu::Instance instance;
-				wgpu::Surface surface;
-				wgpu::TextureFormat format = wgpu::TextureFormat::Undefined;
-				wgpu::PresentMode present_mode = wgpu::PresentMode::Fifo;
-				std::uint32_t width = 0u;
-				std::uint32_t height = 0u;
-				bool vertical_sync = true;
-				std::uint32_t frames_in_flight = 0u;
-				std::shared_ptr<FrameState> frames;
-			};
-
-			using PresentationCache = execution::PresentationCache<
-				PresentationTarget,
-				PresentationEntry,
-				PresentationTargetHash
-			>;
-
 			wgpu::Device impl;
 			wgpu::Adapter adapter;
-			std::shared_ptr<PresentationCache> presentation_cache;
-			boost::intrusive_ptr<execution::CompletionService> completion_service;
-
-			wgpu::Queue GetQueue() const {
-				return impl.GetQueue();
-			}
 		};
-
-		struct WebGPUScheduler {
-			struct QueueState {
-				wgpu::Device device;
-				wgpu::Queue impl;
-			};
-
-			struct QueueCollection {
-				std::shared_ptr<QueueState> graphics;
-				std::shared_ptr<QueueState> compute;
-				std::shared_ptr<QueueState> copy;
-
-				[[nodiscard]] std::shared_ptr<QueueState> const& Select(
-					execution::GraphNodeFlagBits capability
-				) const;
-			};
-
-			QueueCollection queues;
-			wgpu::Adapter adapter;
-			std::shared_ptr<LogicalDevice::PresentationCache> presentation_cache;
-			boost::intrusive_ptr<execution::CompletionService> completion_service;
-		};
-
-		using Scheduler = std::shared_ptr<WebGPUScheduler>;
 
 		using Resource = std::variant<std::monostate, wgpu::Buffer, wgpu::Texture>;
 
@@ -187,46 +166,20 @@ namespace fyuu_rhi::webgpu {
 			wgpu::BindGroup impl;
 			std::uint32_t space = 0u;
 		};
-		using CommandGraph = std::shared_ptr<execution::NativeCommandGraph<Backend>>;
-		using ExecutableGraph = std::shared_ptr<execution::NativeExecutableGraph<Backend>>;
-		struct GraphExecution {
-			struct InFlightPresentation {
-				LogicalDevice::PresentationCache::Lease entry;
-				std::shared_ptr<LogicalDevice::PresentationEntry::FrameSlot> frame;
-			};
 
-			struct Batch {
-				std::shared_ptr<WebGPUScheduler::QueueState> queue;
-				wgpu::CommandBuffer commands;
-				std::vector<InFlightPresentation> presentations;
+		static CompletionToken ExecuteCommands(
+			SchedulerContext const& scheduler,
+			execution::ExecutionPlan const& plan,
+			std::span<PlatformHandle const> presentation_targets,
+			std::span<std::reference_wrapper<Resource> const> resources,
+			std::span<std::reference_wrapper<View> const> views,
+			std::span<std::reference_wrapper<Sampler> const> samplers,
+			std::span<std::reference_wrapper<Pipeline> const> pipelines,
+			std::span<std::reference_wrapper<PipelineResourceGroup> const> resource_groups,
+			execution::StopTokenView stop_token
+		);
 
-				Batch(
-					std::shared_ptr<WebGPUScheduler::QueueState> const& queue_,
-					wgpu::CommandBuffer const& commands_,
-					std::vector<InFlightPresentation>&& presentations_
-				) noexcept : queue(queue_), commands(commands_),
-					presentations(std::move(presentations_)) {
-
-				}
-				Batch(Batch const&) = delete;
-				Batch& operator=(Batch const&) = delete;
-				Batch(Batch&& other) noexcept
-					: queue(other.queue), commands(other.commands),
-					presentations(std::move(other.presentations)) {
-
-				}
-				Batch& operator=(Batch&& other) noexcept {
-					queue = other.queue;
-					commands = other.commands;
-					presentations = std::move(other.presentations);
-					return *this;
-				}
-			};
-
-			Scheduler scheduler;
-			ExecutableGraph graph;
-			std::vector<Batch> batches;
-		};
+		static SchedulerContext CreateScheduler(LogicalDevice const& ld);
 
 		static wgpu::Instance CreateInstance(
 			std::string_view app_name, Version const& app_ver, std::string_view engine_name, Version const& engine_ver
@@ -237,23 +190,9 @@ namespace fyuu_rhi::webgpu {
 
 		static wgpu::Adapter EnumeratePhysicalDevices(wgpu::Instance const& instance);
 
-#if defined(_WIN32)
-		static wgpu::Surface CreateSurface(wgpu::Instance const& instance, HWND window_handle);
-#elif defined(__linux__)
-		static wgpu::Surface CreateSurface(wgpu::Instance const& instance, Display* x11_dpy, Window x11_window);
-		static wgpu::Surface CreateSurface(wgpu::Instance const& instance, wl_display* display, wl_surface* surface);
-#elif defined(__ANDROID__)
-		static wgpu::Surface CreateSurface(wgpu::Instance const& instance, ANativeWindow* window);
-#endif // defined(_WIN32)
 		static PhysicalDeviceInfo GetPhysicalDeviceInfo(wgpu::Adapter const& phys_dev);
 
 		static LogicalDevice CreateLogicalDevice(wgpu::Adapter const& adapter);
-
-		static Scheduler CreateScheduler(LogicalDevice const& ld, SchedulerDescriptor const& descriptor);
-		static CommandGraph CreateCommandGraph(
-			execution::CommandGraphDescriptor const& descriptor
-		);
-		static ExecutableGraph CompileCommandGraph(CommandGraph const& graph);
 
 		static Resource CreateBuffer(LogicalDevice const& ld, std::size_t size_in_bytes, ResourceFlags const& flags);
 
@@ -277,30 +216,4 @@ namespace fyuu_rhi::webgpu {
 
 	};
 
-	Backend::GraphExecution CreateGraphExecution(
-		Backend::Scheduler const& scheduler,
-		Backend::ExecutableGraph const& graph
-	);
-	void StartGraphExecution(
-		Backend::GraphExecution& graph_execution,
-		execution::GraphCompletion const& completion
-	);
-	void StartSchedulerExecution(
-		Backend::Scheduler const& scheduler,
-		execution::SchedulerCompletion const& completion
-	);
-	void StartDeferredDestroy(
-		Backend::Scheduler const& scheduler,
-		execution::DeferredDestroy const& deferred_destroy
-	);
-	void StartMapResource(
-		Backend::Scheduler const& scheduler,
-		Backend::Resource& resource,
-		execution::ResourceMapRequest const& request
-	);
-	void StartUnmapResource(
-		Backend::Scheduler const& scheduler,
-		Backend::Resource& resource,
-		execution::ResourceUnmapRequest const& request
-	);
 }
