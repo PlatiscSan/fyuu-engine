@@ -41,10 +41,6 @@ module;
 #include <coroutine>
 #include <boost/intrusive_ptr.hpp>
 #include <boost/type_index.hpp>
-#include <boost/uuid.hpp>
-#include <boost/uuid/uuid_generators.hpp>
-#include <boost/uuid/uuid_hash.hpp>
-#include <boost/uuid/uuid_io.hpp>
 #if !defined(__cpp_lib_reflection)
 #include <boost/describe.hpp>
 #include <boost/mp11.hpp>
@@ -57,6 +53,7 @@ import std;
 #endif // defined(__cpp_lib_modules)
 import :log;
 import :base_asset;
+import :uuid;
 import plastic.serial_task;
 
 namespace fs = std::filesystem;
@@ -212,7 +209,7 @@ namespace fyuu_asset {
 
 		std::atomic_size_t m_strong;
 		std::atomic_size_t m_weak;
-		boost::uuids::uuid m_id;
+		UUID m_id;
 
 		// T must die with the last strong reference, potentially before the Asset
 		// allocation can be released. The union disables automatic destruction, so
@@ -224,7 +221,7 @@ namespace fyuu_asset {
 		};
 
 		template <class... Args>
-		explicit Asset(boost::uuids::uuid const& id, Args&&... args)
+		explicit Asset(UUID const& id, Args&&... args)
 			noexcept(std::is_nothrow_constructible_v<T, Args...>)
 			: m_strong(1u),
 			m_weak(1u),
@@ -322,7 +319,7 @@ namespace fyuu_asset {
 	private:
 		friend class execution::AssetLoader;
 
-		inline static std::unordered_map<boost::uuids::uuid, Weak> s_loaded_assets;
+		inline static std::unordered_map<UUID, Weak, UUIDHash, UUIDEquality> s_loaded_assets;
 		inline static std::shared_mutex s_mutex;
 
 		static void Unregister(Asset* asset) noexcept {
@@ -334,7 +331,7 @@ namespace fyuu_asset {
 		}
 
 		template <class... Args>
-		[[nodiscard]] static ManagedAsset CreateWithID(boost::uuids::uuid const& id, Args&&... args) {
+		[[nodiscard]] static ManagedAsset CreateWithID(UUID const& id, Args&&... args) {
 			// The Asset object, both counters, UUID and T share this one allocation.
 			ManagedAsset asset{
 				new Asset(id, std::forward<Args>(args)...),
@@ -367,12 +364,12 @@ namespace fyuu_asset {
 		template <class... Args>
 		[[nodiscard]] static ManagedAsset Create(Args&&... args) {
 			return CreateWithID(
-				boost::uuids::random_generator{}(),
+				GenerateUUID(),
 				std::forward<Args>(args)...
 			);
 		}
 
-		[[nodiscard]] static ManagedAsset Find(boost::uuids::uuid const& id) noexcept {
+		[[nodiscard]] static ManagedAsset Find(UUID const& id) noexcept {
 			std::shared_lock lock(s_mutex);
 			auto found = s_loaded_assets.find(id);
 			return found == s_loaded_assets.end() ? ManagedAsset{} : found->second.Lock();
@@ -388,7 +385,7 @@ namespace fyuu_asset {
 			);
 		}
 
-		[[nodiscard]] boost::uuids::uuid GetID() const noexcept {
+		[[nodiscard]] UUID GetID() const noexcept {
 			return m_id;
 		}
 
@@ -402,7 +399,7 @@ namespace fyuu_asset {
 		}
 
 		template <class N>
-		static void QueueSerialize(boost::uuids::uuid const& id, T data, N&& notify) {
+		static void QueueSerialize(UUID const& id, T data, N&& notify) {
 			detail::AsyncSerialize(
 				[id, data = std::move(data)]() mutable {
 					std::string structure_name;
@@ -427,7 +424,7 @@ namespace fyuu_asset {
 						}
 					);
 					auto path = GetPath(
-						fs::path{ structure_name } / (boost::uuids::to_string(id) + ".json")
+						fs::path{ structure_name } / (UUIDToString(id) + ".json")
 					);
 					fs::create_directories(path.parent_path());
 					if constexpr (requires { data.Serialize(path); }) {
@@ -507,12 +504,6 @@ namespace fyuu_asset {
 			// object address as well as the UUID, so an older instance cannot erase a
 			// newer instance that reused the same UUID.
 			Unregister(asset);
-			QueueSerialize(
-				asset->GetID(),
-				std::move(asset->m_data),
-				[](std::exception_ptr) noexcept {
-				}
-			);
 			asset->m_data.~T();
 
 			// Release the implicit weak reference owned by the former strong set. Real

@@ -19,7 +19,7 @@ import std;
 #endif // defined(__cpp_lib_modules)
 
 extern "C" {
-	LIB_API int LIB_CALL Fyuu_Run(int argc, char** argv, Fyuu_App* app) {
+	LIB_API int LIB_CALL Fyuu_Run(int argc, char** argv, Fyuu_App* app) NOEXCEPT {
 		static std::mutex s_mutex;
 		static fyuu_engine::ApplicationDescriptor* s_application = nullptr;
 		std::unique_lock<std::mutex> lock(s_mutex);
@@ -38,6 +38,7 @@ extern "C" {
 				.minor = app->version.minor,
 				.patch = app->version.patch
 			},
+			.font_size = app->font_size > 0.0f ? app->font_size : 13.0f,
 			.user_data = app,
 			.Initialize = [](fyuu_engine::Runtime& runtime) {
 				auto application = static_cast<Fyuu_App*>(runtime.UserData());

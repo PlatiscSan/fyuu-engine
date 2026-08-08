@@ -10,12 +10,12 @@
 extern "C" {
 #endif // defined(__cplusplus)
 
-	LIB_API void LIB_CALL Fyuu_Trace(char const* msg, char const* file, uint_least32_t line, char const* function);
-	LIB_API void LIB_CALL Fyuu_Debug(char const* msg, char const* file, uint_least32_t line, char const* function);
-	LIB_API void LIB_CALL Fyuu_Info(char const* msg, char const* file, uint_least32_t line, char const* function);
-	LIB_API void LIB_CALL Fyuu_Warning(char const* msg, char const* file, uint_least32_t line, char const* function);
-	LIB_API void LIB_CALL Fyuu_Error(char const* msg, char const* file, uint_least32_t line, char const* function);
-	LIB_API void LIB_CALL Fyuu_Fatal(char const* msg, char const* file, uint_least32_t line, char const* function);
+	LIB_API void LIB_CALL Fyuu_Trace(char const* msg, char const* file, uint_least32_t line, char const* function) NOEXCEPT;
+	LIB_API void LIB_CALL Fyuu_Debug(char const* msg, char const* file, uint_least32_t line, char const* function) NOEXCEPT;
+	LIB_API void LIB_CALL Fyuu_Info(char const* msg, char const* file, uint_least32_t line, char const* function) NOEXCEPT;
+	LIB_API void LIB_CALL Fyuu_Warning(char const* msg, char const* file, uint_least32_t line, char const* function) NOEXCEPT;
+	LIB_API void LIB_CALL Fyuu_Error(char const* msg, char const* file, uint_least32_t line, char const* function) NOEXCEPT;
+	LIB_API void LIB_CALL Fyuu_Fatal(char const* msg, char const* file, uint_least32_t line, char const* function) NOEXCEPT;
 
 #if defined(__cplusplus)
 }

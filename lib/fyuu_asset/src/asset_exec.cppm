@@ -33,8 +33,6 @@ module;
 #endif // defined(__cpp_lib_reflection)
 #endif // !defined(__cpp_lib_modules)
 #include <boost/type_index.hpp>
-#include <boost/uuid.hpp>
-#include <boost/uuid/uuid_io.hpp>
 #if !defined(__cpp_lib_reflection)
 #include <boost/describe.hpp>
 #include <boost/mp11.hpp>
@@ -47,6 +45,7 @@ import std;
 import plastic.serial_task;
 import :asset;
 import :base_asset;
+import :uuid;
 
 namespace fyuu_asset::execution::detail {
 	template <class T>
@@ -221,7 +220,7 @@ private:
 		>;
 #endif
 		template <class T>
-		[[nodiscard]] typename Asset<T>::ManagedAsset Load(boost::uuids::uuid const& id) const {
+		[[nodiscard]] typename Asset<T>::ManagedAsset Load(UUID const& id) const {
 			if (auto loaded = Asset<T>::Find(id)) {
 				return loaded;
 			}
@@ -251,7 +250,7 @@ private:
 			);
 
 			auto path = GetPath(
-				std::filesystem::path{ structure_name } / (boost::uuids::to_string(id) + ".json")
+				std::filesystem::path{ structure_name } / (UUIDToString(id) + ".json")
 			);
 			if constexpr (requires {
 				{ T::Deserialize(path) } -> std::same_as<T>;

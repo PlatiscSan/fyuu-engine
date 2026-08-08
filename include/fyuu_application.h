@@ -28,16 +28,17 @@ extern "C" {
 		uint32_t surface_height;
 
 		Fyuu_Version version;
+		float font_size;
 
 		void* user_data;
 
-		void(*Init)(Fyuu_App* self);
-		void(*Tick)(Fyuu_App* self);
-		void(*Shutdown)(Fyuu_App* self);
+		void(*Init)(Fyuu_App* self) NOEXCEPT;
+		void(*Tick)(Fyuu_App* self) NOEXCEPT;
+		void(*Shutdown)(Fyuu_App* self) NOEXCEPT;
 
 	} Fyuu_App;
 
-	LIB_API int LIB_CALL Fyuu_Run(int argc, char** argv, Fyuu_App* app);
+	LIB_API int LIB_CALL Fyuu_Run(int argc, char** argv, Fyuu_App* app) NOEXCEPT;
 
 #if defined(__cplusplus)
 }

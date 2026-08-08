@@ -11,14 +11,14 @@ int main(int argc, char** argv) {
 		.surface_height = 600,
 		.version = { 0, 1, 0, 0 },
 		.user_data = nullptr,
-		.Init = [](Fyuu_App* self) {
+		.Init = [](Fyuu_App* self) NOEXCEPT {
 			FYUU_LOG_INFO("App initialized");
 		},
-		.Tick = [](Fyuu_App* self) {
+		.Tick = [](Fyuu_App* self) NOEXCEPT {
 			ImGui::ShowDemoWindow();
 
 		},
-		.Shutdown = [](Fyuu_App* self) {
+		.Shutdown = [](Fyuu_App* self) NOEXCEPT {
 
 		}
 	};

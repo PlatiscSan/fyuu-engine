@@ -52,19 +52,13 @@ export namespace fyuu_asset {
 		return boost::uuids::to_string(value);
 	}
 
-	void UUIDFromBytes(
-		std::uint8_t const (&source)[16],
-		UUID& output
-	) noexcept {
+	void UUIDFromBytes(std::uint8_t const (&source)[16], UUID& output) noexcept {
 		for (std::size_t index = 0u; index < 16u; ++index) {
 			output.data[index] = source[index];
 		}
 	}
 
-	void UUIDToBytes(
-		UUID const& source,
-		std::uint8_t (&output)[16]
-	) noexcept {
+	void UUIDToBytes(UUID const& source, std::uint8_t (&output)[16]) noexcept {
 		for (std::size_t index = 0u; index < 16u; ++index) {
 			output[index] = source.data[index];
 		}

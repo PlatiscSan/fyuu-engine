@@ -21,6 +21,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 project(FyuuEngine)
 include(CTest)
 
+option(FYUU_BUILD_EDITOR "Build the Fyuu editor" ON)
+
 # set(CMAKE_CXX_MODULE_STD 1)
 
 # Enable generation of compile_commands.json for IDEs and tools
@@ -105,6 +107,10 @@ file(GLOB_RECURSE MODULE_INTERFACES
 )
 
 add_subdirectory(src)
+
+if(FYUU_BUILD_EDITOR)
+    add_subdirectory(editor)
+endif()
 
 if(BUILD_TESTING)
     add_subdirectory("test/hello_triangle")

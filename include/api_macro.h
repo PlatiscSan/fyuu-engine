@@ -33,3 +33,9 @@
 #else
 	 #define LIB_CALL
 #endif
+
+#if defined(__cplusplus)
+	#define NOEXCEPT noexcept(true)
+#else
+	#define NOEXCEPT
+#endif

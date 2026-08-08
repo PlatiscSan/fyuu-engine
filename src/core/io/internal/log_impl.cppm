@@ -115,32 +115,32 @@ namespace fyuu_engine::log {
 
 extern "C" {
 
-	LIB_API void LIB_CALL Fyuu_Trace(char const* message, char const* file, uint_least32_t line, char const* function) {
+	LIB_API void LIB_CALL Fyuu_Trace(char const* message, char const* file, uint_least32_t line, char const* function) NOEXCEPT {
 		auto logger = spdlog::get("App");
 		if (logger) logger->trace("file: {}({}) '{}': {}", file, line, function, message);
 	}
 
-	LIB_API void LIB_CALL Fyuu_Debug(char const* message, char const* file, uint_least32_t line, char const* function) {
+	LIB_API void LIB_CALL Fyuu_Debug(char const* message, char const* file, uint_least32_t line, char const* function) NOEXCEPT {
 		auto logger = spdlog::get("App");
 		if (logger) logger->debug("file: {}({}) '{}': {}", file, line, function, message);
 	}
 
-	LIB_API void LIB_CALL Fyuu_Info(char const* message, char const* file, uint_least32_t line, char const* function) {
+	LIB_API void LIB_CALL Fyuu_Info(char const* message, char const* file, uint_least32_t line, char const* function) NOEXCEPT {
 		auto logger = spdlog::get("App");
 		if (logger) logger->info("file: {}({}) '{}': {}", file, line, function, message);
 	}
 
-	LIB_API void LIB_CALL Fyuu_Warning(char const* message, char const* file, uint_least32_t line, char const* function) {
+	LIB_API void LIB_CALL Fyuu_Warning(char const* message, char const* file, uint_least32_t line, char const* function) NOEXCEPT {
 		auto logger = spdlog::get("App");
 		if (logger) logger->warn("file: {}({}) '{}': {}", file, line, function, message);
 	}
 
-	LIB_API void LIB_CALL Fyuu_Error(char const* message, char const* file, uint_least32_t line, char const* function) {
+	LIB_API void LIB_CALL Fyuu_Error(char const* message, char const* file, uint_least32_t line, char const* function) NOEXCEPT {
 		auto logger = spdlog::get("App");
 		if (logger) logger->error("file: {}({}) '{}': {}", file, line, function, message);
 	}
 
-	LIB_API void LIB_CALL Fyuu_Fatal(char const* message, char const* file, uint_least32_t line, char const* function) {
+	LIB_API void LIB_CALL Fyuu_Fatal(char const* message, char const* file, uint_least32_t line, char const* function) NOEXCEPT {
 		auto logger = spdlog::get("App");
 		if (logger) logger->critical("file: {}({}) '{}': {}", file, line, function, message);
 	}
