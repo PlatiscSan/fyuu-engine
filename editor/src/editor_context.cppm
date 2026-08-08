@@ -84,6 +84,17 @@ struct EditorContext {
 		Log("Redo");
 	}
 
+	bool NewScene() {
+		if (!scene.New()) {
+			return false;
+		}
+		selected_entity = {};
+		m_pending_edit.reset();
+		m_undo.clear();
+		m_redo.clear();
+		return true;
+	}
+
 private:
 	[[nodiscard]] Snapshot Capture() const {
 		return {

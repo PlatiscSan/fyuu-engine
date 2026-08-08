@@ -504,6 +504,12 @@ namespace fyuu_asset {
 			// object address as well as the UUID, so an older instance cannot erase a
 			// newer instance that reused the same UUID.
 			Unregister(asset);
+			QueueSerialize(
+				asset->GetID(),
+				std::move(asset->m_data),
+				[](std::exception_ptr) noexcept {
+				}
+			);
 			asset->m_data.~T();
 
 			// Release the implicit weak reference owned by the former strong set. Real

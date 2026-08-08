@@ -1,9 +1,19 @@
 module;
+#include <version>
+#if !defined(__cpp_lib_modules)
+#include <exception>
+#include <filesystem>
+#include <memory>
+#endif // !defined(__cpp_lib_modules)
 #include <imgui.h>
 #include "fyuu_application.h"
 #include "fyuu_log.h"
 
 module fyuu_editor:application;
+#if defined(__cpp_lib_modules)
+import std;
+#endif // defined(__cpp_lib_modules)
+import fyuu_engine;
 import :context;
 import :console_panel;
 import :hierarchy_panel;
@@ -33,7 +43,18 @@ namespace fyuu_editor {
 
 	private:
 		static void InitializeCallback(Fyuu_App* application) NOEXCEPT {
-			static_cast<EditorApplication*>(application->user_data)->Initialize();
+			auto& editor = *static_cast<EditorApplication*>(application->user_data);
+			try {
+				editor.Initialize();
+			}
+			catch (std::exception const& exception) {
+				editor.m_context.Log(exception.what());
+				FYUU_LOG_ERROR(exception.what());
+			}
+			catch (...) {
+				editor.m_context.Log("Unknown editor initialization error");
+				FYUU_LOG_ERROR("Unknown editor initialization error");
+			}
 		}
 
 		static void TickCallback(Fyuu_App* application) NOEXCEPT {
@@ -45,6 +66,9 @@ namespace fyuu_editor {
 		}
 
 		void Initialize() {
+			m_asset_store = std::make_unique<fyuu_engine::AssetStore>(
+				std::filesystem::current_path() / "assets"
+			);
 			m_context.scene.CreateEntity("Camera");
 			m_context.selected_entity = m_context.scene.CreateEntity("Entity");
 			m_context.scene.MarkSaved();
@@ -53,6 +77,7 @@ namespace fyuu_editor {
 		}
 
     void Tick() {
+		UpdateSave();
 		ProcessShortcuts();
         DrawMainMenu();
 			DrawDefaultLayout();
@@ -70,9 +95,21 @@ namespace fyuu_editor {
 				return;
 			}
 			if (ImGui::BeginMenu("File")) {
-				ImGui::MenuItem("New Scene", "Ctrl+N", false, false);
+				if (ImGui::MenuItem(
+					"New Scene",
+					"Ctrl+N",
+					false,
+					!m_context.scene.Dirty() && !m_context.scene.Saving())) {
+					NewScene();
+				}
 				ImGui::MenuItem("Open Scene...", "Ctrl+O", false, false);
-				ImGui::MenuItem("Save Scene", "Ctrl+S", false, false);
+				if (ImGui::MenuItem(
+					"Save Scene",
+					"Ctrl+S",
+					false,
+					m_asset_store && !m_context.scene.Saving())) {
+					SaveScene();
+				}
 				ImGui::EndMenu();
 			}
         if (ImGui::BeginMenu("Entity")) {
@@ -111,6 +148,48 @@ namespace fyuu_editor {
 		else if (ImGui::IsKeyPressed(ImGuiKey_Y, false)) {
 			m_context.Redo();
 		}
+		else if (ImGui::IsKeyPressed(ImGuiKey_S, false)) {
+			SaveScene();
+		}
+		else if (ImGui::IsKeyPressed(ImGuiKey_N, false)
+			&& !m_context.scene.Dirty()) {
+			NewScene();
+		}
+	}
+
+	void SaveScene() {
+		if (!m_asset_store) {
+			m_context.Log("Cannot save scene without an asset store");
+			return;
+		}
+		if (m_context.scene.BeginSave()) {
+			m_context.Log("Saving scene...");
+		}
+		else if (m_context.scene.Saving()) {
+			m_context.Log("Scene save is already in progress");
+		}
+		else {
+			m_context.Log("Cannot save an invalid scene");
+		}
+	}
+
+	void UpdateSave() {
+		switch (m_context.scene.UpdateSave()) {
+			case EditorScene::SaveResult::Succeeded:
+				m_context.Log("Scene saved");
+				break;
+			case EditorScene::SaveResult::Failed:
+				m_context.Log("Scene save failed: " + m_context.scene.SaveError());
+				break;
+			case EditorScene::SaveResult::None:
+				break;
+		}
+	}
+
+	void NewScene() {
+		if (m_context.NewScene()) {
+			m_context.Log("Created new scene");
+		}
 	}
 
 		void DrawDefaultLayout() {
@@ -140,6 +219,7 @@ namespace fyuu_editor {
 			DrawConsolePanel(m_context);
 		}
 
+		std::unique_ptr<fyuu_engine::AssetStore> m_asset_store;
 		EditorContext m_context;
 	};
 

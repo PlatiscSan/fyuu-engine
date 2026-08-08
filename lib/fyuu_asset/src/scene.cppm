@@ -33,23 +33,9 @@ export namespace fyuu_asset {
 			UUID mesh;
 			UUID material;
 
-			[[nodiscard]] bool operator==(Entity const& other) const noexcept {
-				return UUIDEqual(id, other.id)
-					&& UUIDEqual(parent, other.parent)
-					&& name == other.name
-					&& translation == other.translation
-					&& rotation == other.rotation
-					&& scale == other.scale
-					&& UUIDEqual(mesh, other.mesh)
-					&& UUIDEqual(material, other.material);
-			}
 		};
 
 		std::vector<Entity> entities;
-
-		[[nodiscard]] bool operator==(Scene const& other) const noexcept {
-			return entities == other.entities;
-		}
 
 		Entity& CreateEntity(std::string const& name) {
 			if (name.empty()) {
