@@ -672,6 +672,27 @@ namespace {
 
 			static Pipeline CreateGuiPipeline(LogicalDevice& logical_device) {
 				using namespace fyuu_rhi::pipeline;
+				static constexpr char const webgpu_shader[] = R"(
+						[[vk::binding(0, 0)]] Texture2D<float4> font_texture : register(t0, space0);
+						[[vk::binding(1, 0)]] SamplerState font_sampler : register(s1, space0);
+						struct VSOut {
+							float4 position : SV_Position;
+							float2 uv : TEXCOORD0;
+							float4 color : COLOR0;
+						};
+						[shader("vertex")]
+						VSOut vs_main(float2 position : POSITION, float2 uv : TEXCOORD0, float4 color : COLOR0) {
+							VSOut output;
+							output.position = float4(position, 0.0, 1.0);
+							output.uv = uv;
+							output.color = color;
+							return output;
+						}
+						[shader("fragment")]
+						float4 fs_main(VSOut input) : SV_Target0 {
+							return input.color * font_texture.Sample(font_sampler, input.uv);
+						}
+					)";
 				static constexpr char const combined_shader[] = R"(
 						Sampler2D font_texture : register(t0, space0);
 						struct VSOut {
@@ -692,14 +713,15 @@ namespace {
 							return input.color * font_texture.Sample(input.uv);
 						}
 					)";
-				// One combined shader for every backend: Sampler2D is the form
-				// that compiles on NVIDIA's desktop GL (its GLSL compiler rejects
-				// the separable texture2D/sampler form Slang emits for separate
-				// Texture2D + SamplerState). D3D12 decomposes the combined binding
-				// into an SRV + sampler pair; GL/Vulkan/WebGPU consume it directly.
+				// WebGPU requires distinct texture and sampler bind-group entries.
+				// Other backends retain Sampler2D because NVIDIA's desktop GLSL
+				// compiler rejects Slang's separable texture/sampler output.
+				auto shader = std::same_as<LogicalDevice, fyuu_rhi::WebGPULogicalDevice>
+					? webgpu_shader
+					: combined_shader;
 				return logical_device.CreateGraphicsPipeline({
 					.program = {
-						.modules = {{{ SlangPipelineProgramDescriptor::Module{.name = "imgui", .source = combined_shader } }}},
+						.modules = {{{ SlangPipelineProgramDescriptor::Module{.name = "imgui", .source = shader } }}},
 						.entry_points = {{
 							{.name = "vs_main", .stage = PipelineStage::Vertex },
 							{.name = "fs_main", .stage = PipelineStage::Fragment }
@@ -734,13 +756,19 @@ namespace {
 			) {
 				using Binding = fyuu_rhi::pipeline::PipelineResourceBinding<Backend>;
 				using Value = fyuu_rhi::pipeline::PipelineBindingValue<Backend>;
-				// One combined binding for every backend: view + sampler on slot 0,
-				// matching the Sampler2D shader. GL binds the texture and sampler
-				// object to unit 0; D3D12 splits it into an SRV + sampler pair.
-				std::array bindings{
-					Binding{.slot = 0u, .value = Value::FromCombined(view, sampler) }
-				};
-				return logical_device.CreatePipelineResourceGroup(pipeline, 0u, bindings);
+				if constexpr (std::same_as<LogicalDevice, fyuu_rhi::WebGPULogicalDevice>) {
+					std::array bindings{
+						Binding{.slot = 0u, .value = Value::FromView(view) },
+						Binding{.slot = 1u, .value = Value::FromSampler(sampler) }
+					};
+					return logical_device.CreatePipelineResourceGroup(pipeline, 0u, bindings);
+				}
+				else {
+					std::array bindings{
+						Binding{.slot = 0u, .value = Value::FromCombined(view, sampler) }
+					};
+					return logical_device.CreatePipelineResourceGroup(pipeline, 0u, bindings);
+				}
 			}
 		};
 
