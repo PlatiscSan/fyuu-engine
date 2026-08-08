@@ -72,52 +72,49 @@ namespace fyuu_rhi::execution::detail {
 	}
 #endif
 
-	std::deque<CompletionTask> completion_tasks;
-	std::mutex completion_mutex;
-	std::condition_variable completion_condition;
-
-	void RunCompletionService(std::stop_token stop_token) {
-		std::deque<CompletionTask> current;
-		std::deque<CompletionTask> pending;
-		while (!stop_token.stop_requested()) {
-			{
-				std::unique_lock<std::mutex> lock(completion_mutex);
-				completion_condition.wait_for(
-					lock,
-					std::chrono::milliseconds(1u)
-				);
-				current.swap(completion_tasks);
-			}
-			if (stop_token.stop_requested()) {
-				break;
-			}
-			while (!current.empty()) {
-				auto task = std::move(current.front());
-				current.pop_front();
-				if (!task()) {
-					pending.emplace_back(std::move(task));
-				}
-			}
-			if (!pending.empty()) {
-				std::unique_lock<std::mutex> lock(completion_mutex);
-				while (!pending.empty()) {
-					completion_tasks.emplace_back(std::move(pending.front()));
-					pending.pop_front();
-				}
-			}
-		}
-	}
-
 	void EnqueueCompletion(CompletionTask&& task) {
-		// Function-local initialization starts exactly one worker on first use. Its
-		// destructor runs before the namespace-scope queue primitives are destroyed.
-		static std::jthread worker(RunCompletionService);
+		static std::deque<CompletionTask> tasks;
+		static std::mutex mutex;
+		static std::condition_variable condition;
+		static std::jthread worker(
+			[](std::stop_token stop_token) {
+				std::deque<CompletionTask> current;
+				std::deque<CompletionTask> pending;
+				while (!stop_token.stop_requested()) {
+					{
+						std::unique_lock<std::mutex> lock(mutex);
+						condition.wait_for(
+							lock,
+							std::chrono::milliseconds(1u)
+						);
+						current.swap(tasks);
+					}
+					if (stop_token.stop_requested()) {
+						break;
+					}
+					while (!current.empty()) {
+						auto current_task = std::move(current.front());
+						current.pop_front();
+						if (!current_task()) {
+							pending.emplace_back(std::move(current_task));
+						}
+					}
+					if (!pending.empty()) {
+						std::unique_lock<std::mutex> lock(mutex);
+						while (!pending.empty()) {
+							tasks.emplace_back(std::move(pending.front()));
+							pending.pop_front();
+						}
+					}
+				}
+			}
+		);
 		(void)worker;
 		{
-			std::unique_lock<std::mutex> lock(completion_mutex);
-			completion_tasks.emplace_back(std::move(task));
+			std::unique_lock<std::mutex> lock(mutex);
+			tasks.emplace_back(std::move(task));
 		}
-		completion_condition.notify_one();
+		condition.notify_one();
 	}
 
 }
