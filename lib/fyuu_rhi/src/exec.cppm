@@ -45,9 +45,7 @@ import :sampler;
 import :pipeline;
 export import :execution_types;
 
-namespace {
-	using namespace fyuu_rhi;
-	using namespace fyuu_rhi::execution;
+namespace fyuu_rhi::execution::detail {
 	/// A task returns false while its GPU token is pending and true after it has
 	/// delivered one receiver completion. Capturing the operation keeps all bound
 	/// move-only RHI objects alive without a type-erased completion context class.
@@ -121,6 +119,12 @@ namespace {
 		}
 		completion_condition.notify_one();
 	}
+
+}
+
+namespace {
+	using namespace fyuu_rhi;
+	using namespace fyuu_rhi::execution;
 
 	bool CanRead(AccessMode mode) noexcept {
 		return mode == AccessMode::Read || mode == AccessMode::ReadWrite;
@@ -1340,7 +1344,7 @@ namespace fyuu_rhi::execution {
 								SetStopped(std::move(m_context));
 								return;
 							}
-							EnqueueCompletion(MakeCompletionTask(
+							detail::EnqueueCompletion(detail::MakeCompletionTask(
 								[operation = std::move(m_context),
 									token = std::move(token)]() mutable noexcept {
 									if (!token.Poll()) {
