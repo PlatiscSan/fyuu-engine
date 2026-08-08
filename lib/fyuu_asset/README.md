@@ -66,6 +66,8 @@ auto restored = weak.Lock();
 
 `Find` 只查询当前已加载资产，不访问磁盘。
 
+`asset->Save()` 返回 `plastic::concurrency::SerialTask<void>`，用于观察异步保存是否完成及其异常，同时不会卸载资产。调用 `Wait()` 会等待该保存任务的完成通知，并在保存失败时抛出异常。异步任务需要独立数据快照，因此 `Save()` 要求资产数据类型可复制。任务完成前必须保留返回的协程句柄。
+
 ### 生命周期与自动保存
 
 最后一个强引用释放时：
@@ -132,6 +134,7 @@ static T Deserialize(std::filesystem::path const& json_path);
 | `Pipeline` | 图形/计算类型、Shader UUID 和入口点 | JSON |
 | `Mesh` | 顶点步长、顶点字节、索引格式、索引字节 | JSON + `.bin` |
 | `Material` | Pipeline UUID、数值参数、Bitmap UUID 绑定 | JSON |
+| `Scene` | 实体层级、Transform、Mesh/Material UUID 引用 | JSON |
 
 二进制数据统一使用 `std::vector<std::byte>`。数据含义由格式和元数据决定，不会转换成 JSON 数字数组。
 
@@ -225,6 +228,8 @@ auto restored = weak.Lock();
 
 `Find` only searches currently loaded assets. It does not access storage.
 
+`asset->Save()` returns `plastic::concurrency::SerialTask<void>` for observing asynchronous completion and errors without unloading the asset. `Wait()` waits for that save task's completion notification and throws if saving failed. The asynchronous task needs an independent snapshot, so `Save()` requires a copy-constructible data type. Keep the returned coroutine handle alive until completion.
+
 ## Lifetime and persistence
 
 When the final strong reference is released:
@@ -291,6 +296,7 @@ The path is the final `TypeName/uuid.json` path. A custom type may derive sideca
 | `Pipeline` | Graphics/compute type and Shader UUID entry points | JSON |
 | `Mesh` | Vertex stride, vertex bytes, index format, index bytes | JSON + `.bin` |
 | `Material` | Pipeline UUID, numeric parameters, Bitmap UUID bindings | JSON |
+| `Scene` | Entity hierarchy, transforms, and Mesh/Material UUID references | JSON |
 
 Binary payloads use `std::vector<std::byte>`. Their interpretation is determined by the corresponding format and metadata; bytes are never converted to JSON numbers.
 

@@ -1,6 +1,7 @@
 module;
 #include <version>
 #if !defined(__cpp_lib_modules)
+#include <atomic>
 #include <type_traits>
 #include <exception>
 #include <memory>
@@ -46,6 +47,7 @@ namespace plastic::concurrency {
 			// False once the coroutine completed and the machinery destroyed the frame;
 			// cleared in final_suspend so ~SerialTaskState skips a second destroy.
 			bool m_frame_alive = true;
+			std::atomic_bool completed = false;
 			// 0 = Running (monostate), 1 = Succeeded (StorageType<Storage>), 2 = Failed.
 			std::variant<std::monostate, StorageType<Storage>, std::exception_ptr> m_result;
 			// True while handle.resume() is on the stack, guarding against re-entrant
@@ -77,7 +79,7 @@ namespace plastic::concurrency {
 			Task get_return_object() {
 				auto shared = std::make_shared<SerialTaskState<Storage>>();
 				auto& promise = static_cast<Task::promise_type&>(*this);
-				shared->handle = std::coroutine_handle<Task::promise_type>::from_promise(promise);
+				shared->handle = std::coroutine_handle<typename Task::promise_type>::from_promise(promise);
 				state = shared.get();
 				return Task{shared};
 			}
@@ -91,6 +93,8 @@ namespace plastic::concurrency {
 			// to keep ~SerialTaskState from destroying the already-gone frame.
 			std::suspend_never final_suspend() noexcept {
 				state->m_frame_alive = false;
+				state->completed.store(true, std::memory_order_release);
+				state->completed.notify_all();
 				return {};
 			}
 
@@ -114,12 +118,23 @@ namespace plastic::concurrency {
 
 			// True once the coroutine reached a terminal state (succeeded or failed).
 			bool IsDone() const noexcept {
-				return m_state->m_result.index() != 0;
+				return m_state->completed.load(std::memory_order_acquire);
 			}
 
 			// True if the coroutine terminated by throwing.
 			bool HasException() const noexcept {
-				return m_state->m_result.index() == 2;
+				return IsDone() && m_state->m_result.index() == 2;
+			}
+
+			// Blocks until this task completes. Each task owns its notification state, so
+			// completing one task only wakes callers waiting for that task.
+			void Wait() const {
+				while (!m_state->completed.load(std::memory_order_acquire)) {
+					m_state->completed.wait(false, std::memory_order_acquire);
+				}
+				if (auto* error = std::get_if<std::exception_ptr>(&m_state->m_result)) {
+					std::rethrow_exception(*error);
+				}
 			}
 
 			// Advances the coroutine one step. No-op once succeeded; rethrows the stored

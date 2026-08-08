@@ -1,6 +1,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
+#include <coroutine>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -173,6 +174,28 @@ namespace {
 		loaded->Get().width = 2560;
 		loaded.reset();
 		WaitForWidth(path, previous_write, 2560);
+	}
+
+	void TestManualSave(std::filesystem::path const& root) {
+		auto asset = TestAsset::Create(
+			test_asset::Configuration{
+				.width = 800,
+				.name = "manual"
+			}
+		);
+		auto id = asset->GetID();
+		auto path = SerializedPath(root, id);
+		auto save = asset->Save();
+		save.Wait();
+		WaitForFile(path);
+
+		Require(TestAsset::Find(id).get() == asset.get(), "Manual save unloaded the asset");
+		std::ifstream input(path, std::ios::binary);
+		std::string document(
+			std::istreambuf_iterator<char>{ input },
+			std::istreambuf_iterator<char>{}
+		);
+		Require(document.contains("\"width\": 800"), "Manual save wrote incorrect data");
 	}
 
 	void TestSchedule() {
@@ -380,6 +403,50 @@ namespace {
 		);
 	}
 
+	void TestScene(std::filesystem::path const& root) {
+		using SceneAsset = fyuu_asset::Asset<fyuu_asset::Scene>;
+		auto root_id = TestAsset::Create(test_asset::Configuration{});
+		auto child_id = TestAsset::Create(test_asset::Configuration{});
+		auto mesh_id = TestAsset::Create(test_asset::Configuration{});
+		auto material_id = TestAsset::Create(test_asset::Configuration{});
+		auto scene = SceneAsset::Create(
+			std::vector<fyuu_asset::Scene::Entity>{
+				{
+					.id = root_id->GetID(),
+					.parent = {},
+					.name = "Root",
+					.translation = { 0.0f, 0.0f, 0.0f },
+					.rotation = { 0.0f, 0.0f, 0.0f, 1.0f },
+					.scale = { 1.0f, 1.0f, 1.0f },
+					.mesh = {},
+					.material = {}
+				},
+				{
+					.id = child_id->GetID(),
+					.parent = root_id->GetID(),
+					.name = "Child",
+					.translation = { 1.0f, 2.0f, 3.0f },
+					.mesh = mesh_id->GetID(),
+					.material = material_id->GetID()
+				}
+			}
+		);
+		auto id = scene->GetID();
+		auto path = root / "Scene" / (UUIDString(id) + ".json");
+		Require(scene->Get().Valid(), "Created scene is invalid");
+		scene.reset();
+		WaitForFile(path);
+
+		auto loaded = fyuu_asset::execution::AssetLoader{}.Load<fyuu_asset::Scene>(id);
+		Require(loaded->Get().Valid(), "Loaded scene is invalid");
+		Require(loaded->Get().entities.size() == 2, "Loaded scene entity count is incorrect");
+		Require(loaded->Get().entities[1].translation[2] == 3.0f, "Loaded scene transform is incorrect");
+		Require(
+			UUIDString(loaded->Get().entities[1].parent) == UUIDString(root_id->GetID()),
+			"Loaded scene hierarchy is incorrect"
+		);
+	}
+
 } // namespace
 
 int main() {
@@ -391,12 +458,14 @@ int main() {
 
 	try {
 		TestAssetLifetimeAndSerialization(root);
+		TestManualSave(root);
 		TestBitmap(root);
 		TestShader(root);
 		TestPipeline(root);
 		TestAudio(root);
 		TestMesh(root);
 		TestMaterial(root);
+		TestScene(root);
 		TestSchedule();
 	}
 	catch (std::exception const& exception) {

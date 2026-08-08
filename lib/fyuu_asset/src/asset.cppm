@@ -14,6 +14,7 @@ module;
 #include <type_traits>
 #include <atomic>
 #include <condition_variable>
+#include <coroutine>
 #include <format>
 #include <mutex>
 #include <thread>
@@ -32,6 +33,7 @@ module;
 #endif // defined(__cpp_lib_reflection)
 
 #endif // !defined(__cpp_lib_modules)
+#include <coroutine>
 #include <boost/intrusive_ptr.hpp>
 #include <boost/type_index.hpp>
 #include <boost/uuid.hpp>
@@ -50,19 +52,24 @@ import std;
 #endif // defined(__cpp_lib_modules)
 import :log;
 import :base_asset;
+import plastic.serial_task;
 
 namespace fs = std::filesystem;
 
-namespace fyuu_asset::detail {
-
+namespace {
 #if defined(__cpp_lib_move_only_function) && __cpp_lib_move_only_function >= 202110L
-	using SerializeTask = std::move_only_function<void()>;
+	using SerializeFunction = std::move_only_function<void()>;
+	using SerializeNotification = std::move_only_function<void(std::exception_ptr)>;
 #else
-	using SerializeTask = std::function<void()>;
+	using SerializeFunction = std::function<void()>;
+	using SerializeNotification = std::function<void(std::exception_ptr)>;
 #endif
+	struct SerializeTask {
+		SerializeFunction execute;
+		SerializeNotification notify;
+	};
 
-	template <class F>
-	void AsyncSerialize(F&& task) {
+	void ScheduleSerialize(SerializeTask&& task) {
 		using TaskQueue = std::deque<SerializeTask>;
 
 		// These objects are initialized synchronously, in declaration order. The
@@ -81,7 +88,9 @@ namespace fyuu_asset::detail {
 						condition.wait(
 							lock,
 							token,
-							[] { return !tasks.empty(); }
+							[]() {
+								return !tasks.empty();
+							}
 						);
 
 						// A stop request only terminates the thread after all tasks accepted
@@ -94,41 +103,88 @@ namespace fyuu_asset::detail {
 						tasks.pop_front();
 					}
 
+					std::exception_ptr error;
 					try {
-						current();
+						current.execute();
 					}
 					catch (std::exception const& ex) {
-						LOG_WARNING(
-							std::format("Some error occurred while serializing the asset: {}", ex.what())
-						)
+						error = std::current_exception();
+						if (fyuu_asset::log::Warning) {
+							fyuu_asset::log::Warning(
+								std::format(
+									"Some error occurred while serializing the asset: {}",
+									ex.what()
+								),
+								std::source_location::current()
+							);
+						}
 					}
 					catch (...) {
-						LOG_WARNING("An unknown error occurred while serializing the asset")
+						error = std::current_exception();
+						if (fyuu_asset::log::Warning) {
+							fyuu_asset::log::Warning(
+								"An unknown error occurred while serializing the asset",
+								std::source_location::current()
+							);
+						}
 					}
+					current.notify(std::move(error));
 				}
 			}
 		);
 
 		{
 			std::lock_guard<std::mutex> lock(mutex);
-#if defined(__cpp_lib_move_only_function) && __cpp_lib_move_only_function >= 202110L
-			tasks.emplace_back(std::forward<F>(task));
-#else
-			using Function = std::decay_t<F>;
-			if constexpr (std::is_copy_constructible_v<Function>) {
-				tasks.emplace_back(std::forward<F>(task));
-			}
-			else {
-				// C++20 std::function needs a copyable target. Only the fallback pays
-				// for shared storage when the submitted callable itself is move-only.
-				auto owned = std::make_shared<Function>(std::forward<F>(task));
-				tasks.emplace_back([owned = std::move(owned)]() mutable {
-					std::invoke(*owned);
-				});
-			}
-#endif
+			tasks.emplace_back(std::move(task));
 		}
 		condition.notify_one();
+	}
+}
+
+namespace fyuu_asset::detail {
+	void AsyncSerialize(SerializeFunction&& execute, SerializeNotification&& notify) {
+		ScheduleSerialize(
+			SerializeTask{ std::move(execute), std::move(notify) }
+		);
+	}
+
+	template <class F, class N>
+	void AsyncSerialize(F&& task, N&& notify) {
+#if defined(__cpp_lib_move_only_function) && __cpp_lib_move_only_function >= 202110L
+		AsyncSerialize(
+			SerializeFunction{ std::forward<F>(task) },
+			SerializeNotification{ std::forward<N>(notify) }
+		);
+#else
+		using Function = std::decay_t<F>;
+		using Notification = std::decay_t<N>;
+		SerializeFunction function;
+		SerializeNotification notification;
+		if constexpr (std::is_copy_constructible_v<Function>) {
+			function = std::forward<F>(task);
+		}
+		else {
+			// C++20 std::function needs a copyable target. Only the fallback pays
+			// for shared storage when the submitted callable itself is move-only.
+			auto owned = std::make_shared<Function>(std::forward<F>(task));
+			function = [owned = std::move(owned)]() mutable {
+				std::invoke(*owned);
+			};
+		}
+		if constexpr (std::is_copy_constructible_v<Notification>) {
+			notification = std::forward<N>(notify);
+		}
+		else {
+			auto owned = std::make_shared<Notification>(std::forward<N>(notify));
+			notification = [owned = std::move(owned)](std::exception_ptr error) mutable {
+				std::invoke(*owned, std::move(error));
+			};
+		}
+		AsyncSerialize(
+			std::move(function),
+			std::move(notification)
+		);
+#endif
 	}
 
 }
@@ -340,29 +396,19 @@ namespace fyuu_asset {
 			asset->m_strong.fetch_add(1, std::memory_order_relaxed);
 		}
 
-		friend void intrusive_ptr_release(Asset* asset) noexcept {
-			if (asset->m_strong.fetch_sub(1, std::memory_order_acq_rel) != 1) {
-				return;
-			}
-
-			// strong is now zero, so Weak::Lock() can no longer resurrect the payload.
-			// Remove the registry's Weak before destroying T. Unregister() compares the
-			// object address as well as the UUID, so an older instance cannot erase a
-			// newer instance that reused the same UUID.
-			Unregister(asset);
+		template <class N>
+		static void QueueSerialize(boost::uuids::uuid const& id, T data, N&& notify) {
 			detail::AsyncSerialize(
-				[id = asset->GetID(), data = std::move(asset->m_data)]() {
+				[id, data = std::move(data)]() mutable {
 					std::string structure_name;
 #if defined(__cpp_lib_reflection)
 					structure_name = std::meta::identifier_of(^^T);
 #else
 					structure_name = boost::typeindex::type_id<T>().pretty_name();
-					if (auto position = structure_name.rfind("::");
-						position != std::string::npos) {
+					if (auto position = structure_name.rfind("::"); position != std::string::npos) {
 						structure_name.erase(0, position + 2);
 					}
-					if (auto position = structure_name.find('[');
-						position != std::string::npos) {
+					if (auto position = structure_name.find('['); position != std::string::npos) {
 						structure_name.erase(position);
 					}
 #endif
@@ -381,65 +427,85 @@ namespace fyuu_asset {
 					fs::create_directories(path.parent_path());
 					if constexpr (requires { data.Serialize(path); }) {
 						data.Serialize(path);
-					}
-					else {
+					} else {
 						nlohmann::json serialized = nlohmann::json::object();
 #if defined(__cpp_lib_reflection)
-					constexpr auto context = std::meta::access_context::current();
-					template for (constexpr auto member : std::define_static_array(
-						std::meta::nonstatic_data_members_of(^^T, context))) {
-						if constexpr (std::meta::has_identifier(member)) {
-							serialized[std::meta::identifier_of(member)] = data.[:member:];
+						constexpr auto context = std::meta::access_context::current();
+						template for (constexpr auto member : std::define_static_array(
+										  std::meta::nonstatic_data_members_of(^^T, context))) {
+							if constexpr (std::meta::has_identifier(member)) {
+								serialized[std::meta::identifier_of(member)] = data.[:member:];
+							}
 						}
-					}
 #else
-					using Members = boost::describe::describe_members<
-						T,
-						boost::describe::mod_public
-					>;
-					boost::mp11::mp_for_each<Members>(
-						[&](auto member) {
-							serialized[member.name] = data.*member.pointer;
-						}
-					);
-#endif
-
-					auto temporary = path;
-					temporary += ".tmp";
-
-					{
-						std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
-						if (!output) {
-							throw std::runtime_error(
-								std::format("Failed to open asset file '{}'", temporary.string())
-							);
-						}
-						output << serialized.dump(2);
-						output.flush();
-						if (!output) {
-							throw std::runtime_error(
-								std::format("Failed to write asset file '{}'", temporary.string())
-							);
-						}
-					}
-
-					std::error_code error;
-					fs::rename(temporary, path, error);
-					if (error) {
-						fs::remove(path, error);
-						error.clear();
-						fs::rename(temporary, path, error);
-					}
-					if (error) {
-						throw std::runtime_error(
-							std::format(
-								"Failed to publish asset file '{}': {}",
-								path.string(),
-								error.message()
-							)
+						using Members =
+							boost::describe::describe_members<T, boost::describe::mod_public>;
+						boost::mp11::mp_for_each<Members>(
+							[&](auto member) {
+								serialized[member.name] = data.*member.pointer;
+							}
 						);
+#endif
+						auto temporary = path;
+						temporary += ".tmp";
+
+						{
+							std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+							if (!output) {
+								throw std::runtime_error(
+									std::format(
+										"Failed to open asset file '{}'",
+										temporary.string()
+									)
+								);
+							}
+							output << serialized.dump(2);
+							output.flush();
+							if (!output) {
+								throw std::runtime_error(
+									std::format(
+										"Failed to write asset file '{}'",
+										temporary.string()
+									)
+								);
+							}
+						}
+
+						std::error_code error;
+						fs::rename(temporary, path, error);
+						if (error) {
+							fs::remove(path, error);
+							error.clear();
+							fs::rename(temporary, path, error);
+						}
+						if (error) {
+							throw std::runtime_error(
+								std::format(
+									"Failed to publish asset file '{}': {}", path.string(),
+									error.message()
+								)
+							);
+						}
 					}
-					}
+				},
+				std::forward<N>(notify)
+			);
+		}
+
+		friend void intrusive_ptr_release(Asset* asset) noexcept {
+			if (asset->m_strong.fetch_sub(1, std::memory_order_acq_rel) != 1) {
+				return;
+			}
+
+			// strong is now zero, so Weak::Lock() can no longer resurrect the payload.
+			// Remove the registry's Weak before destroying T. Unregister() compares the
+			// object address as well as the UUID, so an older instance cannot erase a
+			// newer instance that reused the same UUID.
+			Unregister(asset);
+			QueueSerialize(
+				asset->GetID(),
+				std::move(asset->m_data),
+				[](std::exception_ptr) noexcept {
 				}
 			);
 			asset->m_data.~T();
@@ -449,6 +515,46 @@ namespace fyuu_asset {
 			if (asset->m_weak.fetch_sub(1, std::memory_order_acq_rel) == 1) {
 				delete asset;
 			}
+		}
+
+	public:
+		[[nodiscard]] plastic::concurrency::SerialTask<void> Save() const
+			requires std::copy_constructible<T> {
+			struct SaveAwaiter {
+				Asset const* asset;
+				std::exception_ptr error;
+
+				[[nodiscard]] bool await_ready() const noexcept {
+					return false;
+				}
+
+				void await_suspend(std::coroutine_handle<> continuation) {
+					Asset::QueueSerialize(
+						asset->m_id,
+						asset->m_data,
+						[this, continuation](std::exception_ptr result) mutable noexcept {
+							error = std::move(result);
+							// This resumes Save() on the asset writer thread. Save() currently only
+							// publishes its result and finishes; code awaiting Save() must schedule
+							// itself back onto the required thread before doing thread-bound work.
+							continuation.resume();
+						}
+					);
+				}
+
+				void await_resume() {
+					if (error) {
+						std::rethrow_exception(error);
+					}
+				}
+			};
+
+			// SaveAwaiter suspends this coroutine until serialization finishes. Its
+			// continuation is resumed directly by the asset writer thread.
+			co_await SaveAwaiter{
+				.asset = this,
+				.error = {}
+			};
 		}
 	};
 
