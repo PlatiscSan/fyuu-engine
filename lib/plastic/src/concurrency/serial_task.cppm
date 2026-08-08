@@ -180,7 +180,7 @@ namespace plastic::concurrency {
 		}
 	};
 
-	export template <> class SerialTask<void> : public detail::SerialTaskBase<void> {
+	template <> class SerialTask<void> : public detail::SerialTaskBase<void> {
 	public:
 		struct promise_type : detail::PromiseBase<void, SerialTask<void>> {
 			void return_void() {

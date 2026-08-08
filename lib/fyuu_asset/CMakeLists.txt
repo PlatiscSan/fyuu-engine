@@ -18,6 +18,7 @@ find_package(Boost REQUIRED COMPONENTS lockfree)
 find_package(Boost REQUIRED COMPONENTS pool)
 find_package(Boost REQUIRED COMPONENTS hash2)
 find_package(Boost REQUIRED COMPONENTS bimap)
+find_package(Boost REQUIRED COMPONENTS describe)
 
 # parallel programming
 find_package(PkgConfig REQUIRED)
@@ -74,6 +75,7 @@ target_link_libraries(${PROJECT_NAME}
 		Boost::pool
 		Boost::hash2
 		Boost::bimap
+		Boost::describe
 		# parallel programming
 		TBB::tbb TBB::tbbmalloc TBB::tbbbind_2_5 TBB::tbbmalloc_proxy
 		#-- serialization
