@@ -180,6 +180,17 @@ public:
 		return true;
 	}
 
+	bool Load(fyuu_engine::SceneAsset::ManagedAsset&& asset) {
+		if (m_save || !asset) {
+			return false;
+		}
+		m_asset = std::move(asset);
+		m_save_error.clear();
+		m_dirty = false;
+		m_changed_during_save = false;
+		return true;
+	}
+
 	[[nodiscard]] Snapshot Capture() const {
 		return {
 			.scene = m_asset->Get(),

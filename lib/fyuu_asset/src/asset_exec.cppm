@@ -108,9 +108,9 @@ namespace fyuu_asset::execution::detail {
 	}
 
 #if defined(__cpp_lib_move_only_function) && __cpp_lib_move_only_function >= 202110L
-	using AssetTask = std::move_only_function<void(std::stop_token)>;
+	using AssetTask = std::move_only_function<void(std::stop_token const&)>;
 #else
-	using AssetTask = std::packaged_task<void(std::stop_token)>;
+	using AssetTask = std::packaged_task<void(std::stop_token const&)>;
 #endif
 
 	void ScheduleAssetTask(AssetTask&& submitted) {
@@ -120,7 +120,7 @@ namespace fyuu_asset::execution::detail {
 		static std::mutex mutex;
 		static std::condition_variable_any condition;
 		static std::jthread worker(
-			[](std::stop_token token) noexcept {
+			[](std::stop_token const& token) noexcept {
 				while (!token.stop_requested()) {
 					AssetTask task;
 					{
@@ -167,7 +167,7 @@ private:
 		void start() noexcept {
 #if defined(__cpp_lib_senders) && __cpp_lib_senders >= 202406L
 			detail::AssetTask task = [receiver = std::move(m_receiver)](
-				std::stop_token token
+				std::stop_token const& token
 			) mutable noexcept {
 				auto stopped = token.stop_requested();
 				if constexpr (requires {
@@ -184,7 +184,7 @@ private:
 			};
 #else
 			detail::AssetTask task = [receiver = std::move(m_receiver)](
-				std::stop_token token
+				std::stop_token const& token
 			) mutable noexcept {
 				auto stopped = token.stop_requested();
 				if constexpr (requires { receiver.get_env().get_stop_token(); }) {

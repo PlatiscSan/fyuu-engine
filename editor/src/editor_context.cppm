@@ -95,6 +95,17 @@ struct EditorContext {
 		return true;
 	}
 
+	bool LoadScene(fyuu_engine::SceneAsset::ManagedAsset&& asset) {
+		if (!scene.Load(std::move(asset))) {
+			return false;
+		}
+		selected_entity = {};
+		m_pending_edit.reset();
+		m_undo.clear();
+		m_redo.clear();
+		return true;
+	}
+
 private:
 	[[nodiscard]] Snapshot Capture() const {
 		return {

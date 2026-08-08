@@ -80,6 +80,7 @@ namespace fyuu_editor {
 		UpdateSave();
 		ProcessShortcuts();
         DrawMainMenu();
+		DrawDocumentPopups();
 			DrawDefaultLayout();
 			if (m_context.show_demo_window) {
 				ImGui::ShowDemoWindow(&m_context.show_demo_window);
@@ -99,10 +100,16 @@ namespace fyuu_editor {
 					"New Scene",
 					"Ctrl+N",
 					false,
-					!m_context.scene.Dirty() && !m_context.scene.Saving())) {
-					NewScene();
+					!m_context.scene.Saving())) {
+					RequestNewScene();
 				}
-				ImGui::MenuItem("Open Scene...", "Ctrl+O", false, false);
+				if (ImGui::MenuItem(
+					"Open Scene...",
+					"Ctrl+O",
+					false,
+					m_asset_store && !m_context.scene.Saving())) {
+					OpenSceneBrowser();
+				}
 				if (ImGui::MenuItem(
 					"Save Scene",
 					"Ctrl+S",
@@ -151,9 +158,11 @@ namespace fyuu_editor {
 		else if (ImGui::IsKeyPressed(ImGuiKey_S, false)) {
 			SaveScene();
 		}
-		else if (ImGui::IsKeyPressed(ImGuiKey_N, false)
-			&& !m_context.scene.Dirty()) {
-			NewScene();
+		else if (ImGui::IsKeyPressed(ImGuiKey_N, false)) {
+			RequestNewScene();
+		}
+		else if (ImGui::IsKeyPressed(ImGuiKey_O, false)) {
+			OpenSceneBrowser();
 		}
 	}
 
@@ -177,9 +186,18 @@ namespace fyuu_editor {
 		switch (m_context.scene.UpdateSave()) {
 			case EditorScene::SaveResult::Succeeded:
 				m_context.Log("Scene saved");
+				if (m_execute_document_action_after_save && !m_context.scene.Dirty()) {
+					m_execute_document_action_after_save = false;
+					ExecutePendingDocumentAction();
+				}
+				else if (m_execute_document_action_after_save) {
+					m_execute_document_action_after_save = false;
+					m_open_save_confirmation = true;
+				}
 				break;
 			case EditorScene::SaveResult::Failed:
 				m_context.Log("Scene save failed: " + m_context.scene.SaveError());
+				m_execute_document_action_after_save = false;
 				break;
 			case EditorScene::SaveResult::None:
 				break;
@@ -189,6 +207,113 @@ namespace fyuu_editor {
 	void NewScene() {
 		if (m_context.NewScene()) {
 			m_context.Log("Created new scene");
+		}
+	}
+
+	void OpenSceneBrowser() {
+		if (!m_asset_store || m_context.scene.Saving()) {
+			return;
+		}
+		try {
+			m_scene_assets = fyuu_engine::DiscoverScenes(*m_asset_store);
+			m_open_scene_browser = true;
+		}
+		catch (std::exception const& exception) {
+			m_context.Log("Failed to enumerate scenes: " + std::string{ exception.what() });
+		}
+	}
+
+	void RequestNewScene() {
+		if (m_context.scene.Saving()) {
+			return;
+		}
+		if (!m_context.scene.Dirty()) {
+			NewScene();
+			return;
+		}
+		m_pending_document_action = PendingDocumentAction::New;
+		m_open_save_confirmation = true;
+	}
+
+	void RequestOpenScene(fyuu_asset::UUID const& id) {
+		m_pending_scene = id;
+		if (!m_context.scene.Dirty()) {
+			OpenPendingScene();
+			return;
+		}
+		m_pending_document_action = PendingDocumentAction::Open;
+		m_open_save_confirmation = true;
+	}
+
+	void ExecutePendingDocumentAction() {
+		auto const action = m_pending_document_action;
+		m_pending_document_action = PendingDocumentAction::None;
+		if (action == PendingDocumentAction::New) {
+			NewScene();
+		}
+		else if (action == PendingDocumentAction::Open) {
+			OpenPendingScene();
+		}
+	}
+
+	void OpenPendingScene() {
+		if (!m_asset_store) {
+			return;
+		}
+		try {
+			auto asset = fyuu_engine::LoadScene(*m_asset_store, m_pending_scene);
+			if (m_context.LoadScene(std::move(asset))) {
+				m_context.Log("Opened scene " + fyuu_asset::UUIDToString(m_pending_scene));
+			}
+		}
+		catch (std::exception const& exception) {
+			m_context.Log("Failed to open scene: " + std::string{ exception.what() });
+		}
+		m_pending_document_action = PendingDocumentAction::None;
+	}
+
+	void DrawDocumentPopups() {
+		if (m_open_scene_browser) {
+			ImGui::OpenPopup("Open Scene");
+			m_open_scene_browser = false;
+		}
+		if (ImGui::BeginPopupModal("Open Scene", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+			if (m_scene_assets.empty()) {
+				ImGui::TextDisabled("No scene assets found");
+			}
+			for (auto const& scene : m_scene_assets) {
+				if (ImGui::Selectable(scene.name.c_str())) {
+					RequestOpenScene(scene.id);
+					ImGui::CloseCurrentPopup();
+				}
+			}
+			if (ImGui::Button("Cancel")) {
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::EndPopup();
+		}
+
+		if (m_open_save_confirmation) {
+			ImGui::OpenPopup("Save current scene?");
+			m_open_save_confirmation = false;
+		}
+		if (ImGui::BeginPopupModal(
+			"Save current scene?",
+			nullptr,
+			ImGuiWindowFlags_AlwaysAutoResize)) {
+			ImGui::TextUnformatted("The current scene has unsaved changes.");
+			if (ImGui::Button("Save and Continue")) {
+				SaveScene();
+				m_execute_document_action_after_save = m_context.scene.Saving();
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Cancel")) {
+				m_pending_document_action = PendingDocumentAction::None;
+				m_execute_document_action_after_save = false;
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::EndPopup();
 		}
 	}
 
@@ -219,8 +344,20 @@ namespace fyuu_editor {
 			DrawConsolePanel(m_context);
 		}
 
+		enum class PendingDocumentAction {
+			None,
+			New,
+			Open
+		};
+
 		std::unique_ptr<fyuu_engine::AssetStore> m_asset_store;
 		EditorContext m_context;
+		std::vector<fyuu_engine::SceneAssetEntry> m_scene_assets;
+		fyuu_asset::UUID m_pending_scene;
+		PendingDocumentAction m_pending_document_action = PendingDocumentAction::None;
+		bool m_open_scene_browser = false;
+		bool m_open_save_confirmation = false;
+		bool m_execute_document_action_after_save = false;
 	};
 
 	int RunApplication(int argc, char** argv) {

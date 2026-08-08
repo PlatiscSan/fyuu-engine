@@ -61,10 +61,10 @@ namespace fs = std::filesystem;
 namespace {
 #if defined(__cpp_lib_move_only_function) && __cpp_lib_move_only_function >= 202110L
 	using SerializeFunction = std::move_only_function<void()>;
-	using SerializeNotification = std::move_only_function<void(std::exception_ptr)>;
+	using SerializeNotification = std::move_only_function<void(std::exception_ptr&&)>;
 #else
 	using SerializeFunction = std::function<void()>;
-	using SerializeNotification = std::function<void(std::exception_ptr)>;
+	using SerializeNotification = std::function<void(std::exception_ptr&&)>;
 #endif
 	struct SerializeTask {
 		SerializeFunction execute;
@@ -81,7 +81,7 @@ namespace {
 		static std::mutex mutex;
 		static std::condition_variable_any condition;
 		static std::jthread ser_thread(
-			[](std::stop_token token) noexcept {
+			[](std::stop_token const& token) noexcept {
 				while (!token.stop_requested()) {
 					SerializeTask current;
 
@@ -178,7 +178,7 @@ namespace fyuu_asset::detail {
 		}
 		else {
 			auto owned = std::make_shared<Notification>(std::forward<N>(notify));
-			notification = [owned = std::move(owned)](std::exception_ptr error) mutable {
+			notification = [owned = std::move(owned)](std::exception_ptr&& error) mutable {
 				std::invoke(*owned, std::move(error));
 			};
 		}
@@ -398,100 +398,94 @@ namespace fyuu_asset {
 			asset->m_strong.fetch_add(1, std::memory_order_relaxed);
 		}
 
-		template <class N>
-		static void QueueSerialize(UUID const& id, T data, N&& notify) {
-			detail::AsyncSerialize(
-				[id, data = std::move(data)]() mutable {
-					std::string structure_name;
+		static void SerializeAsset(UUID const& id, T const& data) {
+			std::string structure_name;
 #if defined(__cpp_lib_reflection)
-					structure_name = std::meta::identifier_of(^^T);
+			structure_name = std::meta::identifier_of(^^T);
 #else
-					structure_name = boost::typeindex::type_id<T>().pretty_name();
-					if (auto position = structure_name.rfind("::"); position != std::string::npos) {
-						structure_name.erase(0, position + 2);
-					}
-					if (auto position = structure_name.find('['); position != std::string::npos) {
-						structure_name.erase(position);
-					}
+			structure_name = boost::typeindex::type_id<T>().pretty_name();
+			if (auto position = structure_name.rfind("::"); position != std::string::npos) {
+				structure_name.erase(0, position + 2);
+			}
+			if (auto position = structure_name.find('['); position != std::string::npos) {
+				structure_name.erase(position);
+			}
 #endif
-					std::erase_if(
-						structure_name,
-						[](char character) {
-							return !((character >= 'a' && character <= 'z') ||
-								(character >= 'A' && character <= 'Z') ||
-								(character >= '0' && character <= '9') ||
-								character == '_');
-						}
-					);
-					auto path = GetPath(
-						fs::path{ structure_name } / (UUIDToString(id) + ".json")
-					);
-					fs::create_directories(path.parent_path());
-					if constexpr (requires { data.Serialize(path); }) {
-						data.Serialize(path);
-					} else {
-						nlohmann::json serialized = nlohmann::json::object();
-#if defined(__cpp_lib_reflection)
-						constexpr auto context = std::meta::access_context::current();
-						template for (constexpr auto member : std::define_static_array(
-										  std::meta::nonstatic_data_members_of(^^T, context))) {
-							if constexpr (std::meta::has_identifier(member)) {
-								serialized[std::meta::identifier_of(member)] = data.[:member:];
-							}
-						}
-#else
-						using Members =
-							boost::describe::describe_members<T, boost::describe::mod_public>;
-						boost::mp11::mp_for_each<Members>(
-							[&](auto member) {
-								serialized[member.name] = data.*member.pointer;
-							}
-						);
-#endif
-						auto temporary = path;
-						temporary += ".tmp";
-
-						{
-							std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
-							if (!output) {
-								throw std::runtime_error(
-									std::format(
-										"Failed to open asset file '{}'",
-										temporary.string()
-									)
-								);
-							}
-							output << serialized.dump(2);
-							output.flush();
-							if (!output) {
-								throw std::runtime_error(
-									std::format(
-										"Failed to write asset file '{}'",
-										temporary.string()
-									)
-								);
-							}
-						}
-
-						std::error_code error;
-						fs::rename(temporary, path, error);
-						if (error) {
-							fs::remove(path, error);
-							error.clear();
-							fs::rename(temporary, path, error);
-						}
-						if (error) {
-							throw std::runtime_error(
-								std::format(
-									"Failed to publish asset file '{}': {}", path.string(),
-									error.message()
-								)
-							);
-						}
-					}
-				},
-				std::forward<N>(notify)
+			std::erase_if(
+				structure_name,
+				[](char character) {
+					return !((character >= 'a' && character <= 'z') ||
+						(character >= 'A' && character <= 'Z') ||
+						(character >= '0' && character <= '9') ||
+						character == '_');
+				}
 			);
+			auto path = GetPath(
+				fs::path{ structure_name } / (UUIDToString(id) + ".json")
+			);
+			fs::create_directories(path.parent_path());
+			if constexpr (requires { data.Serialize(path); }) {
+				data.Serialize(path);
+			} else {
+				nlohmann::json serialized = nlohmann::json::object();
+#if defined(__cpp_lib_reflection)
+				constexpr auto context = std::meta::access_context::current();
+				template for (constexpr auto member : std::define_static_array(
+								  std::meta::nonstatic_data_members_of(^^T, context))) {
+					if constexpr (std::meta::has_identifier(member)) {
+						serialized[std::meta::identifier_of(member)] = data.[:member:];
+					}
+				}
+#else
+				using Members =
+					boost::describe::describe_members<T, boost::describe::mod_public>;
+				boost::mp11::mp_for_each<Members>(
+					[&](auto member) {
+						serialized[member.name] = data.*member.pointer;
+					}
+				);
+#endif
+				auto temporary = path;
+				temporary += ".tmp";
+
+				{
+					std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+					if (!output) {
+						throw std::runtime_error(
+							std::format(
+								"Failed to open asset file '{}'",
+								temporary.string()
+							)
+						);
+					}
+					output << serialized.dump(2);
+					output.flush();
+					if (!output) {
+						throw std::runtime_error(
+							std::format(
+								"Failed to write asset file '{}'",
+								temporary.string()
+							)
+						);
+					}
+				}
+
+				std::error_code error;
+				fs::rename(temporary, path, error);
+				if (error) {
+					fs::remove(path, error);
+					error.clear();
+					fs::rename(temporary, path, error);
+				}
+				if (error) {
+					throw std::runtime_error(
+						std::format(
+							"Failed to publish asset file '{}': {}", path.string(),
+							error.message()
+						)
+					);
+				}
+			}
 		}
 
 		friend void intrusive_ptr_release(Asset* asset) noexcept {
@@ -504,10 +498,11 @@ namespace fyuu_asset {
 			// object address as well as the UUID, so an older instance cannot erase a
 			// newer instance that reused the same UUID.
 			Unregister(asset);
-			QueueSerialize(
-				asset->GetID(),
-				std::move(asset->m_data),
-				[](std::exception_ptr) noexcept {
+			detail::AsyncSerialize(
+				[id = asset->GetID(), data = std::move(asset->m_data)]() {
+					SerializeAsset(id, data);
+				},
+				[](std::exception_ptr&&) noexcept {
 				}
 			);
 			asset->m_data.~T();
@@ -531,10 +526,11 @@ namespace fyuu_asset {
 				}
 
 				void await_suspend(std::coroutine_handle<> continuation) {
-					Asset::QueueSerialize(
-						asset->m_id,
-						asset->m_data,
-						[this, continuation](std::exception_ptr result) mutable noexcept {
+					detail::AsyncSerialize(
+						[id = asset->m_id, data = asset->m_data]() {
+							Asset::SerializeAsset(id, data);
+						},
+						[this, continuation](std::exception_ptr&& result) mutable noexcept {
 							error = std::move(result);
 							// This resumes Save() on the asset writer thread. Save() currently only
 							// publishes its result and finishes; code awaiting Save() must schedule
