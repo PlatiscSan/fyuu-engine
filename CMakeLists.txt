@@ -108,4 +108,5 @@ add_subdirectory(src)
 
 if(BUILD_TESTING)
     add_subdirectory("test/hello_triangle")
+    add_subdirectory("test/fyuu_asset")
 endif()

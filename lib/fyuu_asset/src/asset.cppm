@@ -1,6 +1,7 @@
 module;
 #include <version>
 #if !defined(__cpp_lib_modules)
+#include <cstddef>
 #include <utility>
 #include <exception>
 #include <filesystem>
@@ -8,6 +9,7 @@ module;
 #include <memory>
 #include <unordered_map>
 #include <deque>
+#include <vector>
 
 #include <type_traits>
 #include <atomic>
@@ -51,9 +53,7 @@ import :base_asset;
 
 namespace fs = std::filesystem;
 
-namespace {
-
-	using namespace fyuu_asset;
+namespace fyuu_asset::detail {
 
 #if defined(__cpp_lib_move_only_function) && __cpp_lib_move_only_function >= 202110L
 	using SerializeTask = std::move_only_function<void()>;
@@ -134,7 +134,7 @@ namespace {
 }
 
 namespace fyuu_asset {
-	namespace execution {
+	export namespace execution {
 		class AssetLoader;
 	}
 
@@ -332,7 +332,7 @@ namespace fyuu_asset {
 		}
 
 		[[nodiscard]] decltype(auto) Get(this auto&& self) noexcept {
-			return self.m_data;
+			return (self.m_data);
 		}
 
 	private:
@@ -350,13 +350,41 @@ namespace fyuu_asset {
 			// object address as well as the UUID, so an older instance cannot erase a
 			// newer instance that reused the same UUID.
 			Unregister(asset);
-			AsyncSerialize(
+			detail::AsyncSerialize(
 				[id = asset->GetID(), data = std::move(asset->m_data)]() {
 					std::string structure_name;
-					nlohmann::json serialized = nlohmann::json::object();
-
 #if defined(__cpp_lib_reflection)
 					structure_name = std::meta::identifier_of(^^T);
+#else
+					structure_name = boost::typeindex::type_id<T>().pretty_name();
+					if (auto position = structure_name.rfind("::");
+						position != std::string::npos) {
+						structure_name.erase(0, position + 2);
+					}
+					if (auto position = structure_name.find('[');
+						position != std::string::npos) {
+						structure_name.erase(position);
+					}
+#endif
+					std::erase_if(
+						structure_name,
+						[](char character) {
+							return !((character >= 'a' && character <= 'z') ||
+								(character >= 'A' && character <= 'Z') ||
+								(character >= '0' && character <= '9') ||
+								character == '_');
+						}
+					);
+					auto path = GetPath(
+						fs::path{ structure_name } / (boost::uuids::to_string(id) + ".json")
+					);
+					fs::create_directories(path.parent_path());
+					if constexpr (requires { data.Serialize(path); }) {
+						data.Serialize(path);
+					}
+					else {
+						nlohmann::json serialized = nlohmann::json::object();
+#if defined(__cpp_lib_reflection)
 					constexpr auto context = std::meta::access_context::current();
 					template for (constexpr auto member : std::define_static_array(
 						std::meta::nonstatic_data_members_of(^^T, context))) {
@@ -365,12 +393,6 @@ namespace fyuu_asset {
 						}
 					}
 #else
-					structure_name = boost::typeindex::type_id<T>().pretty_name();
-					if (auto position = structure_name.rfind("::");
-						position != std::string::npos) {
-						structure_name.erase(0, position + 2);
-					}
-
 					using Members = boost::describe::describe_members<
 						T,
 						boost::describe::mod_public
@@ -381,10 +403,6 @@ namespace fyuu_asset {
 						}
 					);
 #endif
-					auto path = GetPath(
-						fs::path{ "conf" } / structure_name / (boost::uuids::to_string(id) + ".json")
-					);
-					fs::create_directories(path.parent_path());
 
 					auto temporary = path;
 					temporary += ".tmp";
@@ -420,6 +438,7 @@ namespace fyuu_asset {
 								error.message()
 							)
 						);
+					}
 					}
 				}
 			);

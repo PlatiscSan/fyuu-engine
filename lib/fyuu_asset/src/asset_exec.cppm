@@ -1,6 +1,7 @@
 module;
 #include <version>
 #if !defined(__cpp_lib_modules)
+#include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <condition_variable>
@@ -15,6 +16,7 @@ module;
 #include <stop_token>
 #include <thread>
 #include <utility>
+#include <vector>
 #include <concepts>
 #include <compare>
 #if defined(__cpp_lib_reflection)
@@ -37,7 +39,7 @@ import plastic.serial_task;
 import :asset;
 import :base_asset;
 
-namespace {
+namespace fyuu_asset::execution::detail {
 	template <class T>
 	T DeserializeAssetValue(nlohmann::json const& source) {
 		if constexpr (requires {
@@ -55,8 +57,17 @@ namespace {
 				std::meta::nonstatic_data_members_of(^^T, context))) {
 				if constexpr (std::meta::has_identifier(member)) {
 					using Member = std::remove_cvref_t<decltype(value.[:member:])>;
-					value.[:member:] = source.at(
-						std::meta::identifier_of(member)).template get<Member>();
+					if constexpr (std::same_as<Member, std::vector<std::byte>>) {
+						for (auto const& byte : source.at(std::meta::identifier_of(member))) {
+							value.[:member:].push_back(
+								static_cast<std::byte>(byte.template get<unsigned int>())
+							);
+						}
+					}
+					else {
+						value.[:member:] = source.at(
+							std::meta::identifier_of(member)).template get<Member>();
+					}
 				}
 			}
 			return value;
@@ -69,7 +80,16 @@ namespace {
 			using Members = boost::describe::describe_members<T, boost::describe::mod_public>;
 			boost::mp11::mp_for_each<Members>([&](auto member) {
 				using Member = std::remove_cvref_t<decltype(value.*member.pointer)>;
-				value.*member.pointer = source.at(member.name).template get<Member>();
+				if constexpr (std::same_as<Member, std::vector<std::byte>>) {
+					for (auto const& byte : source.at(member.name)) {
+						(value.*member.pointer).push_back(
+							static_cast<std::byte>(byte.template get<unsigned int>())
+						);
+					}
+				}
+				else {
+					value.*member.pointer = source.at(member.name).template get<Member>();
+				}
 			});
 			return value;
 		}
@@ -93,7 +113,7 @@ namespace {
 		static std::condition_variable_any condition;
 		static std::jthread worker(
 			[](std::stop_token token) noexcept {
-				for (;;) {
+				while (!token.stop_requested()) {
 					AssetTask task;
 					{
 						std::unique_lock lock(mutex);
@@ -137,55 +157,39 @@ private:
 #endif
 
 		void start() noexcept {
-			std::shared_ptr<Receiver> receiver;
-			try {
-				receiver = std::make_shared<Receiver>(std::move(m_receiver));
-				ScheduleAssetTask(AssetTask{ [receiver](std::stop_token token) mutable noexcept {
-					auto stopped = token.stop_requested();
 #if defined(__cpp_lib_senders) && __cpp_lib_senders >= 202406L
-					if constexpr (requires {
-						std::execution::get_stop_token(std::execution::get_env(*receiver));
-					}) {
-						stopped = stopped || std::execution::get_stop_token(
-							std::execution::get_env(*receiver)).stop_requested();
-					}
-#else
-					if constexpr (requires { receiver->get_env().get_stop_token(); }) {
-						stopped = stopped || receiver->get_env().get_stop_token().stop_requested();
-					}
-#endif
-					if (stopped) {
-#if defined(__cpp_lib_senders) && __cpp_lib_senders >= 202406L
-						std::execution::set_stopped(std::move(*receiver));
-#else
-						std::move(*receiver).set_stopped();
-#endif
-						return;
-					}
-#if defined(__cpp_lib_senders) && __cpp_lib_senders >= 202406L
-					std::execution::set_value(std::move(*receiver));
-#else
-					std::move(*receiver).set_value();
-#endif
-				} });
-			}
-			catch (...) {
-				auto error = std::current_exception();
-				if (receiver) {
-#if defined(__cpp_lib_senders) && __cpp_lib_senders >= 202406L
-					std::execution::set_error(std::move(*receiver), error);
-#else
-					std::move(*receiver).set_error(error);
-#endif
+			detail::AssetTask task = [receiver = std::move(m_receiver)](
+				std::stop_token token
+			) mutable noexcept {
+				auto stopped = token.stop_requested();
+				if constexpr (requires {
+					std::execution::get_stop_token(std::execution::get_env(receiver));
+				}) {
+					stopped = stopped || std::execution::get_stop_token(
+						std::execution::get_env(receiver)).stop_requested();
 				}
-				else {
-#if defined(__cpp_lib_senders) && __cpp_lib_senders >= 202406L
-					std::execution::set_error(std::move(m_receiver), error);
-#else
-					std::move(m_receiver).set_error(error);
-#endif
+				if (stopped) {
+					std::execution::set_stopped(std::move(receiver));
+					return;
 				}
-			}
+				std::execution::set_value(std::move(receiver));
+			};
+#else
+			detail::AssetTask task = [receiver = std::move(m_receiver)](
+				std::stop_token token
+			) mutable noexcept {
+				auto stopped = token.stop_requested();
+				if constexpr (requires { receiver.get_env().get_stop_token(); }) {
+					stopped = stopped || receiver.get_env().get_stop_token().stop_requested();
+				}
+				if (stopped) {
+					std::move(receiver).set_stopped();
+					return;
+				}
+				std::move(receiver).set_value();
+			};
+#endif
+			detail::ScheduleAssetTask(std::move(task));
 		}
 
 
@@ -207,7 +211,6 @@ private:
 			std::execution::set_stopped_t()
 		>;
 #endif
-
 		template <class T>
 		[[nodiscard]] typename Asset<T>::ManagedAsset Load(boost::uuids::uuid const& id) const {
 			if (auto loaded = Asset<T>::Find(id)) {
@@ -223,19 +226,39 @@ private:
 				position != std::string::npos) {
 				structure_name.erase(0, position + 2);
 			}
+			if (auto position = structure_name.find('[');
+				position != std::string::npos) {
+				structure_name.erase(position);
+			}
 #endif
+			std::erase_if(
+				structure_name,
+				[](char character) {
+					return !((character >= 'a' && character <= 'z') ||
+						(character >= 'A' && character <= 'Z') ||
+						(character >= '0' && character <= '9') ||
+						character == '_');
+				}
+			);
 
 			auto path = GetPath(
-				std::filesystem::path{ "conf" } / structure_name / (boost::uuids::to_string(id) + ".json")
+				std::filesystem::path{ structure_name } / (boost::uuids::to_string(id) + ".json")
 			);
-			std::ifstream input(path, std::ios::binary);
-			if (!input) {
-				throw std::runtime_error(std::format("Failed to open asset file '{}'", path.string()));
+			if constexpr (requires {
+				{ T::Deserialize(path) } -> std::same_as<T>;
+			}) {
+				return Asset<T>::CreateWithID(id, T::Deserialize(path));
 			}
+			else {
+				std::ifstream input(path, std::ios::binary);
+				if (!input) {
+					throw std::runtime_error(std::format("Failed to open asset file '{}'", path.string()));
+				}
 
-			nlohmann::json document;
-			input >> document;
-			return Asset<T>::CreateWithID(id, DeserializeAssetValue<T>(document));
+				nlohmann::json document;
+				document = nlohmann::json::parse(input);
+				return Asset<T>::CreateWithID(id, detail::DeserializeAssetValue<T>(document));
+			}
 		}
 
 		template <class Receiver>
