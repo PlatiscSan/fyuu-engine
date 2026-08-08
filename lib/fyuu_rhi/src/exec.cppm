@@ -48,6 +48,79 @@ export import :execution_types;
 namespace {
 	using namespace fyuu_rhi;
 	using namespace fyuu_rhi::execution;
+	/// A task returns false while its GPU token is pending and true after it has
+	/// delivered one receiver completion. Capturing the operation keeps all bound
+	/// move-only RHI objects alive without a type-erased completion context class.
+#if defined(__cpp_lib_move_only_function) && __cpp_lib_move_only_function >= 202110L
+	using CompletionTask = std::move_only_function<bool()>;
+
+	template <class Function>
+	CompletionTask MakeCompletionTask(Function&& function) {
+		return CompletionTask(std::forward<Function>(function));
+	}
+#else
+	using CompletionTask = std::function<bool()>;
+
+	template <class Function>
+	CompletionTask MakeCompletionTask(Function&& function) {
+		// C++20 std::function requires a copy-constructible target. Keep the
+		// move-only lambda in one shared allocation and copy only this small wrapper.
+		auto state = std::make_shared<std::remove_cvref_t<Function>>(
+			std::forward<Function>(function)
+		);
+		return [state = std::move(state)]() mutable {
+			return (*state)();
+		};
+	}
+#endif
+
+	std::deque<CompletionTask> completion_tasks;
+	std::mutex completion_mutex;
+	std::condition_variable completion_condition;
+
+	void RunCompletionService(std::stop_token stop_token) {
+		std::deque<CompletionTask> current;
+		std::deque<CompletionTask> pending;
+		while (!stop_token.stop_requested()) {
+			{
+				std::unique_lock<std::mutex> lock(completion_mutex);
+				completion_condition.wait_for(
+					lock,
+					std::chrono::milliseconds(1u)
+				);
+				current.swap(completion_tasks);
+			}
+			if (stop_token.stop_requested()) {
+				break;
+			}
+			while (!current.empty()) {
+				auto task = std::move(current.front());
+				current.pop_front();
+				if (!task()) {
+					pending.emplace_back(std::move(task));
+				}
+			}
+			if (!pending.empty()) {
+				std::unique_lock<std::mutex> lock(completion_mutex);
+				while (!pending.empty()) {
+					completion_tasks.emplace_back(std::move(pending.front()));
+					pending.pop_front();
+				}
+			}
+		}
+	}
+
+	void EnqueueCompletion(CompletionTask&& task) {
+		// Function-local initialization starts exactly one worker on first use. Its
+		// destructor runs before the namespace-scope queue primitives are destroyed.
+		static std::jthread worker(RunCompletionService);
+		(void)worker;
+		{
+			std::unique_lock<std::mutex> lock(completion_mutex);
+			completion_tasks.emplace_back(std::move(task));
+		}
+		completion_condition.notify_one();
+	}
 
 	bool CanRead(AccessMode mode) noexcept {
 		return mode == AccessMode::Read || mode == AccessMode::ReadWrite;
@@ -1000,117 +1073,6 @@ namespace fyuu_rhi::execution {
 			}
 		};
 
-		struct CompletionContext {
-			std::unique_ptr<OperationStateContext> operation;
-			CompletionToken token;
-
-			CompletionContext(
-				std::unique_ptr<OperationStateContext>&& operation_,
-				CompletionToken&& token_
-			) noexcept : operation(std::move(operation_)),
-				token(std::move(token_)) {
-
-			}
-
-			CompletionContext(CompletionContext const&) = delete;
-			CompletionContext& operator=(CompletionContext const&) = delete;
-			CompletionContext(CompletionContext&&) noexcept = default;
-			CompletionContext& operator=(CompletionContext&&) noexcept = default;
-			~CompletionContext() noexcept = default;
-		};
-
-		class CompletionService {
-			std::atomic<std::deque<CompletionContext>*> m_tasks = nullptr;
-			std::atomic<std::mutex*> m_mutex = nullptr;
-			std::atomic<std::condition_variable*> m_condition = nullptr;
-			std::jthread m_worker;
-
-			static void RunWorker(
-				std::stop_token stop_token,
-				CompletionService* service
-			) {
-				service->Run(stop_token);
-			}
-
-			void Run(std::stop_token stop_token) {
-				std::deque<CompletionContext> tasks;
-				std::deque<CompletionContext> current;
-				std::deque<CompletionContext> pending;
-				std::mutex mutex;
-				std::condition_variable condition;
-
-				m_mutex.store(&mutex, std::memory_order::relaxed);
-				m_condition.store(&condition, std::memory_order::relaxed);
-				m_tasks.store(&tasks, std::memory_order::release);
-				m_tasks.notify_one();
-
-				while (!stop_token.stop_requested()) {
-					{
-						std::unique_lock<std::mutex> lock(mutex);
-						condition.wait_for(lock, std::chrono::milliseconds(1u));
-						current.swap(tasks);
-					}
-					if (stop_token.stop_requested()) {
-						break;
-					}
-					while (!current.empty()) {
-						auto task = std::move(current.front());
-						current.pop_front();
-						if (task.token.Poll()) {
-							CommandGraphBindings::Complete(std::move(task));
-						}
-						else {
-							pending.emplace_back(std::move(task));
-						}
-					}
-					if (!pending.empty()) {
-						std::unique_lock<std::mutex> lock(mutex);
-						while (!pending.empty()) {
-							tasks.emplace_back(std::move(pending.front()));
-							pending.pop_front();
-						}
-					}
-				}
-
-				m_tasks.store(nullptr, std::memory_order::release);
-				m_mutex.store(nullptr, std::memory_order::release);
-				m_condition.store(nullptr, std::memory_order::release);
-			}
-
-			CompletionService()
-				: m_worker(&CompletionService::RunWorker, this) {
-				m_tasks.wait(nullptr, std::memory_order::acquire);
-
-			}
-
-		public:
-			CompletionService(CompletionService const&) = delete;
-			CompletionService& operator=(CompletionService const&) = delete;
-
-			~CompletionService() noexcept {
-				m_worker.request_stop();
-				if (auto condition = m_condition.load(std::memory_order::acquire)) {
-					condition->notify_one();
-				}
-			}
-
-			[[nodiscard]] static CompletionService& Instance() {
-				static CompletionService service;
-				return service;
-			}
-
-			void Enqueue(std::unique_ptr<OperationStateContext>&& operation, CompletionToken&& token) {
-				auto tasks = m_tasks.load(std::memory_order::acquire);
-				auto mutex = m_mutex.load(std::memory_order::acquire);
-				auto condition = m_condition.load(std::memory_order::acquire);
-				{
-					std::unique_lock<std::mutex> lock(*mutex);
-					tasks->emplace_back(std::move(operation), std::move(token));
-				}
-				condition->notify_one();
-			}
-		};
-
 		std::unique_ptr<OperationStateContext> m_context;
 
 		template <class Value>
@@ -1263,19 +1225,6 @@ namespace fyuu_rhi::execution {
 			);
 		}
 
-		static void Complete(CompletionContext&& context) noexcept {
-			if (auto error = context.token.Error()) {
-				SetError(std::move(context.operation), error);
-			}
-			else if (context.token.IsStopped()) {
-				SetStopped(std::move(context.operation));
-			}
-			else {
-				SetValue(std::move(context.operation));
-			}
-		}
-
-
 	public:
 		CommandGraphBindings(
 			SchedulerContext const& ctx,
@@ -1391,10 +1340,24 @@ namespace fyuu_rhi::execution {
 								SetStopped(std::move(m_context));
 								return;
 							}
-							CompletionService::Instance().Enqueue(
-								std::move(m_context),
-								std::move(token)
-							);
+							EnqueueCompletion(MakeCompletionTask(
+								[operation = std::move(m_context),
+									token = std::move(token)]() mutable noexcept {
+									if (!token.Poll()) {
+										return false;
+									}
+									if (auto error = token.Error()) {
+										SetError(std::move(operation), error);
+									}
+									else if (token.IsStopped()) {
+										SetStopped(std::move(operation));
+									}
+									else {
+										SetValue(std::move(operation));
+									}
+									return true;
+								}
+							));
 							};
 #if defined(__cpp_lib_senders) && __cpp_lib_senders >= 202406L
 						auto env = std::execution::get_env(m_context->receiver);
