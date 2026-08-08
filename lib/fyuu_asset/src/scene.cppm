@@ -11,10 +11,6 @@ module;
 #include <unordered_set>
 #include <vector>
 #endif
-#include <boost/uuid.hpp>
-#include <boost/uuid/string_generator.hpp>
-#include <boost/uuid/uuid_hash.hpp>
-#include <boost/uuid/uuid_io.hpp>
 #include <nlohmann/json.hpp>
 
 export module fyuu_asset:scene;
@@ -22,25 +18,37 @@ export module fyuu_asset:scene;
 #if defined(__cpp_lib_modules)
 import std;
 #endif
+import :uuid;
 
 export namespace fyuu_asset {
 
 	struct Scene {
 		struct Entity {
-			boost::uuids::uuid id;
-			boost::uuids::uuid parent;
+			UUID id;
+			UUID parent;
 			std::string name;
 			std::array<float, 3> translation{ 0.0f, 0.0f, 0.0f };
 			std::array<float, 4> rotation{ 0.0f, 0.0f, 0.0f, 1.0f };
 			std::array<float, 3> scale{ 1.0f, 1.0f, 1.0f };
-			boost::uuids::uuid mesh;
-			boost::uuids::uuid material;
+			UUID mesh;
+			UUID material;
 		};
 
 		std::vector<Entity> entities;
 
+		Entity& CreateEntity(std::string const& name) {
+			if (name.empty()) {
+				throw std::invalid_argument("Scene entity name cannot be empty");
+			}
+			entities.push_back(Entity{
+				.id = GenerateUUID(),
+				.name = name
+			});
+			return entities.back();
+		}
+
 		[[nodiscard]] bool Valid() const {
-			std::unordered_map<boost::uuids::uuid, Entity const*> indexed;
+			std::unordered_map<UUID, Entity const*, UUIDHash, UUIDEquality> indexed;
 			indexed.reserve(entities.size());
 			for (auto const& entity : entities) {
 				if (entity.id.is_nil() || entity.name.empty() || !indexed.emplace(entity.id, &entity).second) {
@@ -72,14 +80,14 @@ export namespace fyuu_asset {
 			nlohmann::json document = nlohmann::json::array();
 			for (auto const& entity : entities) {
 				nlohmann::json serialized{
-					{ "id", boost::uuids::to_string(entity.id) },
-					{ "parent", entity.parent.is_nil() ? nlohmann::json(nullptr) : nlohmann::json(boost::uuids::to_string(entity.parent)) },
+					{ "id", UUIDToString(entity.id) },
+					{ "parent", UUIDIsNil(entity.parent) ? nlohmann::json(nullptr) : nlohmann::json(UUIDToString(entity.parent)) },
 					{ "name", entity.name },
 					{ "translation", entity.translation },
 					{ "rotation", entity.rotation },
 					{ "scale", entity.scale },
-					{ "mesh", entity.mesh.is_nil() ? nlohmann::json(nullptr) : nlohmann::json(boost::uuids::to_string(entity.mesh)) },
-					{ "material", entity.material.is_nil() ? nlohmann::json(nullptr) : nlohmann::json(boost::uuids::to_string(entity.material)) }
+					{ "mesh", UUIDIsNil(entity.mesh) ? nlohmann::json(nullptr) : nlohmann::json(UUIDToString(entity.mesh)) },
+					{ "material", UUIDIsNil(entity.material) ? nlohmann::json(nullptr) : nlohmann::json(UUIDToString(entity.material)) }
 				};
 				document.push_back(std::move(serialized));
 			}
@@ -115,7 +123,7 @@ export namespace fyuu_asset {
 			scene.entities.reserve(document.size());
 			for (auto const& source : document) {
 				Entity entity{
-					.id = boost::uuids::string_generator{}(source.at("id").get<std::string>()),
+					.id = ParseUUID(source.at("id").get<std::string>()),
 					.parent = {},
 					.name = source.at("name").get<std::string>(),
 					.translation = source.at("translation").get<std::array<float, 3>>(),
@@ -125,13 +133,13 @@ export namespace fyuu_asset {
 					.material = {}
 				};
 				if (!source.at("parent").is_null()) {
-					entity.parent = boost::uuids::string_generator{}(source.at("parent").get<std::string>());
+					entity.parent = ParseUUID(source.at("parent").get<std::string>());
 				}
 				if (!source.at("mesh").is_null()) {
-					entity.mesh = boost::uuids::string_generator{}(source.at("mesh").get<std::string>());
+					entity.mesh = ParseUUID(source.at("mesh").get<std::string>());
 				}
 				if (!source.at("material").is_null()) {
-					entity.material = boost::uuids::string_generator{}(source.at("material").get<std::string>());
+					entity.material = ParseUUID(source.at("material").get<std::string>());
 				}
 				scene.entities.push_back(std::move(entity));
 			}
