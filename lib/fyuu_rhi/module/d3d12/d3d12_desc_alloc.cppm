@@ -19,7 +19,7 @@
 #if defined(_WIN32)
 #include <DescriptorHeap.h>
 #endif // defined(_WIN32)
-module fyuu_rhi:d3d12_descriptor_allocator;
+export module fyuu_rhi:d3d12_descriptor_allocator;
 #if defined(_WIN32)
 #if defined(__cpp_lib_modules)
 import std;
@@ -86,7 +86,7 @@ namespace {
 
 }
 
-namespace fyuu_rhi::d3d12 {
+export namespace fyuu_rhi::d3d12 {
 	class ManagedDescriptorHeap final {
 	private:
 		std::shared_ptr<DescriptorHeap> m_heap;

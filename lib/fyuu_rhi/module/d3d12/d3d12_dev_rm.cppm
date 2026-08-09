@@ -22,7 +22,7 @@ module;
 #define BOOST_DISABLE_ASSERTS
 #include <boost/locale.hpp>
 #include "log.hpp"
-module fyuu_rhi:d3d12_device_removal_tracker;
+export module fyuu_rhi:d3d12_device_removal_tracker;
 #if defined(_WIN32)
 #if defined(__cpp_lib_modules)
 import std;
@@ -258,7 +258,7 @@ namespace {
 	
 }
 
-namespace fyuu_rhi::d3d12 {
+export namespace fyuu_rhi::d3d12 {
 	class DeviceRemovalTracker {
 	private:
 		ManagedEvent m_fence_event;

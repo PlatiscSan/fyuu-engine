@@ -30,7 +30,7 @@
 #define FYUU_RHI_USE_VULKAN_HEADER
 #include <vulkan/vulkan_shared.hpp>
 #endif
-module fyuu_rhi:vulkan_queue_allocator;
+export module fyuu_rhi:vulkan_queue_allocator;
 #if !defined(__APPLE__)
 #if defined(__cpp_lib_modules)
 import std;
@@ -39,7 +39,7 @@ import std;
 import vulkan;
 #endif
 
-namespace fyuu_rhi::vulkan {
+export namespace fyuu_rhi::vulkan {
 
 	enum class CommandQueueType : std::uint8_t {
 		None = 0u,
@@ -241,7 +241,7 @@ namespace {
 
 }
 
-namespace fyuu_rhi::vulkan {
+export namespace fyuu_rhi::vulkan {
 
 	class QueueAllocator;
 	class QueueReservationSession;
