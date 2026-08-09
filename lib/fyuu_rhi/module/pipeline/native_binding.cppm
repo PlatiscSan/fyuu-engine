@@ -22,7 +22,7 @@ module;
 #include <format>
 #endif // !defined(__cpp_lib_modules)
 
-module fyuu_rhi:native_pipeline_binding;
+export module fyuu_rhi:native_pipeline_binding;
 #if defined(__cpp_lib_modules)
 import std;
 #endif // defined(__cpp_lib_modules)
@@ -32,26 +32,26 @@ import :slang_pipeline_interface;
 
 namespace fyuu_rhi::pipeline {
 
-	template <class Backend>
+	export template <class Backend>
 	struct NativePipelineBufferBinding {
 		std::reference_wrapper<typename Backend::Resource const> impl;
 		std::size_t offset = 0;
 		std::size_t size = PipelineWholeBuffer;
 	};
 
-	template <class Backend>
+	export template <class Backend>
 	using NativePipelineViewBinding = std::reference_wrapper<typename Backend::View const>;
 
-	template <class Backend>
+	export template <class Backend>
 	using NativePipelineSamplerBinding = std::reference_wrapper<typename Backend::Sampler const>;
 
-	template <class Backend>
+	export template <class Backend>
 	struct NativePipelineCombinedBinding {
 		std::reference_wrapper<typename Backend::View const> view;
 		std::reference_wrapper<typename Backend::Sampler const> sampler;
 	};
 
-	template <class Backend>
+	export template <class Backend>
 	using NativePipelineBindingValue = std::variant<
 		std::monostate,
 		NativePipelineBufferBinding<Backend>,
@@ -60,14 +60,14 @@ namespace fyuu_rhi::pipeline {
 		NativePipelineCombinedBinding<Backend>
 	>;
 
-	template <class Backend>
+	export template <class Backend>
 	struct NativePipelineResourceBinding {
 		std::uint32_t slot = 0;
 		std::uint32_t array_element = 0;
 		NativePipelineBindingValue<Backend> value;
 	};
 
-	struct PipelineBindingMetadata {
+	export struct PipelineBindingMetadata {
 		ResourceFlags flags;
 		std::uint32_t slot = 0;
 		std::uint32_t space = 0;
@@ -92,7 +92,7 @@ namespace fyuu_rhi::pipeline {
 		return result;
 	}
 
-	template <class Backend>
+	export template <class Backend>
 	struct NativePipelineResourceGroup {
 		struct Binding {
 			std::uint32_t slot = 0;
