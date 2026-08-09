@@ -36,11 +36,11 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/collect_headers.cmake)
 
 add_library(${PROJECT_NAME} STATIC)
 
-collect_sources(${CMAKE_CURRENT_SOURCE_DIR}/src "" sources)
-collect_cxx_modules(${CMAKE_CURRENT_SOURCE_DIR}/src "" implementation_modules)
+collect_sources(${CMAKE_CURRENT_SOURCE_DIR}/module "" sources)
+collect_cxx_modules(${CMAKE_CURRENT_SOURCE_DIR}/module "" implementation_modules)
 collect_headers(${CMAKE_CURRENT_SOURCE_DIR}/include/ "" public_headers)
 file(GLOB_RECURSE internal_modules CONFIGURE_DEPENDS
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/internal/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/module/internal/*.cpp"
 )
 list(FILTER sources EXCLUDE REGEX "[/\\\\]internal[/\\\\]")
 
