@@ -758,10 +758,7 @@ namespace fyuu_rhi::opengl {
 		GLuint framebuffer = 0u;
 		IndexType index_type = IndexType::Uint16;
 		bool rendering = false;
-		/// Height of the active render pass area. Scissor rectangles are top-left
-		/// origin (D3D12/Vulkan convention), while GL scissors are bottom-left
-		/// origin, so the Y coordinate must be mirrored against this height.
-		std::uint32_t render_area_height = 0u;
+		ClipSpace clip_space = ClipSpace::YUp;
 		/// Color attachments of the active render pass, for MSAA resolve at EndRendering.
 		std::vector<ColorAttachment> active_colors;
 
@@ -771,6 +768,29 @@ namespace fyuu_rhi::opengl {
 
 		Submission::ViewSnapshot const& ViewAt(std::size_t index) const {
 			return submission.views.at(index);
+		}
+
+		void ApplyFrontFace() const {
+			if (!pipeline || pipeline->compute) {
+				return;
+			}
+			bool counter_clockwise =
+				pipeline->rasterization.front_face == FrontFace::CounterClockwise;
+			if (clip_space == ClipSpace::YUp) {
+				counter_clockwise = !counter_clockwise;
+			}
+			glFrontFace(counter_clockwise ? GL_CCW : GL_CW);
+		}
+
+		void ApplyClipSpace(ClipSpace value) {
+			clip_space = value;
+			if (clip_space == ClipSpace::YUp) {
+				glClipControl(GL_UPPER_LEFT, GL_ZERO_TO_ONE);
+			}
+			else {
+				glClipControl(GL_LOWER_LEFT, GL_NEGATIVE_ONE_TO_ONE);
+			}
+			ApplyFrontFace();
 		}
 
 		/// Binds the pipeline's program, rasterization and depth state, and ensures
@@ -791,11 +811,7 @@ namespace fyuu_rhi::opengl {
 				glEnable(GL_CULL_FACE);
 				glCullFace(value.rasterization.cull_mode == CullMode::Front ? GL_FRONT : GL_BACK);
 			}
-			glFrontFace(
-				value.rasterization.front_face == FrontFace::CounterClockwise
-					? GL_CCW
-					: GL_CW
-			);
+			ApplyFrontFace();
 
 			// Depth state.
 			if (value.depth_stencil && value.depth_stencil->depth_test_enabled) {
@@ -901,6 +917,7 @@ namespace fyuu_rhi::opengl {
 			if (rendering) {
 				throw std::logic_error("OpenGL BeginRendering cannot be nested");
 			}
+			ApplyClipSpace(ClipSpace::YUp);
 			if (!value.colors.empty() || value.depth_stencil) {
 				glGenFramebuffers(1u, &framebuffer);
 				glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
@@ -1008,7 +1025,6 @@ namespace fyuu_rhi::opengl {
 				}
 			}
 			rendering = true;
-			render_area_height = value.area.height;
 			active_colors = value.colors;
 		}
 
@@ -1144,34 +1160,20 @@ namespace fyuu_rhi::opengl {
 		}
 
 		void operator()(Viewport const& value) {
-			// Viewport rectangles are top-left origin (D3D12/Vulkan/WebGPU
-			// convention), but GL viewports are bottom-left origin: mirror Y
-			// within the render area. A full-window viewport is unaffected.
-			std::int32_t y = static_cast<std::int32_t>(value.y);
-			if (rendering) {
-				y = static_cast<std::int32_t>(render_area_height) -
-					static_cast<std::int32_t>(value.y + value.height);
-			}
+			ApplyClipSpace(value.clip_space);
 			glViewport(
 				static_cast<GLint>(value.x),
-				y,
+				static_cast<GLint>(value.y),
 				static_cast<GLsizei>(value.width),
 				static_cast<GLsizei>(value.height)
 			);
+			glDepthRange(value.minimum_depth, value.maximum_depth);
 		}
 
 		void operator()(Scissor const& value) {
-			// Scissor rectangles are top-left origin, but GL scissors are
-			// bottom-left origin: mirror Y within the render area so clipping
-			// follows the drawn (Y-flipped) geometry instead of its mirror image.
-			std::int32_t y = value.y;
-			if (rendering) {
-				y = static_cast<std::int32_t>(render_area_height) -
-					value.y - static_cast<std::int32_t>(value.height);
-			}
 			glScissor(
 				value.x,
-				y,
+				value.y,
 				static_cast<GLsizei>(value.width),
 				static_cast<GLsizei>(value.height)
 			);
@@ -1485,6 +1487,7 @@ namespace fyuu_rhi::opengl {
 				0
 			);
 			glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0u);
+			glClipControl(GL_LOWER_LEFT, GL_NEGATIVE_ONE_TO_ONE);
 			// The scissor test clips the destination of glBlitFramebuffer. The
 			// render pass left scissor testing enabled with the render target's
 			// rectangle (or an ImGui clip rect) as the last value, so presenting
@@ -1495,8 +1498,8 @@ namespace fyuu_rhi::opengl {
 			glBlitFramebuffer(
 				0, 0,
 				static_cast<GLint>(source.width), static_cast<GLint>(source.height),
-				0, 0,
-				width, height,
+				0, height,
+				width, 0,
 				GL_COLOR_BUFFER_BIT,
 				GL_LINEAR
 			);
@@ -1812,48 +1815,17 @@ namespace fyuu_rhi::opengl {
 			Submission::GroupSnapshot snapshot;
 			snapshot.bindings.reserve(group.get().bindings.size());
 			for (auto const& binding : group.get().bindings) {
-				Submission::GroupBindingSnapshot entry;
-				entry.slot = binding.slot;
-				entry.array_element = binding.array_element;
-				std::visit(
-					[&](auto const& value) {
-						using Value = std::remove_cvref_t<decltype(value)>;
-						if constexpr (std::same_as<Value, std::monostate>) {
-							return;
-						}
-						else if constexpr (std::same_as<Value, NativePipelineBufferBinding<Backend>>) {
-							auto const& resource = value.impl.get();
-							if (resource.type == Backend::Resource::Type::Buffer) {
-								entry.buffer = resource.impl;
-							}
-						}
-						else if constexpr (std::same_as<Value, NativePipelineViewBinding<Backend>>) {
-							// Backend::View is itself the variant.
-							if (auto texture_native = std::get_if<Backend::GLTextureView>(&value.get())) {
-								entry.view = texture_native->impl;
-								entry.view_target = texture_native->target;
-								entry.view_format = texture_native->format;
-							}
-							else if (auto buffer_native = std::get_if<Backend::GLBufferView>(&value.get())) {
-								entry.view = buffer_native->impl;
-								entry.view_target = GL_TEXTURE_BUFFER;
-							}
-						}
-						else if constexpr (std::same_as<Value, NativePipelineSamplerBinding<Backend>>) {
-							entry.sampler = value.get().impl;
-						}
-						else if constexpr (std::same_as<Value, NativePipelineCombinedBinding<Backend>>) {
-							if (auto native = std::get_if<Backend::GLTextureView>(&value.view.get())) {
-								entry.view = native->impl;
-								entry.view_target = native->target;
-								entry.view_format = native->format;
-							}
-							entry.sampler = value.sampler.get().impl;
-						}
-					},
-					binding.value
+				snapshot.bindings.emplace_back(
+					Submission::GroupBindingSnapshot{
+						.slot = binding.slot,
+						.array_element = binding.array_element,
+						.buffer = binding.buffer,
+						.view = binding.view,
+						.view_target = binding.view_target,
+						.view_format = binding.view_format,
+						.sampler = binding.sampler
+					}
 				);
-				snapshot.bindings.emplace_back(entry);
 			}
 			submission.groups.emplace_back(std::move(snapshot));
 		}

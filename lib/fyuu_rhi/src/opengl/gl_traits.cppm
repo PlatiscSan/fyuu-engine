@@ -257,7 +257,19 @@ namespace fyuu_rhi::opengl {
 			~Pipeline() noexcept;
 		};
 
-		using PipelineResourceGroup = NativePipelineResourceGroup<Backend>;
+		struct PipelineResourceGroup {
+			struct Binding {
+				std::uint32_t slot = 0u;
+				std::uint32_t array_element = 0u;
+				GLuint buffer = 0u;
+				GLuint view = 0u;
+				GLenum view_target = 0u;
+				GLenum view_format = 0u;
+				GLuint sampler = 0u;
+			};
+
+			std::vector<Binding> bindings;
+		};
 
 
 		class CompletionToken {

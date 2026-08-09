@@ -1187,10 +1187,16 @@ namespace fyuu_rhi::d3d12 {
 		bool is_uav = flags.Test(ResourceFlagBits::StorageBinding);
 		bool is_rtv = flags.Test(ResourceFlagBits::RenderAttachment) && !is_ds;
 		bool is_dsv = flags.Test(ResourceFlagBits::RenderAttachment) && is_ds;
+		View result{
+			.base_mip_level = static_cast<std::uint32_t>(base_mip_lvl),
+			.mip_level_count = static_cast<std::uint32_t>(mip_lvl_cnt),
+			.base_array_layer = static_cast<std::uint32_t>(base_arr_layer),
+			.array_layer_count = static_cast<std::uint32_t>(arr_layer_cnt),
+			.format = format
+		};
 
-		if ((is_srv && is_uav) || (is_srv && is_rtv) || (is_srv && is_dsv) ||
-			(is_uav && is_rtv) || (is_uav && is_dsv) || (is_rtv && is_dsv)) {
-			throw std::invalid_argument("CreateTextureView(): conflicting view types in flags");
+		if (!is_srv && !is_uav && !is_rtv && !is_dsv) {
+			throw std::invalid_argument("CreateTextureView(): no valid view type specified in flags");
 		}
 
 		if (is_srv) {
@@ -1253,15 +1259,7 @@ namespace fyuu_rhi::d3d12 {
 
 			auto handle = ld.univ_alloc.Allocate();
 			ld.impl->CreateShaderResourceView(tex, &srv_desc, handle.CPU());
-			return {
-				std::move(handle),
-				View::Type::ShaderResource,
-				static_cast<std::uint32_t>(base_mip_lvl),
-				static_cast<std::uint32_t>(mip_lvl_cnt),
-				static_cast<std::uint32_t>(base_arr_layer),
-				static_cast<std::uint32_t>(arr_layer_cnt),
-				format
-			};
+			result.impl.emplace(View::Type::ShaderResource, std::move(handle));
 		}
 
 		if (is_uav) {
@@ -1300,15 +1298,7 @@ namespace fyuu_rhi::d3d12 {
 
 			auto handle = ld.univ_alloc.Allocate();
 			ld.impl->CreateUnorderedAccessView(tex	, nullptr, &uav_desc, handle.CPU());
-			return {
-				std::move(handle),
-				View::Type::UnorderedAccess,
-				static_cast<std::uint32_t>(base_mip_lvl),
-				static_cast<std::uint32_t>(mip_lvl_cnt),
-				static_cast<std::uint32_t>(base_arr_layer),
-				static_cast<std::uint32_t>(arr_layer_cnt),
-				format
-			};
+			result.impl.emplace(View::Type::UnorderedAccess, std::move(handle));
 		}
 
 		if (is_rtv) {
@@ -1347,15 +1337,7 @@ namespace fyuu_rhi::d3d12 {
 
 			auto handle = ld.rtv_alloc.Allocate();
 			ld.impl->CreateRenderTargetView(tex, &rtv_desc, handle.CPU());
-			return {
-				std::move(handle),
-				View::Type::RenderTarget,
-				static_cast<std::uint32_t>(base_mip_lvl),
-				static_cast<std::uint32_t>(mip_lvl_cnt),
-				static_cast<std::uint32_t>(base_arr_layer),
-				static_cast<std::uint32_t>(arr_layer_cnt),
-				format
-			};
+			result.impl.emplace(View::Type::RenderTarget, std::move(handle));
 		}
 
 		if (is_dsv) {
@@ -1388,18 +1370,10 @@ namespace fyuu_rhi::d3d12 {
 
 			auto handle = ld.dsv_alloc.Allocate();
 			ld.impl->CreateDepthStencilView(tex, &dsv_desc, handle.CPU());
-			return {
-				std::move(handle),
-				View::Type::DepthStencil,
-				static_cast<std::uint32_t>(base_mip_lvl),
-				static_cast<std::uint32_t>(mip_lvl_cnt),
-				static_cast<std::uint32_t>(base_arr_layer),
-				static_cast<std::uint32_t>(arr_layer_cnt),
-				format
-			};
+			result.impl.emplace(View::Type::DepthStencil, std::move(handle));
 		}
 
-		throw std::invalid_argument("CreateTextureView(): no valid view type specified in flags");
+		return result;
 
 	}
 
@@ -1413,19 +1387,20 @@ namespace fyuu_rhi::d3d12 {
 			flags.Test(ResourceFlagBits::StorageBinding);
 		bool is_srv = flags.Test(ResourceFlagBits::TextureBinding); // Buffer SRV uses the same flag.
 
-		if (is_uav && is_srv) {
-			throw std::invalid_argument(
-				"CreateBufferView(): conflicting flags â€“ cannot create both SRV and UAV.");
-		}
 		if (!is_uav && !is_srv) {
 			// Default to SRV if no explicit view type is given.
 			is_srv = true;
 		}
-
-		// Allocate a descriptor from the universal heap (supports CBV/SRV/UAV).
-		auto handle = ld.univ_alloc.Allocate();
+		View result{
+			.base_mip_level = 0u,
+			.mip_level_count = 1u,
+			.base_array_layer = 0u,
+			.array_layer_count = 1u,
+			.format = format
+		};
 
 		if (is_srv) {
+			auto handle = ld.univ_alloc.Allocate();
 			D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {
 				.ViewDimension = D3D12_SRV_DIMENSION_BUFFER,
 				.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
@@ -1459,8 +1434,10 @@ namespace fyuu_rhi::d3d12 {
 			}
 
 			ld.impl->CreateShaderResourceView(buf, &srv_desc, handle.CPU());
+			result.impl.emplace(View::Type::ShaderResource, std::move(handle));
 		}
-		else if (is_uav) {
+		if (is_uav) {
+			auto handle = ld.univ_alloc.Allocate();
 			D3D12_UNORDERED_ACCESS_VIEW_DESC uav_desc = {
 				.ViewDimension = D3D12_UAV_DIMENSION_BUFFER,
 				.Buffer = { 0u, 0u, 0u, D3D12_BUFFER_UAV_FLAG_NONE }
@@ -1493,17 +1470,10 @@ namespace fyuu_rhi::d3d12 {
 			}
 
 			ld.impl->CreateUnorderedAccessView(buf, nullptr, &uav_desc, handle.CPU());
+			result.impl.emplace(View::Type::UnorderedAccess, std::move(handle));
 		}
 
-		return {
-			std::move(handle),
-			is_srv ? View::Type::ShaderResource : View::Type::UnorderedAccess,
-			0u,
-			1u,
-			0u,
-			1u,
-			format
-		};
+		return result;
 		
 		
 	}
@@ -1858,7 +1828,9 @@ namespace fyuu_rhi::d3d12 {
 						throw std::invalid_argument("D3D12 combined binding requires a combined view+sampler resource");
 					}
 					ld.impl->CopyDescriptorsSimple(
-						1u, srv.CPU(element), combined->view.get().CPU(),
+						1u,
+						srv.CPU(element),
+						combined->view.get().CPU(View::Type::ShaderResource),
 						D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV
 					);
 					ld.impl->CopyDescriptorsSimple(
@@ -1888,8 +1860,13 @@ namespace fyuu_rhi::d3d12 {
 				}
 				auto destination = descriptors.CPU(element);
 				if (auto view_binding = std::get_if<NativePipelineViewBinding<Backend>>(&source->value)) {
+					auto source_descriptor = layout.flags.Test(ResourceFlagBits::StorageBinding)
+						? view_binding->get().CPU(View::Type::UnorderedAccess)
+						: view_binding->get().CPU(View::Type::ShaderResource);
 					ld.impl->CopyDescriptorsSimple(
-						1u, destination, view_binding->get().CPU(),
+						1u,
+						destination,
+						source_descriptor,
 						D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV
 					);
 				}

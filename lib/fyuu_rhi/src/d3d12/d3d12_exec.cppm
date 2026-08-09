@@ -357,7 +357,9 @@ namespace {
 			render_targets.reserve(value.colors.size());
 			for (auto const& color : value.colors) {
 				auto const& view = views[color.view].get();
-				render_targets.emplace_back(view.CPU());
+				render_targets.emplace_back(
+					view.CPU(Backend::View::Type::RenderTarget)
+				);
 				if (color.load == LoadOperation::Clear) {
 					float clear[] = { color.clear.red, color.clear.green, color.clear.blue, color.clear.alpha };
 					auto whole_mip = CoversWholeMip(
@@ -366,7 +368,7 @@ namespace {
 						view
 					);
 					commands->ClearRenderTargetView(
-						view.CPU(),
+						view.CPU(Backend::View::Type::RenderTarget),
 						clear,
 						whole_mip ? 0u : 1u,
 						whole_mip ? nullptr : &rect
@@ -385,7 +387,7 @@ namespace {
 			D3D12_CPU_DESCRIPTOR_HANDLE* depth_ptr = nullptr;
 			if (value.depth_stencil) {
 				auto const& view = views[value.depth_stencil->view].get();
-				depth = view.CPU();
+				depth = view.CPU(Backend::View::Type::DepthStencil);
 				depth_ptr = &depth;
 				UINT flags = 0u;
 				if (value.depth_stencil->depth_load == LoadOperation::Clear) {

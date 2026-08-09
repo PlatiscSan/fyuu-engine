@@ -105,20 +105,15 @@ namespace fyuu_rhi::d3d12 {
 				DepthStencil
 			};
 
-			ManagedDescriptorHandle impl;
-			Type type;
+			std::unordered_map<Type, ManagedDescriptorHandle> impl;
 			std::uint32_t base_mip_level = 0u;
 			std::uint32_t mip_level_count = 1u;
 			std::uint32_t base_array_layer = 0u;
 			std::uint32_t array_layer_count = 1u;
 			DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
 
-			[[nodiscard]] D3D12_CPU_DESCRIPTOR_HANDLE CPU() const noexcept {
-				return impl.CPU();
-			}
-
-			[[nodiscard]] D3D12_GPU_DESCRIPTOR_HANDLE GPU() const noexcept {
-				return impl.GPU();
+			[[nodiscard]] D3D12_CPU_DESCRIPTOR_HANDLE CPU(Type type) const {
+				return impl.at(type).CPU();
 			}
 		};
 

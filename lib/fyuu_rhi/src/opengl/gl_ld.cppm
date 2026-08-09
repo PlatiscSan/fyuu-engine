@@ -1186,7 +1186,56 @@ namespace fyuu_rhi::opengl {
 			throw std::invalid_argument("Cannot create an OpenGL resource group for an empty pipeline");
 		}
 
-		return MakePipelineResourceGroup<Backend>(pipeline.bindings, space, bindings);
+		auto native = MakePipelineResourceGroup<Backend>(
+			pipeline.bindings,
+			space,
+			bindings
+		);
+		Backend::PipelineResourceGroup result;
+		result.bindings.reserve(native.bindings.size());
+		for (auto const& binding : native.bindings) {
+			Backend::PipelineResourceGroup::Binding entry{
+				.slot = binding.slot,
+				.array_element = binding.array_element
+			};
+			std::visit(
+				[&entry](auto const& value)
+				{
+					using Value = std::remove_cvref_t<decltype(value)>;
+					if constexpr (std::same_as<Value, NativePipelineBufferBinding<Backend>>) {
+						auto const& resource = value.impl.get();
+						if (resource.type == Backend::Resource::Type::Buffer) {
+							entry.buffer = resource.impl;
+						}
+					}
+					else if constexpr (std::same_as<Value, NativePipelineViewBinding<Backend>>) {
+						if (auto texture = std::get_if<Backend::GLTextureView>(&value.get())) {
+							entry.view = texture->impl;
+							entry.view_target = texture->target;
+							entry.view_format = texture->format;
+						}
+						else if (auto buffer = std::get_if<Backend::GLBufferView>(&value.get())) {
+							entry.view = buffer->impl;
+							entry.view_target = GL_TEXTURE_BUFFER;
+						}
+					}
+					else if constexpr (std::same_as<Value, NativePipelineSamplerBinding<Backend>>) {
+						entry.sampler = value.get().impl;
+					}
+					else if constexpr (std::same_as<Value, NativePipelineCombinedBinding<Backend>>) {
+						if (auto texture = std::get_if<Backend::GLTextureView>(&value.view.get())) {
+							entry.view = texture->impl;
+							entry.view_target = texture->target;
+							entry.view_format = texture->format;
+						}
+						entry.sampler = value.sampler.get().impl;
+					}
+				},
+				binding.value
+			);
+			result.bindings.emplace_back(entry);
+		}
+		return result;
 	}
 
 }
