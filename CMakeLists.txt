@@ -21,7 +21,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 project(FyuuEngine)
 include(CTest)
 
-option(FYUU_BUILD_EDITOR "Build the Fyuu editor" ON)
+option(FYUU_BUILD_STUDIO "Build Fyuu Studio" OFF)
+option(FYUU_BUILD_DESKTOP "Build the SDL3 desktop platform adapter" ON)
 
 # set(CMAKE_CXX_MODULE_STD 1)
 
@@ -34,9 +35,8 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-# Define source directories
+# Define project directories
 set(PROJECT_ROOT_DIR ${CMAKE_CURRENT_SOURCE_DIR})
-set(ENGINE_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 # Set default build type to Release if not specified
 if(NOT CMAKE_BUILD_TYPE)
@@ -84,35 +84,22 @@ endif()
 # Enable position independent code for all targets
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# Include subdirectories
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
-
 add_subdirectory(lib/plastic)
 add_subdirectory(lib/vulkan_hpp)
 add_subdirectory(lib/PixEvents-cmake)
 add_subdirectory(lib/fyuu_rhi)
 add_subdirectory(lib/fyuu_asset)
 
-# Collect public headers and module interfaces
+add_subdirectory(runtime)
 
-file(GLOB_RECURSE PUBLIC_HEADERS 
-    "${CMAKE_SOURCE_DIR}/include/*.h"
-    "${CMAKE_SOURCE_DIR}/include/*.hpp"
-    "${CMAKE_SOURCE_DIR}/include/*.hxx"
-)
+if(FYUU_BUILD_DESKTOP)
+    add_subdirectory(desktop)
+endif()
 
-file(GLOB_RECURSE MODULE_INTERFACES
-    "${CMAKE_SOURCE_DIR}/module/*.cppm"
-    "${CMAKE_SOURCE_DIR}/module/*.ixx"
-)
-
-add_subdirectory(src)
-
-if(FYUU_BUILD_EDITOR)
-    add_subdirectory(editor)
+if(FYUU_BUILD_STUDIO AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/studio/CMakeLists.txt")
+    add_subdirectory(studio)
 endif()
 
 if(BUILD_TESTING)
-    add_subdirectory("test/hello_triangle")
     add_subdirectory("test/fyuu_asset")
 endif()

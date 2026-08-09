@@ -12,12 +12,18 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/disable_rtti.cmake)
 
 add_library(${PROJECT_NAME} STATIC)
 
-collect_cxx_modules(${CMAKE_CURRENT_SOURCE_DIR}/src/ds "data_structures" 
-    ds_modules 
+collect_cxx_modules(
+	${CMAKE_CURRENT_SOURCE_DIR}/src/ds
+	"data_structures"
+	ds_modules
+	ds_internal_modules
 )
 
-collect_cxx_modules(${CMAKE_CURRENT_SOURCE_DIR}/src/concurrency "concurrency" 
-    concurrency_modules 
+collect_cxx_modules(
+	${CMAKE_CURRENT_SOURCE_DIR}/src/concurrency
+	"concurrency"
+	concurrency_modules
+	concurrency_internal_modules
 )
 
 
@@ -26,6 +32,20 @@ target_sources(${PROJECT_NAME}
         ${ds_modules}
         ${concurrency_modules}
 )
+
+if(ds_internal_modules)
+	target_sources(${PROJECT_NAME}
+		PRIVATE FILE_SET ds_internal_modules TYPE CXX_MODULES FILES
+			${ds_internal_modules}
+	)
+endif()
+
+if(concurrency_internal_modules)
+	target_sources(${PROJECT_NAME}
+		PRIVATE FILE_SET concurrency_internal_modules TYPE CXX_MODULES FILES
+			${concurrency_internal_modules}
+	)
+endif()
 
 target_include_directories(${PROJECT_NAME}
     PUBLIC 

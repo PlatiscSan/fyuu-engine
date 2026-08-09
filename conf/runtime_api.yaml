@@ -1,0 +1,84 @@
+abi_version: 1
+module: fyuu_engine
+namespace: fyuu_engine
+
+results:
+  Success:
+    c_name: FYUU_RESULT_SUCCESS
+    value: 0
+  InvalidArgument:
+    c_name: FYUU_RESULT_INVALID_ARGUMENT
+    value: 1
+  InvalidState:
+    c_name: FYUU_RESULT_INVALID_STATE
+    value: 2
+  PlatformError:
+    c_name: FYUU_RESULT_PLATFORM_ERROR
+    value: 3
+  ApplicationError:
+    c_name: FYUU_RESULT_APPLICATION_ERROR
+    value: 4
+  OutOfMemory:
+    c_name: FYUU_RESULT_OUT_OF_MEMORY
+    value: 5
+  LogError:
+    c_name: FYUU_RESULT_LOG_ERROR
+    value: 6
+  UnknownError:
+    c_name: FYUU_RESULT_UNKNOWN_ERROR
+    value: 255
+
+runtime_states:
+  Created:
+    c_name: FYUU_RUNTIME_STATE_CREATED
+    value: 0
+  Running:
+    c_name: FYUU_RUNTIME_STATE_RUNNING
+    value: 1
+  StopRequested:
+    c_name: FYUU_RUNTIME_STATE_STOP_REQUESTED
+    value: 2
+  Stopped:
+    c_name: FYUU_RUNTIME_STATE_STOPPED
+    value: 3
+
+log_levels:
+  Trace:
+    c_name: FYUU_LOG_LEVEL_TRACE
+    value: 0
+  Debug:
+    c_name: FYUU_LOG_LEVEL_DEBUG
+    value: 1
+  Info:
+    c_name: FYUU_LOG_LEVEL_INFO
+    value: 2
+  Warning:
+    c_name: FYUU_LOG_LEVEL_WARNING
+    value: 3
+  Error:
+    c_name: FYUU_LOG_LEVEL_ERROR
+    value: 4
+  Fatal:
+    c_name: FYUU_LOG_LEVEL_FATAL
+    value: 5
+
+platform_callbacks:
+  initialize:
+    c_name: initialize
+  pump_events:
+    c_name: pump_events
+    cpp_name: PumpEvents
+  shutdown:
+    c_name: shutdown
+
+application_callbacks:
+  initialize:
+    c_name: initialize
+  tick:
+    c_name: tick
+    cpp_name: Tick
+  close_requested:
+    c_name: close_requested
+    cpp_name: CloseRequested
+  shutdown:
+    c_name: shutdown

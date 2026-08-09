@@ -125,14 +125,12 @@ namespace fyuu_editor {
 			return m_dirty;
 		}
 
-			MarkDirty();
-			return entity.id;
+		// Called by every document mutation. Also records changes made after BeginSave
+		// so UpdateSave cannot incorrectly clear newer edits.
+		void MarkDirty() noexcept {
+			m_dirty = true;
+			m_changed_during_save = m_changed_during_save || m_save.has_value();
 		}
-
-		// Called by EditorApplication::DuplicateSelectedEntity inside one undo transaction.
-		// Copies the source scene for stable traversal, iteratively creates a fresh-UUID
-		// subtree in the live scene, rebuilds parent links, then calls MarkDirty once.
-		EntityID DuplicateEntity(EntityID const& id) {
 
 		// Called by application command guards and close handling; reports ownership of
 		// an outstanding SceneSaveOperation.

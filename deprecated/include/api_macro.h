@@ -1,15 +1,19 @@
 #pragma once
 
 #if defined(_WIN32) || defined(__CYGWIN__)
+	// Windows / Cygwin
 	#if defined(__GNUC__)
+		// MinGW / Cygwin GCC
 		#define DLL_EXPORT __attribute__((dllexport))
 		#define DLL_IMPORT __attribute__((dllimport))
 	#else
+		// MSVC
 		#define DLL_EXPORT __declspec(dllexport)
 		#define DLL_IMPORT __declspec(dllimport)
 	#endif
 #else
-	#if defined(__GNUC__) || defined(__clang__)
+	// Linux / macOS
+	#if __GNUC__ >= 4 || defined(__clang__)
 		#define DLL_EXPORT __attribute__((visibility("default")))
 		#define DLL_IMPORT
 	#else
@@ -18,18 +22,16 @@
 	#endif
 #endif
 
-#if defined(FYUU_STATIC) || defined(BUILD_STATIC_LIBS)
-	#define LIB_API
-#elif defined(FYUU_ENGINE_EXPORTS)
+#ifdef BUILD_SHARED_LIBS
 	#define LIB_API DLL_EXPORT
 #else
-	#define LIB_API DLL_IMPORT
+	#define LIB_API
 #endif
 
 #if defined(_WIN32) && !defined(__GNUC__)
-	#define LIB_CALL __cdecl
+	 #define LIB_CALL __cdecl
 #else
-	#define LIB_CALL
+	 #define LIB_CALL
 #endif
 
 #if defined(__cplusplus)

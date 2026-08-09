@@ -87,10 +87,6 @@ collect_sources(${CMAKE_CURRENT_SOURCE_DIR}/src ""
 	sources
 )
 
-file(GLOB_RECURSE internal_modules CONFIGURE_DEPENDS
-	"${CMAKE_CURRENT_SOURCE_DIR}/module/internal/*.cpp"
-)
-
 if(WIN32)
 	list(FILTER sources EXCLUDE REGEX ".*glad_glx\\.c$|.*glad_egl\\.c$|.*glad_x11\\.c$")
 elseif(UNIX)
@@ -101,8 +97,11 @@ elseif(APPLE)
 	list(FILTER sources EXCLUDE REGEX ".*glad_glx\\.c$|.*glad_egl\\.c$|.*glad_wgl\\.c$")
 endif()
 
-collect_cxx_modules(${CMAKE_CURRENT_SOURCE_DIR}/module "interface"
-	interface_modules 
+collect_cxx_modules(
+	${CMAKE_CURRENT_SOURCE_DIR}/module
+	"interface"
+	interface_modules
+	internal_modules
 )
 
 collect_headers(${CMAKE_CURRENT_SOURCE_DIR}/include/ ""
