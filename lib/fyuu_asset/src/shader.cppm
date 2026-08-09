@@ -1,6 +1,7 @@
 module;
 #include <version>
 #if !defined(__cpp_lib_modules)
+#include <filesystem>
 #include <string>
 #endif
 #if !defined(__cpp_lib_reflection)
@@ -22,9 +23,9 @@ export namespace fyuu_asset {
 		std::string name;
 		std::string source;
 
-		[[nodiscard]] bool Valid() const noexcept {
-			return !name.empty() && !source.empty();
-		}
+		[[nodiscard]] bool Valid() const noexcept;
+		void Serialize(std::filesystem::path const& path) const;
+		[[nodiscard]] static Shader Deserialize(std::filesystem::path const& path);
 	};
 
 #if !defined(__cpp_lib_reflection)

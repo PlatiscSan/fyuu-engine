@@ -33,11 +33,6 @@ module;
 #endif // defined(__cpp_lib_reflection)
 #endif // !defined(__cpp_lib_modules)
 #include <boost/type_index.hpp>
-#if !defined(__cpp_lib_reflection)
-#include <boost/describe.hpp>
-#include <boost/mp11.hpp>
-#endif // !defined(__cpp_lib_reflection)
-#include <nlohmann/json.hpp>
 export module fyuu_asset:asset_exec;
 #if defined(__cpp_lib_modules)
 import std;
@@ -48,65 +43,6 @@ import :base_asset;
 import :uuid;
 
 namespace fyuu_asset::execution::detail {
-	template <class T>
-	T DeserializeAssetValue(nlohmann::json const& source) {
-		if constexpr (requires {
-			{ T::Deserialize(source) } -> std::same_as<T>;
-		}) {
-			return T::Deserialize(source);
-		}
-#if defined(__cpp_lib_reflection)
-		else {
-			static_assert(std::is_default_constructible_v<T>,
-				"T must be default constructible or provide T::Deserialize(json)");
-			T value{};
-			constexpr auto context = std::meta::access_context::current();
-			template for (constexpr auto member : std::define_static_array(
-				std::meta::nonstatic_data_members_of(^^T, context))) {
-				if constexpr (std::meta::has_identifier(member)) {
-					using Member = std::remove_cvref_t<decltype(value.[:member:])>;
-					if constexpr (std::same_as<Member, std::vector<std::byte>>) {
-						for (auto const& byte : source.at(std::meta::identifier_of(member))) {
-							value.[:member:].push_back(
-								static_cast<std::byte>(byte.template get<unsigned int>())
-							);
-						}
-					}
-					else {
-						value.[:member:] = source.at(
-							std::meta::identifier_of(member)).template get<Member>();
-					}
-				}
-			}
-			return value;
-		}
-#else
-		else if constexpr (boost::describe::has_describe_members<T>::value) {
-			static_assert(std::is_default_constructible_v<T>,
-				"T must be default constructible or provide T::Deserialize(json)");
-			T value{};
-			using Members = boost::describe::describe_members<T, boost::describe::mod_public>;
-			boost::mp11::mp_for_each<Members>([&](auto member) {
-				using Member = std::remove_cvref_t<decltype(value.*member.pointer)>;
-				if constexpr (std::same_as<Member, std::vector<std::byte>>) {
-					for (auto const& byte : source.at(member.name)) {
-						(value.*member.pointer).push_back(
-							static_cast<std::byte>(byte.template get<unsigned int>())
-						);
-					}
-				}
-				else {
-					value.*member.pointer = source.at(member.name).template get<Member>();
-				}
-			});
-			return value;
-		}
-		else {
-			return source.template get<T>();
-		}
-#endif
-	}
-
 #if defined(__cpp_lib_move_only_function) && __cpp_lib_move_only_function >= 202110L
 	using AssetTask = std::move_only_function<void(std::stop_token)>;
 #else
@@ -252,21 +188,7 @@ private:
 			auto path = GetPath(
 				std::filesystem::path{ structure_name } / (id.ToString() + ".json")
 			);
-			if constexpr (requires {
-				{ T::Deserialize(path) } -> std::same_as<T>;
-			}) {
-				return Asset<T>::CreateWithID(id, T::Deserialize(path));
-			}
-			else {
-				std::ifstream input(path, std::ios::binary);
-				if (!input) {
-					throw std::runtime_error(std::format("Failed to open asset file '{}'", path.string()));
-				}
-
-				nlohmann::json document;
-				document = nlohmann::json::parse(input);
-				return Asset<T>::CreateWithID(id, detail::DeserializeAssetValue<T>(document));
-			}
+			return Asset<T>::CreateWithID(id, T::Deserialize(path));
 		}
 
 		template <class Receiver>

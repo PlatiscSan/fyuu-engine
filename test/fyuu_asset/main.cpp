@@ -1,3 +1,4 @@
+#include <array>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -15,6 +16,7 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+#include <nlohmann/json.hpp>
 
 #if !defined(__cpp_lib_reflection)
 #include <boost/describe.hpp>
@@ -27,6 +29,30 @@ namespace test_asset {
 	struct Configuration {
 		int width = 0;
 		std::string name;
+
+		void Serialize(std::filesystem::path const& path) const {
+			nlohmann::json document{
+				{ "width", width },
+				{ "name", name }
+			};
+			std::ofstream output(path, std::ios::binary | std::ios::trunc);
+			output << document.dump(2);
+			if (!output) {
+				throw std::runtime_error("Failed to write test asset");
+			}
+		}
+
+		[[nodiscard]] static Configuration Deserialize(std::filesystem::path const& path) {
+			std::ifstream input(path, std::ios::binary);
+			if (!input) {
+				throw std::runtime_error("Failed to open test asset");
+			}
+			auto document = nlohmann::json::parse(input);
+			return Configuration{
+				.width = document.at("width").get<int>(),
+				.name = document.at("name").get<std::string>()
+			};
+		}
 	};
 
 #if !defined(__cpp_lib_reflection)
@@ -400,7 +426,7 @@ namespace {
 		auto material_id = TestAsset::Create(test_asset::Configuration{});
 		auto scene = SceneAsset::Create(
 			std::vector<fyuu_asset::Scene::Entity>{
-				{
+				fyuu_asset::Scene::Entity{
 					.id = root_id->GetID(),
 					.parent = {},
 					.name = "Root",
@@ -410,7 +436,7 @@ namespace {
 					.mesh = {},
 					.material = {}
 				},
-				{
+				fyuu_asset::Scene::Entity{
 					.id = child_id->GetID(),
 					.parent = root_id->GetID(),
 					.name = "Child",

@@ -7,6 +7,7 @@ function(collect_cxx_modules base_dir group_name out_all_var)
         "${base_dir}/*.mxx"
     )
 	list(FILTER all_module_files EXCLUDE REGEX "[/\\\\]deprecated[/\\\\]")
+	list(FILTER all_module_files EXCLUDE REGEX "[/\\\\]internal[/\\\\]")
     
     file(GLOB_RECURSE all_impl_files CONFIGURE_DEPENDS
         "${base_dir}/*.impl.cpp"

@@ -32,6 +32,7 @@ module;
 #include <coroutine>
 #include <stop_token>
 #include <format>
+#include <source_location>
 
 #if defined(__cpp_lib_reflection)
 #include <meta>
@@ -41,11 +42,6 @@ module;
 #include <coroutine>
 #include <boost/intrusive_ptr.hpp>
 #include <boost/type_index.hpp>
-#if !defined(__cpp_lib_reflection)
-#include <boost/describe.hpp>
-#include <boost/mp11.hpp>
-#endif // !defined(__cpp_lib_reflection)
-#include <nlohmann/json.hpp>
 #include "log.hpp"
 export module fyuu_asset:asset;
 #if defined(__cpp_lib_modules)
@@ -424,67 +420,7 @@ namespace fyuu_asset {
 				fs::path{ structure_name } / (id.ToString() + ".json")
 			);
 			fs::create_directories(path.parent_path());
-			if constexpr (requires { data.Serialize(path); }) {
-				data.Serialize(path);
-			} else {
-				nlohmann::json serialized = nlohmann::json::object();
-#if defined(__cpp_lib_reflection)
-				constexpr auto context = std::meta::access_context::current();
-				template for (constexpr auto member : std::define_static_array(
-								  std::meta::nonstatic_data_members_of(^^T, context))) {
-					if constexpr (std::meta::has_identifier(member)) {
-						serialized[std::meta::identifier_of(member)] = data.[:member:];
-					}
-				}
-#else
-				using Members = boost::describe::describe_members<T, boost::describe::mod_public>;
-				boost::mp11::mp_for_each<Members>(
-					[&](auto member) {
-						serialized[member.name] = data.*member.pointer;
-					}
-				);
-#endif
-				auto temporary = path;
-				temporary += ".tmp";
-
-				{
-					std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
-					if (!output) {
-						throw std::runtime_error(
-							std::format(
-								"Failed to open asset file '{}'",
-								temporary.string()
-							)
-						);
-					}
-					output << serialized.dump(2);
-					output.flush();
-					if (!output) {
-						throw std::runtime_error(
-							std::format(
-								"Failed to write asset file '{}'",
-								temporary.string()
-							)
-						);
-					}
-				}
-
-				std::error_code error;
-				fs::rename(temporary, path, error);
-				if (error) {
-					fs::remove(path, error);
-					error.clear();
-					fs::rename(temporary, path, error);
-				}
-				if (error) {
-					throw std::runtime_error(
-						std::format(
-							"Failed to publish asset file '{}': {}", path.string(),
-							error.message()
-						)
-					);
-				}
-			}
+			data.Serialize(path);
 		}
 
 		friend void intrusive_ptr_release(Asset* asset) noexcept {

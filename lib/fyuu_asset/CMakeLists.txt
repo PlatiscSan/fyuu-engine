@@ -39,6 +39,10 @@ add_library(${PROJECT_NAME} STATIC)
 collect_sources(${CMAKE_CURRENT_SOURCE_DIR}/src "" sources)
 collect_cxx_modules(${CMAKE_CURRENT_SOURCE_DIR}/src "" implementation_modules)
 collect_headers(${CMAKE_CURRENT_SOURCE_DIR}/include/ "" public_headers)
+file(GLOB_RECURSE internal_modules CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/internal/*.cpp"
+)
+list(FILTER sources EXCLUDE REGEX "[/\\\\]internal[/\\\\]")
 
 target_include_directories(${PROJECT_NAME}
     PUBLIC
@@ -50,6 +54,11 @@ target_include_directories(${PROJECT_NAME}
 if(implementation_modules)
     target_sources(${PROJECT_NAME}
         PUBLIC FILE_SET CXX_MODULES FILES ${implementation_modules}
+    )
+endif()
+if(internal_modules)
+    target_sources(${PROJECT_NAME}
+	        PRIVATE FILE_SET internal_modules TYPE CXX_MODULES FILES ${internal_modules}
     )
 endif()
 if(sources)
