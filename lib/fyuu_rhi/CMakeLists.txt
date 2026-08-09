@@ -70,11 +70,25 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/collect_sources.cmake)
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/collect_cxx_modules.cmake)
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/disable_rtti.cmake)
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/collect_headers.cmake)
+include(CheckCXXSourceCompiles)
+
+check_cxx_source_compiles(
+	"#include <version>
+	#if !defined(__clang__) || !defined(_MSVC_STL_VERSION)
+	#error Vulkan module is available for this standard-library configuration
+	#endif
+	int main() { return 0; }"
+	FYUU_RHI_USE_VULKAN_HEADER
+)
 
 add_library(${PROJECT_NAME} STATIC)
 
 collect_sources(${CMAKE_CURRENT_SOURCE_DIR}/src ""
 	sources
+)
+
+file(GLOB_RECURSE internal_modules CONFIGURE_DEPENDS
+	"${CMAKE_CURRENT_SOURCE_DIR}/module/internal/*.cpp"
 )
 
 if(WIN32)
@@ -91,10 +105,6 @@ collect_cxx_modules(${CMAKE_CURRENT_SOURCE_DIR}/module "interface"
 	interface_modules 
 )
 
-collect_cxx_modules(${CMAKE_CURRENT_SOURCE_DIR}/src ""
-	implementation_modules 
-)
-
 collect_headers(${CMAKE_CURRENT_SOURCE_DIR}/include/ ""
 	public_headers
 )
@@ -107,7 +117,8 @@ target_include_directories(${PROJECT_NAME}
 target_sources(${PROJECT_NAME}
 	PUBLIC FILE_SET CXX_MODULES FILES 
 		${interface_modules}
-		${implementation_modules}
+	PUBLIC FILE_SET internal_modules TYPE CXX_MODULES FILES
+		${internal_modules}
 	PRIVATE 
 		${public_headers}
 	PRIVATE
@@ -140,7 +151,6 @@ target_link_libraries(${PROJECT_NAME}
 		# parallel programming
 		TBB::tbb TBB::tbbmalloc TBB::tbbbind_2_5 TBB::tbbmalloc_proxy
 		#-- Vulkan
-		VulkanHppModule
 		GPUOpen::VulkanMemoryAllocator
 		#-- webgpu Dawn
 		dawn::webgpu_dawn
@@ -158,7 +168,18 @@ target_link_libraries(${PROJECT_NAME}
 		nlohmann_json::nlohmann_json
 )
 
+if(NOT FYUU_RHI_USE_VULKAN_HEADER)
+	target_link_libraries(${PROJECT_NAME} PRIVATE VulkanHppModule)
+endif()
+
 if(WIN32)
+	target_compile_definitions(
+		${PROJECT_NAME}
+		PRIVATE
+			NOMINMAX
+			VK_USE_PLATFORM_WIN32_KHR
+	)
+
 	target_link_libraries(${PROJECT_NAME}
 		PUBLIC			
 			WIL::WIL
