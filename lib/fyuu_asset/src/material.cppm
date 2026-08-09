@@ -9,9 +9,6 @@ module;
 #include <unordered_map>
 #include <vector>
 #endif
-#include <boost/uuid.hpp>
-#include <boost/uuid/string_generator.hpp>
-#include <boost/uuid/uuid_io.hpp>
 #include <nlohmann/json.hpp>
 
 export module fyuu_asset:material;
@@ -19,16 +16,17 @@ export module fyuu_asset:material;
 #if defined(__cpp_lib_modules)
 import std;
 #endif
+import :uuid;
 
 export namespace fyuu_asset {
 
 	struct Material {
-		boost::uuids::uuid pipeline;
+		UUID pipeline;
 		std::unordered_map<std::string, std::vector<float>> parameters;
-		std::unordered_map<std::string, boost::uuids::uuid> bitmaps;
+		std::unordered_map<std::string, UUID> bitmaps;
 
 		[[nodiscard]] bool Valid() const noexcept {
-			if (pipeline.is_nil()) {
+			if (pipeline.IsNil()) {
 				return false;
 			}
 			for (auto const& [name, value] : parameters) {
@@ -37,7 +35,7 @@ export namespace fyuu_asset {
 				}
 			}
 			for (auto const& [name, bitmap] : bitmaps) {
-				if (name.empty() || bitmap.is_nil()) {
+				if (name.empty() || bitmap.IsNil()) {
 					return false;
 				}
 			}
@@ -49,12 +47,12 @@ export namespace fyuu_asset {
 				throw std::runtime_error("Cannot serialize invalid material");
 			}
 			nlohmann::json document{
-				{ "pipeline", boost::uuids::to_string(pipeline) },
+				{ "pipeline", pipeline.ToString() },
 				{ "parameters", parameters },
 				{ "bitmaps", nlohmann::json::object() }
 			};
 			for (auto const& [name, bitmap] : bitmaps) {
-				document["bitmaps"][name] = boost::uuids::to_string(bitmap);
+				document["bitmaps"][name] = bitmap.ToString();
 			}
 
 			auto temporary = path;
@@ -85,12 +83,12 @@ export namespace fyuu_asset {
 			}
 			auto document = nlohmann::json::parse(input);
 			Material material{
-				.pipeline = boost::uuids::string_generator{}(document.at("pipeline").get<std::string>()),
+				.pipeline = UUID::Parse(document.at("pipeline").get<std::string>()),
 				.parameters = document.at("parameters").get<std::unordered_map<std::string, std::vector<float>>>(),
 				.bitmaps = {}
 			};
 			for (auto const& [name, value] : document.at("bitmaps").items()) {
-				material.bitmaps.emplace(name, boost::uuids::string_generator{}(value.get<std::string>()));
+				material.bitmaps.emplace(name, UUID::Parse(value.get<std::string>()));
 			}
 			if (!material.Valid()) {
 				throw std::runtime_error("Loaded material is invalid");

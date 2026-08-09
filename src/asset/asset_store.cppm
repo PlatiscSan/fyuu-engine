@@ -1,17 +1,21 @@
 module;
 #include <version>
 #if !defined(__cpp_lib_modules)
+#include <algorithm>
+#include <string>
 #include <stdexcept>
 #include <utility>
 #include <mutex>
 #include <filesystem>
+#include <string_view>
+#include <vector>
 #endif // !defined(__cpp_lib_modules)
 
 export module fyuu_engine:asset;
 #if defined(__cpp_lib_modules)
 import std;
 #endif // defined(__cpp_lib_modules)
-import fyuu_asset;
+export import fyuu_asset;
 
 namespace {
 
@@ -20,6 +24,10 @@ namespace {
 }
 
 export namespace fyuu_engine {
+	struct AssetEntry {
+		fyuu_asset::UUID id;
+		std::string name;
+	};
 
 	class AssetStore {
 	private:
@@ -59,5 +67,63 @@ export namespace fyuu_engine {
 			return m_root;
 		}
 	};
+
+	[[nodiscard]] std::vector<AssetEntry> DiscoverAssets(
+		AssetStore const& store,
+		std::string_view category
+	) {
+		if (category.empty() || std::ranges::any_of(category, [](char character) {
+			return character == '/' || character == '\\';
+		})) {
+			throw std::invalid_argument("Asset category must be a single directory name");
+		}
+
+		std::vector<AssetEntry> assets;
+		auto const directory = store.Root() / category;
+		std::error_code error;
+		if (!std::filesystem::exists(directory, error)) {
+			if (error) {
+				throw std::filesystem::filesystem_error(
+					"Failed to inspect asset directory",
+					directory,
+					error
+				);
+			}
+			return assets;
+		}
+
+		for (std::filesystem::directory_iterator iterator(directory, error), end;
+			iterator != end;
+			iterator.increment(error)) {
+			if (error) {
+				throw std::filesystem::filesystem_error(
+					"Failed to enumerate assets",
+					directory,
+					error
+				);
+			}
+			if (!iterator->is_regular_file() || iterator->path().extension() != ".json") {
+				continue;
+			}
+			try {
+				auto name = iterator->path().stem().string();
+				assets.push_back(AssetEntry{
+					.id = fyuu_asset::UUID::Parse(name),
+					.name = std::move(name)
+				});
+			}
+			catch (...) {
+			}
+		}
+		if (error) {
+			throw std::filesystem::filesystem_error(
+				"Failed to enumerate assets",
+				directory,
+				error
+			);
+		}
+		std::ranges::sort(assets, {}, &AssetEntry::name);
+		return assets;
+	}
 
 }

@@ -1,11 +1,8 @@
 module;
 #include <version>
 #if !defined(__cpp_lib_modules)
-#include <algorithm>
-#include <filesystem>
 #include <memory>
 #include <stdexcept>
-#include <string>
 #include <vector>
 #endif // !defined(__cpp_lib_modules)
 
@@ -22,10 +19,7 @@ export namespace fyuu_engine {
 	using Scene = fyuu_asset::Scene;
 	using SceneAsset = fyuu_asset::Asset<Scene>;
 
-	struct SceneAssetEntry {
-		fyuu_asset::UUID id;
-		std::string name;
-	};
+	using SceneAssetEntry = AssetEntry;
 
 	class SceneSaveOperation {
 	private:
@@ -71,9 +65,11 @@ fyuu_engine::SceneSaveOperation::SceneSaveOperation(SceneAsset::ManagedAsset con
 	: m_implementation(std::make_unique<Implementation>(asset)) {
 }
 
-fyuu_engine::SceneSaveOperation::SceneSaveOperation(SceneSaveOperation&&) noexcept = default;
+inline fyuu_engine::SceneSaveOperation::SceneSaveOperation(SceneSaveOperation&&) noexcept = default;
 
-fyuu_engine::SceneSaveOperation& fyuu_engine::SceneSaveOperation::operator=(SceneSaveOperation&&) noexcept = default;
+inline fyuu_engine::SceneSaveOperation& fyuu_engine::SceneSaveOperation::operator=(
+	SceneSaveOperation&&
+) noexcept = default;
 
 fyuu_engine::SceneSaveOperation::~SceneSaveOperation() noexcept {
 	if (m_implementation) {
@@ -101,60 +97,14 @@ fyuu_engine::SceneSaveOperation fyuu_engine::SaveScene(SceneAsset::ManagedAsset 
 }
 
 std::vector<fyuu_engine::SceneAssetEntry> fyuu_engine::DiscoverScenes(AssetStore const& store) {
-	std::vector<SceneAssetEntry> scenes;
-	auto const directory = store.Root() / "Scene";
-	std::error_code error;
-	if (!std::filesystem::exists(directory, error)) {
-		if (error) {
-			throw std::filesystem::filesystem_error(
-				"Failed to inspect scene asset directory",
-				directory,
-				error
-			);
-		}
-		return scenes;
-	}
-
-	for (std::filesystem::directory_iterator iterator(directory, error), end;
-		iterator != end;
-		iterator.increment(error)) {
-		if (error) {
-			throw std::filesystem::filesystem_error(
-				"Failed to enumerate scene assets",
-				directory,
-				error
-			);
-		}
-		if (!iterator->is_regular_file() || iterator->path().extension() != ".json") {
-			continue;
-		}
-		try {
-			auto name = iterator->path().stem().string();
-			scenes.push_back(SceneAssetEntry{
-				.id = fyuu_asset::ParseUUID(name),
-				.name = std::move(name)
-			});
-		}
-		catch (...) {
-		}
-	}
-	if (error) {
-		throw std::filesystem::filesystem_error(
-			"Failed to enumerate scene assets",
-			directory,
-			error
-		);
-	}
-
-	std::ranges::sort(scenes, {}, &SceneAssetEntry::name);
-	return scenes;
+	return DiscoverAssets(store, "Scene");
 }
 
 fyuu_engine::SceneAsset::ManagedAsset fyuu_engine::LoadScene(
 	AssetStore const& store,
 	fyuu_asset::UUID const& id
 ) {
-	if (fyuu_asset::UUIDIsNil(id)) {
+	if (id.IsNil()) {
 		throw std::invalid_argument("Cannot load a scene with an empty UUID");
 	}
 	(void)store;

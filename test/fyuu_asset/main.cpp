@@ -43,7 +43,6 @@ namespace {
 
 	using namespace std::chrono_literals;
 	using TestAsset = fyuu_asset::Asset<test_asset::Configuration>;
-	constexpr char HexDigits[] = "0123456789abcdef";
 
 	void Require(bool condition, char const* message) {
 		if (!condition) {
@@ -51,18 +50,8 @@ namespace {
 		}
 	}
 
-	std::string UUIDString(auto const& id) {
-		std::string result;
-		result.reserve(36);
-		for (std::size_t index = 0; index < id.size(); ++index) {
-			if (index == 4 || index == 6 || index == 8 || index == 10) {
-				result.push_back('-');
-			}
-			auto byte = id.data[index];
-			result.push_back(HexDigits[byte >> 4]);
-			result.push_back(HexDigits[byte & 0x0f]);
-		}
-		return result;
+	std::string UUIDString(fyuu_asset::UUID const& id) {
+		return id.ToString();
 	}
 
 	std::filesystem::path SerializedPath(

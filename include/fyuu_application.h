@@ -1,5 +1,6 @@
 #pragma once
 #include "api_macro.h"
+#include "fyuu_types.h"
 
 #if defined(__cplusplus)
 #include <cstdint>
@@ -31,9 +32,11 @@ extern "C" {
 		float font_size;
 
 		void* user_data;
+		Fyuu_Bool request_stop;
 
 		void(*Init)(Fyuu_App* self) NOEXCEPT;
 		void(*Tick)(Fyuu_App* self) NOEXCEPT;
+		Fyuu_Bool(*CloseRequested)(Fyuu_App* self) NOEXCEPT;
 		void(*Shutdown)(Fyuu_App* self) NOEXCEPT;
 
 	} Fyuu_App;

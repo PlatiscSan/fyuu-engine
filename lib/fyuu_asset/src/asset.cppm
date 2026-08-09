@@ -81,7 +81,7 @@ namespace {
 		static std::mutex mutex;
 		static std::condition_variable_any condition;
 		static std::jthread ser_thread(
-			[](std::stop_token const& token) noexcept {
+			[](std::stop_token token) noexcept {
 				while (!token.stop_requested()) {
 					SerializeTask current;
 
@@ -319,7 +319,7 @@ namespace fyuu_asset {
 	private:
 		friend class execution::AssetLoader;
 
-		inline static std::unordered_map<UUID, Weak, UUIDHash, UUIDEquality> s_loaded_assets;
+		inline static std::unordered_map<UUID, Weak> s_loaded_assets;
 		inline static std::shared_mutex s_mutex;
 
 		static void Unregister(Asset* asset) noexcept {
@@ -364,7 +364,7 @@ namespace fyuu_asset {
 		template <class... Args>
 		[[nodiscard]] static ManagedAsset Create(Args&&... args) {
 			return CreateWithID(
-				GenerateUUID(),
+				UUID::Generate(),
 				std::forward<Args>(args)...
 			);
 		}
@@ -421,7 +421,7 @@ namespace fyuu_asset {
 				}
 			);
 			auto path = GetPath(
-				fs::path{ structure_name } / (UUIDToString(id) + ".json")
+				fs::path{ structure_name } / (id.ToString() + ".json")
 			);
 			fs::create_directories(path.parent_path());
 			if constexpr (requires { data.Serialize(path); }) {
@@ -437,8 +437,7 @@ namespace fyuu_asset {
 					}
 				}
 #else
-				using Members =
-					boost::describe::describe_members<T, boost::describe::mod_public>;
+				using Members = boost::describe::describe_members<T, boost::describe::mod_public>;
 				boost::mp11::mp_for_each<Members>(
 					[&](auto member) {
 						serialized[member.name] = data.*member.pointer;

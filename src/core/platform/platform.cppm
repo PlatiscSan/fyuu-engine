@@ -36,8 +36,28 @@ namespace fyuu_engine {
 			case SDLK_RETURN: return ImGuiKey_Enter;
 			case SDLK_ESCAPE: return ImGuiKey_Escape;
 			case SDLK_A: return ImGuiKey_A;
+			case SDLK_B: return ImGuiKey_B;
 			case SDLK_C: return ImGuiKey_C;
+			case SDLK_D: return ImGuiKey_D;
+			case SDLK_E: return ImGuiKey_E;
+			case SDLK_F: return ImGuiKey_F;
+			case SDLK_G: return ImGuiKey_G;
+			case SDLK_H: return ImGuiKey_H;
+			case SDLK_I: return ImGuiKey_I;
+			case SDLK_J: return ImGuiKey_J;
+			case SDLK_K: return ImGuiKey_K;
+			case SDLK_L: return ImGuiKey_L;
+			case SDLK_M: return ImGuiKey_M;
+			case SDLK_N: return ImGuiKey_N;
+			case SDLK_O: return ImGuiKey_O;
+			case SDLK_P: return ImGuiKey_P;
+			case SDLK_Q: return ImGuiKey_Q;
+			case SDLK_R: return ImGuiKey_R;
+			case SDLK_S: return ImGuiKey_S;
+			case SDLK_T: return ImGuiKey_T;
+			case SDLK_U: return ImGuiKey_U;
 			case SDLK_V: return ImGuiKey_V;
+			case SDLK_W: return ImGuiKey_W;
 			case SDLK_X: return ImGuiKey_X;
 			case SDLK_Y: return ImGuiKey_Y;
 			case SDLK_Z: return ImGuiKey_Z;
@@ -231,6 +251,10 @@ namespace fyuu_engine {
 
 		[[nodiscard]] bool StopRequested() const noexcept {
 			return m_stop_requested;
+		}
+
+		void ClearStopRequest() noexcept {
+			m_stop_requested = false;
 		}
 
 		[[nodiscard]] bool SurfaceVisible() const noexcept {

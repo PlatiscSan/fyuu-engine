@@ -42,6 +42,7 @@ namespace fyuu_engine {
 		void* user_data = nullptr;
 		void (*Initialize)(Runtime&) = nullptr;
 		void (*Tick)(Runtime&) = nullptr;
+		bool (*CloseRequested)(Runtime&) = nullptr;
 		void (*Shutdown)(Runtime&) = nullptr;
 	};
 

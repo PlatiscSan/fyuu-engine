@@ -26,6 +26,7 @@ extern "C" {
 		if (!app) {
 			return EXIT_FAILURE;
 		}
+		app->request_stop = false;
 		fyuu_engine::ApplicationDescriptor application{
 			.description = app->description ? app->description : "",
 			.name = app->name ? app->name : "FyuuApplication",
@@ -57,6 +58,14 @@ extern "C" {
 				if (application->Tick) {
 					application->Tick(application);
 				}
+				if (application->request_stop) {
+					runtime.RequestStop();
+				}
+			},
+			.CloseRequested = [](fyuu_engine::Runtime& runtime) {
+				auto application = static_cast<Fyuu_App*>(runtime.UserData());
+				return !application->CloseRequested
+					|| application->CloseRequested(application);
 			},
 			.Shutdown = [](fyuu_engine::Runtime& runtime) {
 				auto application = static_cast<Fyuu_App*>(runtime.UserData());

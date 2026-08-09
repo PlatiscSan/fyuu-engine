@@ -4,7 +4,6 @@ module;
 #include <atomic>
 #include <cmath>
 #include <cstddef>
-#include <cstring>
 #include <new>
 #include <stdexcept>
 #include <utility>
@@ -44,15 +43,15 @@ struct Fyuu_SceneAsset_T {
 namespace {
 
 	void ToAssetUUID(Fyuu_UUID const& source, fyuu_asset::UUID& output) noexcept {
-		fyuu_asset::UUIDFromBytes(source.bytes, output);
+		output = fyuu_asset::UUID::FromBytes(source.bytes);
 	}
 
 	void FromAssetUUID(fyuu_asset::UUID const& source, Fyuu_UUID& output) noexcept {
-		fyuu_asset::UUIDToBytes(source, output.bytes);
+		source.ToBytes(output.bytes);
 	}
 
 	void ClearUUID(Fyuu_UUID& output) noexcept {
-		std::memset(output.bytes, 0, sizeof(output.bytes));
+		std::ranges::fill(output.bytes, std::uint8_t{ 0u });
 	}
 
 	[[nodiscard]] bool ValidName(Fyuu_StringView const& name) noexcept {
@@ -81,7 +80,7 @@ namespace {
 		auto found = std::ranges::find_if(
 			scene.entities,
 			[&id](fyuu_engine::Scene::Entity const& entity) {
-				return fyuu_asset::UUIDEqual(entity.id, id);
+				return std::is_eq(entity.id <=> id);
 			}
 		);
 		return found == scene.entities.end() ? nullptr : &*found;
@@ -168,7 +167,7 @@ extern "C" {
 		try {
 			fyuu_asset::UUID asset_id;
 			ToAssetUUID(id, asset_id);
-			if (fyuu_asset::UUIDIsNil(asset_id)) {
+			if (asset_id.IsNil()) {
 				return FYUU_ERROR_INVALID_ARGUMENT;
 			}
 			auto asset = fyuu_asset::execution::AssetLoader{}.Load<fyuu_engine::Scene>(asset_id);
@@ -300,7 +299,7 @@ extern "C" {
 			ToAssetUUID(descriptor->parent, parent);
 			ToAssetUUID(descriptor->mesh, mesh);
 			ToAssetUUID(descriptor->material, material);
-			if (!fyuu_asset::UUIDIsNil(parent) && !FindEntity(data, parent)) {
+			if (!parent.IsNil() && !FindEntity(data, parent)) {
 				return FYUU_ERROR_NOT_FOUND;
 			}
 
@@ -329,12 +328,12 @@ extern "C" {
 		ToAssetUUID(entity, id);
 		auto& entities = scene->asset->Get().entities;
 		if (std::ranges::any_of(entities, [&id](auto const& candidate) {
-			return fyuu_asset::UUIDEqual(candidate.parent, id);
+			return std::is_eq(candidate.parent <=> id);
 		})) {
 			return FYUU_ERROR_INVALID_STATE;
 		}
 		auto removed = std::erase_if(entities, [&id](auto const& candidate) {
-			return fyuu_asset::UUIDEqual(candidate.id, id);
+			return std::is_eq(candidate.id <=> id);
 		});
 		return removed == 0u ? FYUU_ERROR_NOT_FOUND : FYUU_SUCCESS;
 	}
@@ -353,7 +352,7 @@ extern "C" {
 		}
 		fyuu_asset::UUID id;
 		ToAssetUUID(entity, id);
-		if (fyuu_asset::UUIDIsNil(id)) {
+		if (id.IsNil()) {
 			return FYUU_ERROR_INVALID_ARGUMENT;
 		}
 		*output = FindEntity(scene->asset->Get(), id) != nullptr;
@@ -384,7 +383,7 @@ extern "C" {
 		if (!buffer || capacity < *required_size) {
 			return FYUU_ERROR_INSUFFICIENT_BUFFER;
 		}
-		std::memcpy(buffer, found->name.data(), found->name.size());
+		std::ranges::copy(found->name, buffer);
 		buffer[found->name.size()] = '\0';
 		return FYUU_SUCCESS;
 	}
@@ -451,19 +450,19 @@ extern "C" {
 		if (!found) {
 			return FYUU_ERROR_NOT_FOUND;
 		}
-		if (fyuu_asset::UUIDEqual(id, parent_id)) {
+		if (std::is_eq(id <=> parent_id)) {
 			return FYUU_ERROR_INVALID_ARGUMENT;
 		}
-		if (!fyuu_asset::UUIDIsNil(parent_id) && !FindEntity(data, parent_id)) {
+		if (!parent_id.IsNil() && !FindEntity(data, parent_id)) {
 			return FYUU_ERROR_NOT_FOUND;
 		}
 
 		auto current = parent_id;
-		for (std::size_t depth = 0u; !fyuu_asset::UUIDIsNil(current); ++depth) {
+		for (std::size_t depth = 0u; !current.IsNil(); ++depth) {
 			if (depth >= data.entities.size()) {
 				return FYUU_ERROR_INVALID_STATE;
 			}
-			if (fyuu_asset::UUIDEqual(current, id)) {
+			if (std::is_eq(current <=> id)) {
 				return FYUU_ERROR_INVALID_STATE;
 			}
 			auto* ancestor = FindEntity(data, current);

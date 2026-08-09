@@ -8,9 +8,6 @@ module;
 #include <string>
 #include <vector>
 #endif
-#include <boost/uuid.hpp>
-#include <boost/uuid/string_generator.hpp>
-#include <boost/uuid/uuid_io.hpp>
 #include <nlohmann/json.hpp>
 
 export module fyuu_asset:pipeline;
@@ -18,6 +15,7 @@ export module fyuu_asset:pipeline;
 #if defined(__cpp_lib_modules)
 import std;
 #endif
+import :uuid;
 
 export namespace fyuu_asset {
 
@@ -39,7 +37,7 @@ export namespace fyuu_asset {
 
 	struct Pipeline {
 		struct Stage {
-			boost::uuids::uuid shader;
+			UUID shader;
 			std::string entry_point;
 			ShaderStage stage = ShaderStage::Vertex;
 		};
@@ -54,7 +52,7 @@ export namespace fyuu_asset {
 
 			std::uint32_t seen = 0;
 			for (auto const& entry : stages) {
-				if (entry.shader.is_nil() || entry.entry_point.empty()) {
+				if (entry.shader.IsNil() || entry.entry_point.empty()) {
 					return false;
 				}
 				auto bit = std::uint32_t{ 1 } << static_cast<std::uint8_t>(entry.stage);
@@ -82,7 +80,7 @@ export namespace fyuu_asset {
 			};
 			for (auto const& entry : stages) {
 				document["stages"].push_back({
-					{ "shader", boost::uuids::to_string(entry.shader) },
+					{ "shader", entry.shader.ToString() },
 					{ "entry_point", entry.entry_point },
 					{ "stage", static_cast<std::uint8_t>(entry.stage) }
 				});
@@ -126,7 +124,7 @@ export namespace fyuu_asset {
 			};
 			for (auto const& source : document.at("stages")) {
 				pipeline.stages.emplace_back(
-					boost::uuids::string_generator{}(source.at("shader").get<std::string>()),
+					UUID::Parse(source.at("shader").get<std::string>()),
 					source.at("entry_point").get<std::string>(),
 					static_cast<ShaderStage>(source.at("stage").get<std::uint8_t>())
 				);

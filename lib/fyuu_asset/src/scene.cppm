@@ -42,28 +42,28 @@ export namespace fyuu_asset {
 				throw std::invalid_argument("Scene entity name cannot be empty");
 			}
 			entities.push_back(Entity{
-				.id = GenerateUUID(),
+				.id = UUID::Generate(),
 				.name = name
 			});
 			return entities.back();
 		}
 
 		[[nodiscard]] bool Valid() const {
-			std::unordered_map<UUID, Entity const*, UUIDHash, UUIDEquality> indexed;
+			std::unordered_map<UUID, Entity const*> indexed;
 			indexed.reserve(entities.size());
 			for (auto const& entity : entities) {
-				if (entity.id.is_nil() || entity.name.empty() || !indexed.emplace(entity.id, &entity).second) {
+				if (entity.id.IsNil() || entity.name.empty() || !indexed.emplace(entity.id, &entity).second) {
 					return false;
 				}
 			}
 
 			for (auto const& entity : entities) {
-				if (!entity.parent.is_nil() && !indexed.contains(entity.parent)) {
+				if (!entity.parent.IsNil() && !indexed.contains(entity.parent)) {
 					return false;
 				}
 
 				auto current = &entity;
-				for (std::size_t depth = 0; !current->parent.is_nil(); ++depth) {
+				for (std::size_t depth = 0; !current->parent.IsNil(); ++depth) {
 					if (depth >= entities.size()) {
 						return false;
 					}
@@ -81,14 +81,14 @@ export namespace fyuu_asset {
 			nlohmann::json document = nlohmann::json::array();
 			for (auto const& entity : entities) {
 				nlohmann::json serialized{
-					{ "id", UUIDToString(entity.id) },
-					{ "parent", UUIDIsNil(entity.parent) ? nlohmann::json(nullptr) : nlohmann::json(UUIDToString(entity.parent)) },
+					{ "id", entity.id.ToString() },
+					{ "parent", entity.parent.IsNil() ? nlohmann::json(nullptr) : nlohmann::json(entity.parent.ToString()) },
 					{ "name", entity.name },
 					{ "translation", entity.translation },
 					{ "rotation", entity.rotation },
 					{ "scale", entity.scale },
-					{ "mesh", UUIDIsNil(entity.mesh) ? nlohmann::json(nullptr) : nlohmann::json(UUIDToString(entity.mesh)) },
-					{ "material", UUIDIsNil(entity.material) ? nlohmann::json(nullptr) : nlohmann::json(UUIDToString(entity.material)) }
+					{ "mesh", entity.mesh.IsNil() ? nlohmann::json(nullptr) : nlohmann::json(entity.mesh.ToString()) },
+					{ "material", entity.material.IsNil() ? nlohmann::json(nullptr) : nlohmann::json(entity.material.ToString()) }
 				};
 				document.push_back(std::move(serialized));
 			}
@@ -124,7 +124,7 @@ export namespace fyuu_asset {
 			scene.entities.reserve(document.size());
 			for (auto const& source : document) {
 				Entity entity{
-					.id = ParseUUID(source.at("id").get<std::string>()),
+					.id = UUID::Parse(source.at("id").get<std::string>()),
 					.parent = {},
 					.name = source.at("name").get<std::string>(),
 					.translation = source.at("translation").get<std::array<float, 3>>(),
@@ -134,13 +134,13 @@ export namespace fyuu_asset {
 					.material = {}
 				};
 				if (!source.at("parent").is_null()) {
-					entity.parent = ParseUUID(source.at("parent").get<std::string>());
+					entity.parent = UUID::Parse(source.at("parent").get<std::string>());
 				}
 				if (!source.at("mesh").is_null()) {
-					entity.mesh = ParseUUID(source.at("mesh").get<std::string>());
+					entity.mesh = UUID::Parse(source.at("mesh").get<std::string>());
 				}
 				if (!source.at("material").is_null()) {
-					entity.material = ParseUUID(source.at("material").get<std::string>());
+					entity.material = UUID::Parse(source.at("material").get<std::string>());
 				}
 				scene.entities.push_back(std::move(entity));
 			}

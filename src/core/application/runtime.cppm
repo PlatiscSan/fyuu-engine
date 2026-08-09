@@ -113,7 +113,10 @@ namespace fyuu_engine {
 			}
 			m_platform.ProcessEvents(m_application);
 			if (m_platform.StopRequested()) {
-				RequestStop();
+				m_platform.ClearStopRequest();
+				if (!m_application.CloseRequested || m_application.CloseRequested(*this)) {
+					RequestStop();
+				}
 			}
 			if (m_state == RuntimeState::Running &&
 				m_platform.SurfaceVisible()) {
