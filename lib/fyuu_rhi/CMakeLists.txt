@@ -56,6 +56,9 @@ find_package(slang CONFIG REQUIRED)
 # serialization
 find_package(nlohmann_json CONFIG REQUIRED)
 
+# compile-time data structure
+find_package(frozen CONFIG REQUIRED)
+
 if(WIN32)
 	# DirectX
 	find_package(directx-headers CONFIG REQUIRED)
@@ -89,17 +92,17 @@ collect_sources(${CMAKE_CURRENT_SOURCE_DIR}/src ""
 
 if(WIN32)
 	list(FILTER sources EXCLUDE REGEX ".*glad_glx\\.c$|.*glad_egl\\.c$|.*glad_x11\\.c$")
-elseif(UNIX)
-	list(FILTER sources EXCLUDE REGEX ".*glad_wgl\\.c$")
 elseif(ANDROID)
 	list(FILTER sources EXCLUDE REGEX ".*glad_glx\\.c$|.*glad_wgl\\.c$")
 elseif(APPLE)
 	list(FILTER sources EXCLUDE REGEX ".*glad_glx\\.c$|.*glad_egl\\.c$|.*glad_wgl\\.c$")
+elseif(UNIX)
+	list(FILTER sources EXCLUDE REGEX ".*glad_wgl\\.c$")
 endif()
 
 collect_cxx_modules(
 	${CMAKE_CURRENT_SOURCE_DIR}/module
-	"interface"
+	""
 	interface_modules
 	internal_modules
 )
@@ -112,6 +115,14 @@ target_include_directories(${PROJECT_NAME}
 	PRIVATE
 		${CMAKE_CURRENT_SOURCE_DIR}/include
 )
+
+if(APPLE)
+	target_include_directories(
+		${PROJECT_NAME}
+		PRIVATE
+			${PROJECT_SOURCE_DIR}/../dependency/metal-cpp
+	)
+endif()
 	
 target_sources(${PROJECT_NAME}
 	PUBLIC FILE_SET CXX_MODULES FILES 
@@ -150,6 +161,7 @@ target_link_libraries(${PROJECT_NAME}
 		# parallel programming
 		TBB::tbb TBB::tbbmalloc TBB::tbbbind_2_5 TBB::tbbmalloc_proxy
 		#-- Vulkan
+		Vulkan::Vulkan
 		GPUOpen::VulkanMemoryAllocator
 		#-- webgpu Dawn
 		dawn::webgpu_dawn
@@ -165,6 +177,8 @@ target_link_libraries(${PROJECT_NAME}
 		slang::slang
 		#-- serialization
 		nlohmann_json::nlohmann_json
+		# compile-time data structure
+		frozen::frozen frozen::frozen-headers
 )
 
 if(NOT FYUU_RHI_USE_VULKAN_HEADER)
@@ -191,6 +205,37 @@ if(WIN32)
 
 			Opengl32.lib
 	)
+elseif(UNIX AND NOT ANDROID AND NOT APPLE)
+	find_package(OpenGL REQUIRED COMPONENTS OpenGL EGL)
+	find_package(X11 REQUIRED)
+	pkg_check_modules(WAYLAND_CLIENT REQUIRED IMPORTED_TARGET wayland-client)
+	target_link_libraries(
+		${PROJECT_NAME}
+		PRIVATE
+			OpenGL::OpenGL
+			OpenGL::EGL
+			X11::X11
+			PkgConfig::WAYLAND_CLIENT
+	)
+elseif(ANDROID)
+	target_link_libraries(
+		${PROJECT_NAME}
+		PRIVATE
+			EGL
+			GLESv3
+	)
+elseif(APPLE)
+	target_link_libraries(
+		${PROJECT_NAME}
+		PRIVATE
+			"-framework Foundation"
+			"-framework QuartzCore"
+			"-framework Metal"
+	)
 endif()
 
 disable_rtti(${PROJECT_NAME})
+
+if(BUILD_TESTING)
+	add_subdirectory(test/hello_triangle)
+endif()

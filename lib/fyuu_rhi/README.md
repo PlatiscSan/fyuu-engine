@@ -1,117 +1,100 @@
-# FyuuRHI 使用指南 / FyuuRHI User Guide
+# FyuuRHI
 
-FyuuRHI 是一个基于 C++23 Modules 的渲染硬件接口。它将设备、资源、管线和执行图作为跨后端的公共接口，并由 D3D12、Vulkan、OpenGL、WebGPU（以及 Apple 平台上的 Metal）实现具体行为。
+FyuuRHI 是基于 C++23 Modules 的独立渲染硬件接口。本页先提供中文说明，随后提供 English guide。
 
-FyuuRHI is a C++23 Modules rendering hardware interface. It exposes backend-independent devices, resources, pipelines, and execution graphs, with concrete implementations for D3D12, Vulkan, OpenGL, WebGPU, and Metal on Apple platforms.
-
-- [中文](#中文)
-- [English](#english)
-
----
+FyuuRHI is a standalone rendering hardware interface built with C++23 Modules. The Chinese guide comes first, followed by the English guide.
 
 ## 中文
 
-### 1. 设计概览
+### 支持范围
 
-一次典型的 FyuuRHI 工作流如下：
+FyuuRHI 提供统一的实例、设备、资源、管线、命令图和呈现接口。后端按平台编译：
 
-1. 初始化指定后端的 `Instance`。
-2. 枚举并选择物理设备。
-3. 创建逻辑设备、资源、视图、采样器和管线。
-4. 从逻辑设备创建 `CommandScheduler`。
-5. 使用 `CommandGraphBuilder` 注册绑定槽并描述节点、资源访问、依赖和命令。
-6. 编译并连接命令图，移动绑定实际对象，然后启动异步执行。
-7. receiver 在完成、错误或取消时收回所有绑定对象。
+| 平台 | 后端 |
+| --- | --- |
+| Windows | DirectX 12、Vulkan、OpenGL、WebGPU |
+| Linux | Vulkan、OpenGL、WebGPU |
+| Apple | Metal、WebGPU |
 
-命令图声明的是资源访问关系，而不是手工编写后端屏障。执行计划会根据访问关系生成批次、依赖和屏障；后端负责选择实际队列、录制命令并提交。
-
-### 2. 构建与导入
-
-项目要求 C++23，并使用 CMake 的 C++ Modules 支持。将 `FyuuRHI` 链接到目标：
-
-```cmake
-target_link_libraries(MyTarget PRIVATE FyuuRHI)
-```
-
-在 C++ 文件中导入主模块：
+应用只导入主模块：
 
 ```cpp
 import fyuu_rhi;
 ```
 
-主模块导出公共资源、管线和执行 API，并提供以下常用后端类型别名：
+CMake 目标链接 `FyuuRHI`：
 
-| 平台 | 类型 |
-| --- | --- |
-| Windows | `D3D12Instance`、`VulkanInstance`、`OpenGLInstance`、`WebGPUInstance` |
-| Linux/Android | `VulkanInstance`、`OpenGLInstance`、`WebGPUInstance` |
-| Apple | `MetalInstance`、`WebGPUInstance` |
+```cmake
+target_link_libraries(MyApplication PRIVATE FyuuRHI)
+```
 
-后端相关对象不能混用。例如，Vulkan 逻辑设备创建的资源必须绑定到 Vulkan scheduler 的命令图。
+### 初始化与选择后端
 
-### 3. 初始化设备
-
-以下示例使用 Vulkan；替换类型别名即可选择其他后端。
+RHI 上下文必须在请求实例前初始化。日志由调用方提供的 `log::Sink` 同步接收：
 
 ```cpp
-using namespace fyuu_rhi;
-
-VulkanInstance::Initialize(
-    "Example",
-    Version{ 0, 1, 0, 0 },
-    "FyuuEngine",
-    Version{ 0, 1, 0, 0 }
+fyuu_rhi::InitializeRHIContext(
+    "MyApplication",
+    { 0u, 1u, 0u, 0u },
+    "MyEngine",
+    { 0u, 1u, 0u, 0u },
+    &log_sink
 );
+```
 
-auto instance = VulkanInstance::Get();
-if (!instance) {
-    throw std::runtime_error("Vulkan instance is not initialized");
+`EnumerateBackends()` 返回当前平台编译进来的后端。`RequestInstance()` 通过回调返回相应实例：
+
+```cpp
+for (auto backend : fyuu_rhi::EnumerateBackends()) {
+    // 展示给用户，或按配置选择。
 }
 
-auto physical_devices = instance->EnumeratePhysicalDevices();
-auto physical_device = BestPerformance(physical_devices);
-auto info = physical_device.GetInfo();
-auto logical_device = physical_device.CreateLogicalDevice();
-auto scheduler = logical_device.CreateScheduler();
-```
+fyuu_rhi::RequestInstance(
+    fyuu_rhi::Backend::Vulkan,
+    [](fyuu_rhi::Instance instance) {
+        auto physical_devices = instance.EnumeratePhysicalDevices();
+        if (physical_devices.empty()) {
+            throw std::runtime_error("No physical device is available");
+        }
 
-`Instance::Initialize` 对每个后端类型只初始化一次。`BestPerformance` 优先选择独立 GPU，然后按设备类型和专用显存排序。也可以自行遍历 `GetInfo()` 的结果选择设备。
-
-部分平台/后端需要额外的原生参数，这些参数会由 `Initialize` 转发给后端。例如 Windows OpenGL 需要 `HWND`，Android Vulkan 需要 `android_app*`；以对应后端的 `CreateInstance` 签名为准。
-
-OpenGL 后端需要在线程上共享原生上下文时，可调用：
-
-```cpp
-instance->ShareContextOnThisThread();
-```
-
-不需要该操作的后端会忽略此调用。
-
-### 4. 创建资源和视图
-
-`ResourceFlags` 同时描述资源用途、内存位置、纹理维度、采样数和格式。标志通过 `Set` 添加：
-
-```cpp
-ResourceFlags vertex_flags;
-vertex_flags.Set(ResourceFlagBits::VertexBuffer);
-vertex_flags.Set(ResourceFlagBits::CopyDST);
-vertex_flags.Set(ResourceFlagBits::DeviceLocal);
-
-auto vertex_buffer = logical_device.CreateBuffer(
-    4096u,
-    vertex_flags
+        auto logical_device = physical_devices.front().CreateLogicalDevice();
+        auto scheduler = logical_device.CreateScheduler();
+    }
 );
+```
 
-ResourceFlags color_flags;
-color_flags.Set(ResourceFlagBits::Texture2D);
-color_flags.Set(ResourceFlagBits::TextureView2D);
-color_flags.Set(ResourceFlagBits::RenderAttachment);
-color_flags.Set(ResourceFlagBits::CopySRC);
-color_flags.Set(ResourceFlagBits::DeviceLocal);
-color_flags.Set(ResourceFlagBits::Sample1);
-color_flags.Set(ResourceFlagBits::R8G8B8A8Unorm);
+可通过 `PhysicalDevice::GetInfo()` 检查名称、类型、厂商 ID、设备 ID 和专用显存。`BestPerformance()` 可用于推荐排序；创建逻辑设备的成员函数目前需要非 const 物理设备对象。
 
-auto color_texture = logical_device.CreateTexture(
+OpenGL 上下文具有线程亲和性。需要让其他调用线程访问共享 GL 对象时，调用：
+
+```cpp
+instance.ShareContextOnThisThread();
+```
+
+其他后端会忽略该操作。
+
+### 对象所有权
+
+`PhysicalDevice`、`LogicalDevice`、`Resource`、`View`、`Sampler`、`Pipeline`、`PipelineResourceGroup` 和 `CompletionToken` 使用不透明实现并按唯一所有权移动。`CommandScheduler` 可复制，它共享调度上下文。
+
+命令提交时，绑定对象移动进 operation。GPU 完成、失败或取消后，receiver 收到 `CommandGraphResources`，调用方再按原绑定索引取回对象。提交期间不得继续访问已移动的对象。
+
+### 创建资源和视图
+
+`ResourceFlags` 同时声明用途、内存属性、纹理维度、视图类型、采样数和格式。后端会拒绝矛盾或缺失的组合。
+
+```cpp
+fyuu_rhi::ResourceFlags color_flags;
+color_flags.Set(fyuu_rhi::ResourceFlagBits::DeviceLocal);
+color_flags.Set(fyuu_rhi::ResourceFlagBits::Texture2D);
+color_flags.Set(fyuu_rhi::ResourceFlagBits::TextureView2D);
+color_flags.Set(fyuu_rhi::ResourceFlagBits::TextureViewAspectAll);
+color_flags.Set(fyuu_rhi::ResourceFlagBits::RenderAttachment);
+color_flags.Set(fyuu_rhi::ResourceFlagBits::CopySRC);
+color_flags.Set(fyuu_rhi::ResourceFlagBits::Sample1);
+color_flags.Set(fyuu_rhi::ResourceFlagBits::R8G8B8A8Unorm);
+
+auto texture = logical_device.CreateTexture(
     width,
     height,
     1u,
@@ -119,8 +102,7 @@ auto color_texture = logical_device.CreateTexture(
     color_flags
 );
 
-auto color_view = logical_device.CreateTextureView(
-    color_texture,
+auto view = texture.CreateTextureView(
     0u,
     1u,
     0u,
@@ -129,332 +111,234 @@ auto color_view = logical_device.CreateTextureView(
 );
 ```
 
-资源和视图是 move-only 对象。`Resource::ID()` 返回稳定的逻辑资源标识；`Size()` 用于缓冲区，`TextureExtent()` 用于纹理。
+View 由 Resource 创建，因此不会通过公共接口向下转型，也不会把其他后端或其他设备的资源误传给 View 工厂。缓冲区 View 同样使用 `Resource::CreateBufferView()`。
 
-常见内存标志：
+缓冲区上传目标必须声明 `CopyDST`；`WriteBuffer` 不能写入仅声明 `VertexBuffer` 等读取用途的资源。
 
-- `DeviceLocal`：GPU 本地资源。
-- `HostVisible`：CPU 可见资源，常用于 staging。
-- `DeviceReadback`：用于 GPU 到 CPU 的读取。
+### 创建管线和资源组
 
-常见用途标志：
-
-- `CopySRC` / `CopyDST`
-- `VertexBuffer` / `IndexBuffer` / `UniformBuffer` / `StorageBuffer`
-- `TextureBinding` / `SamplerBinding` / `StorageBinding`
-- `RenderAttachment`
-
-不要同时设置互斥的内存、格式、纹理维度或采样数标志。
-
-### 5. 采样器、管线和资源组
-
-采样器由 `SamplerDescriptor` 创建。图形和计算管线分别使用 `GraphicsPipelineDescriptor` 与 `ComputePipelineDescriptor`。Shader 程序通过 `SlangPipelineProgramDescriptor` 描述。
+Shader 使用 `pipeline::SlangPipelineProgramDescriptor` 提供源码、入口点、宏和编译选项。图形管线还要声明顶点输入、图元、光栅化、深度模板、混合、采样数和颜色附件格式。
 
 ```cpp
-auto sampler = logical_device.CreateSampler(SamplerDescriptor{
-    // 按实际需求填写过滤、寻址和比较配置。
-});
-
-pipeline::GraphicsPipelineDescriptor pipeline_desc;
-// 填写 program、vertex、primitive、rasterization、color_targets 等字段。
-auto pipeline = logical_device.CreateGraphicsPipeline(pipeline_desc);
-```
-
-资源组是针对某条管线和某个 `space` 创建的不可变绑定集合：
-
-```cpp
-// 此代码位于 template <class Backend> 的渲染器中。
-using BindingValue = pipeline::PipelineBindingValue<Backend>;
-using Binding = pipeline::PipelineResourceBinding<Backend>;
-
-std::vector<Binding> bindings;
-bindings.push_back({
-    .slot = 0u,
-    .array_element = 0u,
-    .value = BindingValue::FromCombined(texture_view, sampler)
-});
-
-auto group = logical_device.CreatePipelineResourceGroup(
-    pipeline,
-    0u,
-    bindings
+auto pipeline = logical_device.CreateGraphicsPipeline(
+    {
+        .program = {
+            .modules = modules,
+            .entry_points = entry_points
+        },
+        .vertex = {
+            .buffers = vertex_buffers,
+            .attributes = vertex_attributes
+        },
+        .color_targets = color_targets
+    }
 );
 ```
 
-可使用 `FromBuffer`、`FromView`、`FromSampler` 或 `FromCombined` 构造绑定值。资源组内部对绑定资源为非拥有引用，因此相关资源、视图和采样器在资源组使用期间必须保持存活且不能移动。
+`PipelineResourceGroup` 由所属 Pipeline 创建：
 
-### 6. 命令图模型
+```cpp
+std::array bindings{
+    fyuu_rhi::pipeline::ResourceBinding{
+        .slot = 0u,
+        .array_element = 0u,
+        .value = fyuu_rhi::pipeline::BindingValue::FromCombined(
+            texture_view,
+            sampler
+        )
+    }
+};
 
-`CommandGraphBuilder` 中的注册索引只是图的绑定槽。图构建完成后，再把真实对象移动到对应槽位。
+auto group = pipeline.CreatePipelineResourceGroup(0u, bindings);
+```
 
-每个节点包含：
+绑定值在创建期间借用资源；后端生成的资源组保留其原生描述符所需的所有权。
 
-- 一个逻辑队列类型：`Graphics`、`Compute`、`Transfer` 或 `Present`。
-- 零个或多个对其他节点的依赖。
-- 对资源的声明式访问。
-- 按顺序录制的命令。
+### 命令图
 
-访问声明必须与命令行为一致：
+`CommandGraphBuilder` 先注册绑定槽，再创建节点。节点声明逻辑队列、依赖、资源访问和命令。访问声明用于生成批次、屏障和跨队列同步，必须与命令的真实使用一致。
 
 ```cpp
 using namespace fyuu_rhi::execution;
 
 auto builder = scheduler.schedule();
-auto staging_index = builder.RegisterResource();
-auto destination_index = builder.RegisterResource();
+auto target_index = builder.RegisterResource();
+auto target_view_index = builder.RegisterView();
+auto pipeline_index = builder.RegisterPipeline();
 
-auto transfer = builder.CreateNode(QueueType::Transfer);
-transfer
-    .Access({
-        staging_index,
-        AccessMode::Read,
-        ResourceUsage::CopySource,
-        {}
-    })
-    .Access({
-        destination_index,
-        AccessMode::Write,
-        ResourceUsage::CopyDestination,
-        {}
-    })
-    .Record(WriteBuffer{
-        staging_index,
-        0u,
-        bytes
-    })
-    .Record(CopyBuffer{
-        staging_index,
-        destination_index,
-        0u,
-        0u,
-        bytes.size()
-    });
-```
-
-`ResourceRange` 为 `std::monostate` 时表示整个资源。也可以使用 `BufferRange` 或 `TextureRange` 声明子范围。
-
-依赖可以在创建节点时指定，也可以随后添加：
-
-```cpp
-auto render = builder.CreateNode(QueueType::Graphics, transfer);
-auto present = builder.CreateNode(QueueType::Present);
-present.DependsOn(render);
-```
-
-常用命令包括：
-
-- `BeginRendering` / `EndRendering`
-- `BindPipeline` / `BindResourceGroup`
-- `BindVertexBuffer` / `BindIndexBuffer`
-- `Viewport` / `Scissor`
-- `Draw` / `DrawIndexed` / `Dispatch`
-- `WriteBuffer`
-- `CopyBuffer`、纹理与缓冲区之间的复制命令
-- `Present`
-
-### 7. 执行、receiver 与对象回收
-
-命令图执行是异步的。连接图时传入 receiver，然后绑定所有已注册槽位并调用 `start()`。
-
-receiver 必须实现成功、错误和取消通道，并通过 `RecoverBindings` 接收错误或取消路径返还的对象。成功路径通过 `set_value` 接收 `CommandGraphResources`。
-
-```cpp
-template <class Backend>
-struct Receiver {
-    std::shared_ptr<State<Backend>> state;
-
-    struct Environment {};
-
-    Environment get_env() const noexcept {
-        return {};
-    }
-
-    void RecoverBindings(
-        fyuu_rhi::execution::CommandGraphResources<Backend>&& resources
-    ) noexcept {
-        state->resources.emplace(std::move(resources));
-    }
-
-    void set_value(
-        fyuu_rhi::execution::CommandGraphResources<Backend>&& resources
-    ) && noexcept {
-        state->resources.emplace(std::move(resources));
-        state->done = true;
-    }
-
-    void set_error(std::exception_ptr error) && noexcept {
-        state->error = error;
-        state->done = true;
-    }
-
-    void set_stopped() && noexcept {
-        state->stopped = true;
-        state->done = true;
-    }
-};
-```
-
-实际跨线程 receiver 应使用 mutex、condition variable 或其他同步机制保护共享状态。
-
-```cpp
-auto operation = std::move(builder).connect(Receiver<Backend>{ state });
-operation.BindResource(staging_index, std::move(staging));
-operation.BindResource(destination_index, std::move(destination));
-operation.start();
-```
-
-执行期间绑定对象归 operation 所有，调用方不能继续访问。完成后使用以下接口取回：
-
-```cpp
-auto destination = resources.TakeResource(destination_index);
-auto view = resources.TakeView(view_index);
-auto sampler = resources.TakeSampler(sampler_index);
-auto pipeline = resources.TakePipeline(pipeline_index);
-auto group = resources.TakeResourceGroup(group_index);
-```
-
-每个槽位只能取回一次。重复取回会抛出异常。若连续执行相同绑定布局的图，可以使用 `FromLastBinding` 将上一轮的整组绑定直接移入新 operation。
-
-### 8. 渲染与呈现
-
-渲染节点需要声明附件和其他资源访问：
-
-```cpp
 auto render = builder.CreateNode(QueueType::Graphics);
 render
-    .Access({
-        target_index,
-        AccessMode::Write,
-        ResourceUsage::ColorAttachment,
-        {}
-    })
+    .Access(
+        {
+            target_index,
+            AccessMode::Write,
+            ResourceUsage::ColorAttachment,
+            {}
+        }
+    )
     .Record(BindPipeline{ pipeline_index })
-    .Record(BeginRendering{
-        .area = { 0, 0, width, height },
-        .colors = {{
-            .resource = target_index,
-            .view = target_view_index,
-            .load = LoadOperation::Clear,
-            .store = StoreOperation::Store,
-            .clear = { 0.05f, 0.05f, 0.08f, 1.0f }
-        }}
-    })
+    .Record(
+        BeginRendering{
+            .area = { 0, 0, width, height },
+            .colors = {
+                {
+                    .resource = target_index,
+                    .view = target_view_index,
+                    .clear = { 0.02f, 0.03f, 0.04f, 1.0f }
+                }
+            }
+        }
+    )
+    .Record(Viewport{ 0.0f, 0.0f, float(width), float(height) })
+    .Record(Scissor{ 0, 0, width, height })
     .Record(Draw{ 3u, 1u, 0u, 0u })
     .Record(EndRendering{});
 ```
 
-呈现使用独立的 `Present` 节点，并显式依赖渲染节点：
+`QueueType` 表示能力需求，不承诺独占或独立的物理队列。D3D12 和 Vulkan 后端根据整张图选择队列；Vulkan 同时处理 queue-family ownership transfer、timeline semaphore 和 binary semaphore/fence 回退。
+
+### Present 与窗口循环
+
+Present 使用独立节点，并依赖完成渲染的节点：
 
 ```cpp
 auto present = builder.CreateNode(QueueType::Present, render);
 present
-    .Access({
-        target_index,
-        AccessMode::Read,
-        ResourceUsage::PresentationSource,
-        {}
-    })
-    .Record(Present{
-        .source = target_index,
-        .target = 0u,
-        .buffer_count = 3u,
-        .vertical_sync = true
-    });
+    .Access(
+        {
+            target_index,
+            AccessMode::Read,
+            ResourceUsage::PresentationSource,
+            {}
+        }
+    )
+    .Record(
+        Present{
+            .source = target_index,
+            .target = 0u,
+            .buffer_count = 3u,
+            .vertical_sync = true
+        }
+    );
+```
 
-auto operation = std::move(builder).connect(Receiver<Backend>{ state });
-// 绑定资源、视图、管线……
-operation.SetPresentationTarget(native_window_handle);
+连接 operation 后通过 `SetPresentationTarget()` 按索引提供原生窗口目标。应用必须持续运行平台事件循环并逐帧提交；只提交一帧后阻塞消息循环不是有效的呈现循环。
+
+后端会在窗口尺寸、buffer 数量或 present mode 改变，以及 WSI 返回 out-of-date/suboptimal 时重建交换链。Vulkan 的 acquire out-of-date 路径会在当前准备阶段安全重建并重试，不会遗留永远无法 signal 的 present fence。
+
+### Receiver 与完成路径
+
+连接图、移动绑定并启动：
+
+```cpp
+auto operation = std::move(builder).connect(Receiver{ state });
+operation.BindResource(target_index, std::move(texture));
+operation.BindView(target_view_index, std::move(view));
+operation.BindPipeline(pipeline_index, std::move(pipeline));
+operation.SetPresentationTarget(native_window);
 operation.start();
 ```
 
-每张图中同一个呈现目标最多呈现一次。`Present::target` 是传给 `SetPresentationTarget` 的目标索引。窗口尺寸、buffer 数量或 present mode 改变时，后端会重建对应交换链。
+Receiver 需要提供：
 
-### 9. 取消和错误语义
+- `get_env()`：提供可选 stop token。
+- `RecoverBindings(CommandGraphResources&&)`：错误或取消完成前收回绑定。
+- `set_value(CommandGraphResources&&) &&`：成功完成。
+- `set_error(std::exception_ptr) &&`：失败完成。
+- `set_stopped() &&`：取消完成。
 
-- 启动前或准备/录制阶段观察到停止请求时，receiver 收到 stopped 通道。
-- 参数、图结构和绑定错误通过 error 通道返回。
-- GPU 完成由后端 `CompletionToken` 轮询，公共层的 completion service 在完成后调用 receiver。
-- 错误和取消路径通过 `RecoverBindings` 返还绑定，避免 move-only GPU 对象丢失。
-- GPU 对象的销毁可能等待其最后一次提交完成；不要在延迟敏感线程上随意销毁仍在使用的对象。
+完成回调通常来自内部 completion service 线程，因此共享状态必须同步。通过以下接口按绑定索引取回对象：
 
-### 10. 后端注意事项
+```cpp
+auto texture = resources.TakeResource(target_index);
+auto view = resources.TakeView(target_view_index);
+auto pipeline = resources.TakePipeline(pipeline_index);
+```
 
-- D3D12 与 Vulkan 支持图级多队列调度；实际物理队列由后端选择。
-- Vulkan 会管理 queue-family ownership transfer、timeline semaphore，以及不支持 timeline 时的 binary semaphore/fence 回退。
-- OpenGL 的上下文具有线程亲和性；使用前确认当前线程已共享正确上下文。
-- `QueueType` 表示任务能力需求，不保证后端一定使用独立的物理队列。
-- 跨后端代码应只依赖公共类型，不应访问 backend traits 中的原生句柄。
+每个槽位只能取回一次。
 
----
+### 错误与验证
+
+- phase 1 的参数和内存错误同步抛出并进入 error 通道。
+- phase 2 的录制异常封存在 CompletionToken 中。
+- stop 在提交前的准备与录制阶段生效；提交开始后不再检查。
+- 后端未捕获验证错误会写入 RHI log sink。测试不能只检查进程退出码，还必须把 Error/Fatal 日志视为失败。
+- GPU 对象可能在析构时等待最后一次使用完成，不应在延迟敏感线程随意销毁在途对象。
+
+### 可运行示例
+
+完整的跨后端窗口、上传、绘制、Present、receiver 和 resize 测试位于：
+
+```text
+lib/fyuu_rhi/test/hello_triangle/main.cpp
+```
+
+交互运行：
+
+```text
+HelloTriangle <d3d12|vulkan|opengl|webgpu|metal>
+```
+
+窗口会逐帧渲染直到关闭。CTest 使用 `--test`，提交两帧并在中间 resize，以验证交换链重建后自动退出。
 
 ## English
 
-### 1. Architecture
+### Supported backends
 
-A typical FyuuRHI workflow is:
+FyuuRHI exposes one public API for instances, devices, resources, pipelines, command graphs, and presentation.
 
-1. Initialize an `Instance` for the selected backend.
-2. Enumerate and select a physical device.
-3. Create a logical device, resources, views, samplers, and pipelines.
-4. Create a `CommandScheduler` from the logical device.
-5. Use `CommandGraphBuilder` to register binding slots and describe nodes, accesses, dependencies, and commands.
-6. Connect the graph to a receiver, move concrete objects into the binding slots, and start asynchronous execution.
-7. Recover every bound object from the receiver on success, error, or cancellation.
+| Platform | Backends |
+| --- | --- |
+| Windows | DirectX 12, Vulkan, OpenGL, WebGPU |
+| Linux | Vulkan, OpenGL, WebGPU |
+| Apple | Metal, WebGPU |
 
-The graph declares resource relationships rather than backend barriers. Compilation derives batches, dependencies, and barriers; each backend selects physical queues, records commands, and submits the resulting work.
-
-### 2. Build and import
-
-FyuuRHI requires C++23 and CMake C++ Modules support. Link the library target:
-
-```cmake
-target_link_libraries(MyTarget PRIVATE FyuuRHI)
-```
-
-Import the primary module:
+Import and link the primary module:
 
 ```cpp
 import fyuu_rhi;
 ```
 
-Common backend aliases include `D3D12Instance`, `VulkanInstance`, `OpenGLInstance`, `WebGPUInstance`, and `MetalInstance` where supported. Objects from different backends cannot be mixed.
-
-### 3. Device initialization
-
-```cpp
-using namespace fyuu_rhi;
-
-VulkanInstance::Initialize(
-    "Example",
-    Version{ 0, 1, 0, 0 },
-    "FyuuEngine",
-    Version{ 0, 1, 0, 0 }
-);
-
-auto instance = VulkanInstance::Get();
-auto physical_devices = instance->EnumeratePhysicalDevices();
-auto physical_device = BestPerformance(physical_devices);
-auto logical_device = physical_device.CreateLogicalDevice();
-auto scheduler = logical_device.CreateScheduler();
+```cmake
+target_link_libraries(MyApplication PRIVATE FyuuRHI)
 ```
 
-`Initialize` runs once for each backend type. `BestPerformance` prefers discrete GPUs and then considers device type and dedicated memory. Applications may instead inspect `PhysicalDeviceInfo` and apply their own selection policy.
+### Initialization
 
-Some platform/backend combinations require additional native arguments, which `Initialize` forwards to the backend. For example, Windows OpenGL requires an `HWND`, while Android Vulkan requires an `android_app*`; consult the corresponding backend's `CreateInstance` signature.
-
-### 4. Resources and views
-
-`ResourceFlags` describes usage, memory placement, texture dimension, sample count, and format:
+Initialize the process-wide RHI context before requesting an instance:
 
 ```cpp
-ResourceFlags flags;
-flags.Set(ResourceFlagBits::Texture2D);
-flags.Set(ResourceFlagBits::TextureView2D);
-flags.Set(ResourceFlagBits::RenderAttachment);
-flags.Set(ResourceFlagBits::DeviceLocal);
-flags.Set(ResourceFlagBits::Sample1);
-flags.Set(ResourceFlagBits::R8G8B8A8Unorm);
+fyuu_rhi::InitializeRHIContext(
+    "MyApplication",
+    { 0u, 1u, 0u, 0u },
+    "MyEngine",
+    { 0u, 1u, 0u, 0u },
+    &log_sink
+);
 
+fyuu_rhi::RequestInstance(
+    fyuu_rhi::Backend::Vulkan,
+    [](fyuu_rhi::Instance instance) {
+        auto physical_devices = instance.EnumeratePhysicalDevices();
+        auto logical_device = physical_devices.front().CreateLogicalDevice();
+        auto scheduler = logical_device.CreateScheduler();
+    }
+);
+```
+
+Use `EnumerateBackends()` to discover the backends compiled for the current platform. Inspect `PhysicalDevice::GetInfo()` when applying a custom adapter policy. OpenGL callers may use `Instance::ShareContextOnThisThread()` to bind a shared context on another thread.
+
+### Ownership
+
+GPU objects use opaque implementations and unique ownership. Resources, views, samplers, pipelines, resource groups, and devices are moved into command operations. `CommandScheduler` is copyable and shares its scheduling context.
+
+An operation owns every binding while GPU work is in flight. Its receiver gets all objects back as `CommandGraphResources` on success, failure, or cancellation.
+
+### Resources
+
+`ResourceFlags` declares usage, memory placement, texture dimension, view type, sample count, and format. Views are created by their owning resource:
+
+```cpp
 auto texture = logical_device.CreateTexture(
     width,
     height,
@@ -463,8 +347,7 @@ auto texture = logical_device.CreateTexture(
     flags
 );
 
-auto view = logical_device.CreateTextureView(
-    texture,
+auto view = texture.CreateTextureView(
     0u,
     1u,
     0u,
@@ -473,118 +356,97 @@ auto view = logical_device.CreateTextureView(
 );
 ```
 
-Resources and views are move-only. Use `DeviceLocal` for GPU-local storage, `HostVisible` for upload/staging resources, and `DeviceReadback` for GPU-to-CPU transfers. Do not combine mutually exclusive memory, dimension, sample-count, or format flags.
+A buffer written by `WriteBuffer` must include `ResourceFlagBits::CopyDST`; declaring only `VertexBuffer` or another read usage is insufficient.
 
-### 5. Pipelines and resource groups
+### Pipelines and resource groups
 
-Create graphics and compute pipelines with `GraphicsPipelineDescriptor` and `ComputePipelineDescriptor`. Pipeline resource groups are immutable binding collections associated with one pipeline space.
+Shaders are supplied through `pipeline::SlangPipelineProgramDescriptor`. Graphics descriptors also define vertex input, primitive, rasterization, depth/stencil, multisampling, blending, and attachment formats.
 
-Binding values are created with:
+Pipeline resource groups are created by their pipeline, which prevents public downcasts and cross-backend factory misuse:
 
-- `PipelineBindingValue::FromBuffer`
-- `PipelineBindingValue::FromView`
-- `PipelineBindingValue::FromSampler`
-- `PipelineBindingValue::FromCombined`
+```cpp
+auto group = pipeline.CreatePipelineResourceGroup(0u, bindings);
+```
 
-Resource groups keep non-owning references to bound objects. Those resources, views, and samplers must remain alive and unmoved while the group is used.
+### Command graphs
 
-### 6. Command graphs
-
-Registration returns graph-local binding indices. Concrete objects are supplied only after the graph is connected.
+Register graph-local binding slots, create nodes, declare resource access, and record commands:
 
 ```cpp
 using namespace fyuu_rhi::execution;
 
 auto builder = scheduler.schedule();
-auto source_index = builder.RegisterResource();
-auto destination_index = builder.RegisterResource();
+auto target_index = builder.RegisterResource();
+auto view_index = builder.RegisterView();
+auto pipeline_index = builder.RegisterPipeline();
 
-auto transfer = builder.CreateNode(QueueType::Transfer);
-transfer
-    .Access({
-        source_index,
-        AccessMode::Read,
-        ResourceUsage::CopySource,
-        {}
-    })
-    .Access({
-        destination_index,
-        AccessMode::Write,
-        ResourceUsage::CopyDestination,
-        {}
-    })
-    .Record(CopyBuffer{
-        source_index,
-        destination_index,
-        0u,
-        0u,
-        byte_count
-    });
+auto render = builder.CreateNode(QueueType::Graphics);
+render
+    .Access(
+        {
+            target_index,
+            AccessMode::Write,
+            ResourceUsage::ColorAttachment,
+            {}
+        }
+    )
+    .Record(BindPipeline{ pipeline_index })
+    .Record(BeginRendering{ /* attachments */ })
+    .Record(Draw{ 3u, 1u, 0u, 0u })
+    .Record(EndRendering{});
 ```
 
-Nodes use `Graphics`, `Compute`, `Transfer`, or `Present` queue types. These express capability requirements; they do not guarantee a dedicated physical queue. Dependencies can be supplied to `CreateNode` or added with `DependsOn`.
+Access declarations drive batching, barriers, and cross-queue synchronization. `QueueType` expresses a capability requirement, not a promise of a dedicated physical queue.
 
-Every command's resource behavior must be represented by matching `ResourceAccess` entries. Use `std::monostate` for the whole resource, or `BufferRange`/`TextureRange` for a subrange.
+### Presentation loop
 
-### 7. Execution and ownership
-
-Connect the completed builder to a receiver, bind every registered slot, and start the operation:
-
-```cpp
-auto operation = std::move(builder).connect(Receiver<Backend>{ state });
-operation.BindResource(source_index, std::move(source));
-operation.BindResource(destination_index, std::move(destination));
-operation.start();
-```
-
-The operation owns all bindings while work is in flight. The receiver obtains a `CommandGraphResources` object on completion. Recover objects exactly once with `TakeResource`, `TakeView`, `TakeSampler`, `TakePipeline`, or `TakeResourceGroup`.
-
-The receiver contract contains:
-
-- `set_value(CommandGraphResources&&)` for success.
-- `set_error(std::exception_ptr)` for failure.
-- `set_stopped()` for cancellation.
-- `RecoverBindings(CommandGraphResources&&)` to recover move-only bindings before error or stopped completion.
-- `get_env()` for optional stop-token propagation when the standard sender/receiver API is unavailable.
-
-Use synchronization around receiver state because completion normally occurs on the internal completion-service thread.
-
-### 8. Rendering and presentation
-
-A rendering node declares attachment access and records `BeginRendering`, draw commands, and `EndRendering`. Presentation is a separate `Present` node that depends on rendering and declares `PresentationSource` access.
+Presentation is a separate dependent node:
 
 ```cpp
 auto present = builder.CreateNode(QueueType::Present, render);
 present
-    .Access({
-        target_index,
-        AccessMode::Read,
-        ResourceUsage::PresentationSource,
-        {}
-    })
-    .Record(Present{
-        .source = target_index,
-        .target = 0u,
-        .buffer_count = 3u,
-        .vertical_sync = true
-    });
-
-operation.SetPresentationTarget(native_window_handle);
+    .Access(
+        {
+            target_index,
+            AccessMode::Read,
+            ResourceUsage::PresentationSource,
+            {}
+        }
+    )
+    .Record(
+        Present{
+            .source = target_index,
+            .target = 0u,
+            .buffer_count = 3u,
+            .vertical_sync = true
+        }
+    );
 ```
 
-`Present::target` indexes targets added with `SetPresentationTarget`. A graph may present each native target at most once. Backends recreate the swapchain when the window extent, buffer count, or presentation mode changes.
+Bind the native target with `SetPresentationTarget()`. A real application must pump platform events and submit frames continuously. Backends recreate swapchains when the extent, buffer count, or present mode changes, or when WSI reports out-of-date/suboptimal.
 
-### 9. Error and cancellation behavior
+### Completion receiver
 
-- Invalid graphs and missing bindings complete through the error channel.
-- A stop request observed before submission completes through the stopped channel.
-- Backend completion tokens are polled by the shared completion service.
-- Bindings are returned on every completion path.
-- Destroying an in-flight GPU object may wait for its final submission; avoid doing so on latency-sensitive threads.
+The receiver contract consists of `get_env()`, `RecoverBindings()`, `set_value()`, `set_error()`, and `set_stopped()`. Completion normally occurs on an internal service thread, so receiver state must be synchronized.
 
-### 10. Backend notes
+Recover move-only objects by their original binding index:
 
-- D3D12 and Vulkan support graph-level multi-queue scheduling.
-- Vulkan manages queue-family ownership transfers and uses timeline semaphores when supported, with a binary semaphore/fence fallback.
-- OpenGL contexts are thread-affine; call `ShareContextOnThisThread` where required.
-- Portable application code should use the public RHI types and avoid backend trait/native-handle access.
+```cpp
+auto texture = resources.TakeResource(target_index);
+auto view = resources.TakeView(view_index);
+auto pipeline = resources.TakePipeline(pipeline_index);
+```
+
+Each slot may be taken only once.
+
+### Errors and testing
+
+Preparation errors are reported before submission, recording failures are retained by the completion token, and stop requests are observed before phase 3 submission. Uncaptured backend validation errors are written to the configured RHI log sink and must be treated as test failures.
+
+The complete FyuuRHI backend test is `lib/fyuu_rhi/test/hello_triangle/main.cpp`. Run it interactively as:
+
+```text
+HelloTriangle <d3d12|vulkan|opengl|webgpu|metal>
+```
+
+It renders and presents continuously until the window closes. CTest adds `--test`, renders two frames with a resize between them, validates swapchain recreation, and exits automatically.

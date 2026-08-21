@@ -1,3 +1,6 @@
 [submodule "lib/dependency/PixEvents"]
 	path = lib/dependency/PixEvents
 	url = https://github.com/microsoft/PixEvents.git
+[submodule "lib/dependency/metal-cpp"]
+	path = lib/dependency/metal-cpp
+	url = https://github.com/apple/metal-cpp.git

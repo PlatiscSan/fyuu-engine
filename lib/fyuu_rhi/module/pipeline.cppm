@@ -2,161 +2,353 @@ module;
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <cstddef>
-
-#include <vector>
-
-#include <functional>
+#include <memory>
+#include <utility>
+#include <string>
+#include <limits>
 
 #include <cstdint>
-#include <utility>
+#include <type_traits>
 
+#include <optional>
 #include <variant>
 
-#include <concepts>
+#include <filesystem>
+
 #include <span>
 #endif // !defined(__cpp_lib_modules)
-
 export module fyuu_rhi:pipeline;
 #if defined(__cpp_lib_modules)
 import std;
 #endif // defined(__cpp_lib_modules)
-import :pipeline_types;
 import :resource;
 import :view;
 import :sampler;
 
-namespace fyuu_rhi {
-	export template <class Backend> class LogicalDevice;
-}
+export namespace fyuu_rhi::pipeline {
 
-namespace fyuu_rhi::execution {
-	export template <class Backend, class Receiver> class CommandGraphBindings;
-}
-
-namespace fyuu_rhi::pipeline {
-
-	export template <class Backend> class Pipeline {
-	public:
-		using Implementation = typename Backend::Pipeline;
-
-	private:
-		Implementation m_impl;
-
-	public:
-		template <class PipelineType>
-		class PassKey {
-			static_assert(
-				std::same_as<PipelineType, Pipeline> || std::same_as<PipelineType, Pipeline const>,
-				"PipelineType must be Pipeline or const Pipeline"
-			);
-
-			template <class U> friend class fyuu_rhi::LogicalDevice;
-			template <class U> friend class PipelineResourceGroup;
-			template <class U, class Receiver> friend class fyuu_rhi::execution::CommandGraphBindings;
-
-			PipelineType* m_pipeline;
-
-			template <class Self>
-			decltype(auto) GetImplementation(this Self&& self) noexcept {
-				return (self.m_pipeline->m_impl);
-			}
-
-		public:
-			explicit PassKey(PipelineType* pipeline) noexcept
-				: m_pipeline(pipeline) {
-
-			}
-		};
-
-		template <std::convertible_to<Implementation> I>
-		Pipeline(I&& impl)
-			: m_impl(std::forward<I>(impl)) {
-
-		}
-
-		Pipeline(Pipeline const&) = delete;
-		Pipeline& operator=(Pipeline const&) = delete;
-		Pipeline(Pipeline&&) noexcept = default;
-		Pipeline& operator=(Pipeline&&) noexcept = default;
-		~Pipeline() noexcept = default;
-
-		template <class Self>
-		auto GetPassKey(this Self&& self) noexcept {
-			using PipelineType = std::remove_reference_t<Self>;
-			return PassKey<PipelineType>{ &self };
-		}
+	// Pipeline stages are part of a pipeline program description. They do not
+	// represent independently creatable RHI objects.
+	enum class Stage : std::uint8_t {
+		Vertex,
+		Fragment,
+		TessellationControl,
+		Hull = TessellationControl,
+		TessellationEvaluation,
+		Domain = TessellationEvaluation,
+		Geometry,
+		Compute,
+		Task,
+		Amplification = Task,
+		Mesh
 	};
 
-	export template <class Backend> class PipelineBindingValue {
+	struct SlangPipelineProgramDescriptor {
+		struct Module {
+			std::string name;
+			std::string source;
+		};
+
+		struct EntryPoint {
+			std::string name;
+			Stage stage;
+		};
+
+		struct Macro {
+			std::string name;
+			std::string value;
+		};
+
+		enum class Optimization : std::uint8_t {
+			None,
+			Default,
+			High,
+			Max
+		};
+
+		enum class MatrixLayout : std::uint8_t {
+			RowMajor,
+			ColumnMajor
+		};
+
+		std::span<Module const> modules{};
+		std::span<EntryPoint const> entry_points{};
+		std::span<Macro const> macros{};
+		std::span<std::filesystem::path const> include_paths{};
+		Optimization optimization = Optimization::Default;
+		MatrixLayout matrix_layout = MatrixLayout::RowMajor;
+		bool enable_debug_info = false;
+	};
+
+	enum class VertexInputRate : std::uint8_t {
+		Vertex,
+		Instance
+	};
+
+	struct VertexBufferLayout {
+		std::uint32_t slot = 0;
+		std::uint32_t stride = 0;
+		VertexInputRate input_rate = VertexInputRate::Vertex;
+	};
+
+	struct VertexAttribute {
+		std::uint32_t location = 0;
+		std::uint32_t slot = 0;
+		std::uint32_t offset = 0;
+
+		ResourceFlagBits format = ResourceFlagBits::Count;
+	};
+
+	struct VertexState {
+		std::span<VertexBufferLayout const> buffers{};
+		std::span<VertexAttribute const> attributes{};
+	};
+
+	enum class PrimitiveTopology : std::uint8_t {
+		PointList,
+		LineList,
+		LineStrip,
+		TriangleList,
+		TriangleStrip
+	};
+
+	enum class IndexFormat : std::uint8_t {
+		Uint16,
+		Uint32
+	};
+
+	struct PrimitiveState {
+		PrimitiveTopology topology = PrimitiveTopology::TriangleList;
+
+		// Required by D3D12 and WebGPU when primitive restart is used with a
+		// strip topology. Must be empty for non-strip topologies.
+		std::optional<IndexFormat> strip_index_format;
+	};
+
+	enum class FrontFace : std::uint8_t {
+		CounterClockwise,
+		Clockwise
+	};
+
+	enum class CullMode : std::uint8_t {
+		None,
+		Front,
+		Back
+	};
+
+	struct DepthBiasState {
+		std::int32_t constant = 0;
+		float slope_scale = 0.0f;
+		float clamp = 0.0f;
+	};
+
+	struct RasterizationState {
+		FrontFace front_face = FrontFace::CounterClockwise;
+		CullMode cull_mode = CullMode::None;
+		DepthBiasState depth_bias{};
+	};
+
+	enum class CompareOperation : std::uint8_t {
+		Never,
+		Less,
+		Equal,
+		LessEqual,
+		Greater,
+		NotEqual,
+		GreaterEqual,
+		Always
+	};
+
+	enum class StencilOperation : std::uint8_t {
+		Keep,
+		Zero,
+		Replace,
+		Invert,
+		IncrementClamp,
+		DecrementClamp,
+		IncrementWrap,
+		DecrementWrap
+	};
+
+	struct StencilFaceState {
+		CompareOperation compare = CompareOperation::Always;
+		StencilOperation fail_operation = StencilOperation::Keep;
+		StencilOperation depth_fail_operation = StencilOperation::Keep;
+		StencilOperation pass_operation = StencilOperation::Keep;
+	};
+
+	struct DepthStencilState {
+		ResourceFlagBits format = ResourceFlagBits::Count;
+
+		bool depth_test_enabled = false;
+		bool depth_write_enabled = false;
+		CompareOperation depth_compare = CompareOperation::Always;
+
+		bool stencil_enabled = false;
+		StencilFaceState stencil_front{};
+		StencilFaceState stencil_back{};
+		std::uint32_t stencil_read_mask = 0xFFFFFFFFu;
+		std::uint32_t stencil_write_mask = 0xFFFFFFFFu;
+	};
+
+	enum class BlendFactor : std::uint8_t {
+		Zero,
+		One,
+		SourceColor,
+		OneMinusSourceColor,
+		SourceAlpha,
+		OneMinusSourceAlpha,
+		DestinationColor,
+		OneMinusDestinationColor,
+		DestinationAlpha,
+		OneMinusDestinationAlpha,
+		SourceAlphaSaturated,
+		Constant,
+		OneMinusConstant
+	};
+
+	enum class BlendOperation : std::uint8_t {
+		Add,
+		Subtract,
+		ReverseSubtract,
+		Min,
+		Max
+	};
+
+	struct BlendComponent {
+		BlendFactor source_factor = BlendFactor::One;
+		BlendFactor destination_factor = BlendFactor::Zero;
+		BlendOperation operation = BlendOperation::Add;
+	};
+
+	struct BlendState {
+		BlendComponent color{};
+		BlendComponent alpha{};
+	};
+
+	enum class ColorWriteMask : std::uint8_t {
+		None = 0,
+		Red = 1u << 0,
+		Green = 1u << 1,
+		Blue = 1u << 2,
+		Alpha = 1u << 3,
+		All = 0x0Fu
+	};
+
+	constexpr ColorWriteMask operator|(ColorWriteMask lhs, ColorWriteMask rhs) noexcept {
+		return static_cast<ColorWriteMask>(
+			static_cast<std::uint8_t>(lhs) | static_cast<std::uint8_t>(rhs)
+		);
+	}
+
+	constexpr ColorWriteMask operator&(ColorWriteMask lhs, ColorWriteMask rhs) noexcept {
+		return static_cast<ColorWriteMask>(
+			static_cast<std::uint8_t>(lhs) & static_cast<std::uint8_t>(rhs)
+		);
+	}
+
+	struct ColorTargetState {
+		// Required when creating D3D12, Vulkan and WebGPU graphics pipelines.
+		// OpenGL retains it for framebuffer compatibility validation.
+		ResourceFlagBits format = ResourceFlagBits::Count;
+		std::optional<BlendState> blend;
+		ColorWriteMask write_mask = ColorWriteMask::All;
+	};
+
+	struct MultisampleState {
+		ResourceFlagBits sample_count = ResourceFlagBits::Sample1;
+		std::uint32_t mask = 0xFFFFFFFFu;
+		bool alpha_to_coverage_enabled = false;
+	};
+
+	struct GraphicsPipelineDescriptor {
+		SlangPipelineProgramDescriptor program{};
+		VertexState vertex{};
+		PrimitiveState primitive{};
+		RasterizationState rasterization{};
+		MultisampleState multisample{};
+		std::optional<DepthStencilState> depth_stencil;
+		std::span<ColorTargetState const> color_targets{};
+	};
+
+	struct ComputePipelineDescriptor {
+		SlangPipelineProgramDescriptor program{};
+	};
+
+	inline constexpr std::size_t PipelineWholeBuffer = std::numeric_limits<std::size_t>::max();
+
+	class BindingValue {
 	private:
 		struct BufferBinding {
-			std::reference_wrapper<Resource<Backend> const> buffer;
+			Resource const* buffer;
 			std::size_t offset = 0;
 			std::size_t size = PipelineWholeBuffer;
 		};
 
-		using ViewBinding = std::reference_wrapper<View<Backend> const>;
-		using SamplerBinding = std::reference_wrapper<Sampler<Backend> const>;
+		using ViewBinding = View const*;
+		using SamplerBinding = Sampler const*;
 
 		struct CombinedBinding {
-			std::reference_wrapper<View<Backend> const> view;
-			std::reference_wrapper<Sampler<Backend> const> sampler;
+			View const* view;
+			Sampler const* sampler;
 		};
 
 		using Value = std::variant<BufferBinding, ViewBinding, SamplerBinding, CombinedBinding>;
 		Value m_value;
 
 		template <class T>
-		explicit PipelineBindingValue(T&& value) noexcept
+		explicit BindingValue(T&& value) noexcept
 			: m_value(std::forward<T>(value)) {
 
 		}
 
 	public:
-		static PipelineBindingValue FromBuffer(
-			Resource<Backend> const& buffer,
+		static BindingValue FromBuffer(
+			Resource const& buffer,
 			std::size_t offset = 0,
 			std::size_t size = PipelineWholeBuffer
 		) noexcept {
-			return PipelineBindingValue(BufferBinding{ buffer, offset, size });
+			return BindingValue(BufferBinding{ &buffer, offset, size });
 		}
 
-		static PipelineBindingValue FromView(View<Backend> const& view) noexcept {
-			return PipelineBindingValue(ViewBinding{ view });
+		static BindingValue FromView(View const& view) noexcept {
+			return BindingValue(ViewBinding{ &view });
 		}
 
-		static PipelineBindingValue FromSampler(Sampler<Backend> const& sampler) noexcept {
-			return PipelineBindingValue(SamplerBinding{ sampler });
+		static BindingValue FromSampler(Sampler const& sampler) noexcept {
+			return BindingValue(SamplerBinding{ &sampler });
 		}
 
-		static PipelineBindingValue FromCombined(
-			View<Backend> const& view,
-			Sampler<Backend> const& sampler
+		static BindingValue FromCombined(
+			View const& view,
+			Sampler const& sampler
 		) noexcept {
-			return PipelineBindingValue(CombinedBinding{ view, sampler });
+			return BindingValue(CombinedBinding{ &view, &sampler });
 		}
 
-		Resource<Backend> const* Buffer() const noexcept {
-			auto binding = std::get_if<BufferBinding>(&m_value);
-			return binding ? &binding->buffer.get() : nullptr;
-		}
-
-		View<Backend> const* BoundView() const noexcept {
-			if (auto binding = std::get_if<ViewBinding>(&m_value)) {
-				return &binding->get();
-			}
-			if (auto binding = std::get_if<CombinedBinding>(&m_value)) {
-				return &binding->view.get();
+		Resource const* Buffer() const noexcept {
+			if (auto const* binding = std::get_if<BufferBinding>(&m_value)) {
+				return binding->buffer;
 			}
 			return nullptr;
 		}
 
-		Sampler<Backend> const* BoundSampler() const noexcept {
-			if (auto binding = std::get_if<SamplerBinding>(&m_value)) {
-				return &binding->get();
+		View const* BoundView() const noexcept {
+			if (auto const* binding = std::get_if<ViewBinding>(&m_value)) {
+				return *binding;
 			}
-			if (auto binding = std::get_if<CombinedBinding>(&m_value)) {
-				return &binding->sampler.get();
+			if (auto const* binding = std::get_if<CombinedBinding>(&m_value)) {
+				return binding->view;
+			}
+			return nullptr;
+		}
+
+		Sampler const* BoundSampler() const noexcept {
+			if (auto const* binding = std::get_if<SamplerBinding>(&m_value)) {
+				return *binding;
+			}
+			if (auto const* binding = std::get_if<CombinedBinding>(&m_value)) {
+				return binding->sampler;
 			}
 			return nullptr;
 		}
@@ -172,65 +364,86 @@ namespace fyuu_rhi::pipeline {
 		}
 	};
 
-	export template <class Backend> struct PipelineResourceBinding {
+	struct ResourceBinding {
 		std::uint32_t slot = 0;
 		std::uint32_t array_element = 0;
-		PipelineBindingValue<Backend> value;
+		BindingValue value;
 	};
 
+	struct BindingMetadata {
+		ResourceFlags flags;
+		std::uint32_t slot = 0;
+		std::uint32_t space = 0;
+		std::uint32_t count = 1;
+	};
+
+} // namespace fyuu_rhi::pipeline
+
+export namespace fyuu_rhi {
+	namespace execution {
+		template <class NativeCommandSchedulerContext>
+		struct ExecuteCommands;
+	}
+
 	// A resource group is created for one pipeline space and is immutable after
-	// creation. Bound resources are non-owning and must remain alive and unmoved
-	// while the group can be used to materialize a
-	// Vulkan descriptor set, WebGPU bind group, D3D12 descriptor tables, or
-	// OpenGL bindings when command encoding is introduced.
-	export template <class Backend> class PipelineResourceGroup {
+	// creation. BindingValue borrows the uniquely owned objects only while the
+	// group is being created. Each backend implementation must retain whatever
+	// native ownership its materialized descriptors require.
+	class PipelineResourceGroup {
 	public:
-		using Implementation = typename Backend::PipelineResourceGroup;
-
-		template <class ResourceGroupType> class PassKey {
-			static_assert(
-				std::same_as<ResourceGroupType, PipelineResourceGroup> ||
-				std::same_as<ResourceGroupType, PipelineResourceGroup const>
-			);
-
-			template <class U> friend class fyuu_rhi::LogicalDevice;
-			template <class U, class Receiver> friend class fyuu_rhi::execution::CommandGraphBindings;
-
-			ResourceGroupType* m_resource_group;
-
-			template <class Self>
-			decltype(auto) GetImplementation(this Self&& self) noexcept {
-				return (self.m_resource_group->m_impl);
-			}
-
-		public:
-			explicit PassKey(ResourceGroupType* resource_group) noexcept
-				: m_resource_group(resource_group) {
-
-			}
-		};
+		using UniqueHandle = std::unique_ptr<
+			struct PipelineResourceGroupImplementation,
+			void(*)(struct PipelineResourceGroupImplementation*)
+		>;
 
 	private:
-		Implementation m_impl;
-		std::uint32_t m_space = 0;
+		template <class Native>
+		friend struct execution::ExecuteCommands;
+		UniqueHandle m_impl;
 
 	public:
-		template <std::convertible_to<Implementation> I>
-		PipelineResourceGroup(I&& impl, std::uint32_t space)
-			: m_impl(std::forward<I>(impl)),
-			m_space(space) {
-
+		PipelineResourceGroup() noexcept
+			: m_impl(nullptr, nullptr) {
 		}
 
-		std::uint32_t Space() const noexcept {
-			return m_space;
+		explicit PipelineResourceGroup(UniqueHandle&& impl) noexcept
+			: m_impl(std::move(impl)) {
 		}
 
-		template <class Self>
-		auto GetPassKey(this Self&& self) noexcept {
-			using ResourceGroupType = std::remove_reference_t<Self>;
-			return PassKey<ResourceGroupType>{ &self };
+		explicit operator bool() const noexcept {
+			return static_cast<bool>(m_impl);
 		}
+
+		std::uint32_t Space() const noexcept;
+
+	};
+
+	class Pipeline {
+	public:
+		using UniqueHandle = std::unique_ptr<
+			struct PipelineImplementation,
+			void(*)(struct PipelineImplementation*)
+		>;
+
+	private:
+		template <class Native>
+		friend struct execution::ExecuteCommands;
+		UniqueHandle m_impl;
+
+	public:
+		Pipeline() noexcept
+			: m_impl(nullptr, nullptr) {
+		}
+
+		explicit Pipeline(UniqueHandle&& impl) noexcept
+			: m_impl(std::move(impl)) {
+		}
+
+		explicit operator bool() const noexcept {
+			return static_cast<bool>(m_impl);
+		}
+
+		PipelineResourceGroup CreatePipelineResourceGroup(std::uint32_t space, std::span<pipeline::ResourceBinding const> bindings);
 	};
 
 }
