@@ -856,11 +856,8 @@ namespace fyuu_rhi::opengl {
 	using Submission = opengl::Submission;
 
 	void opengl::CommandSchedulerContext::ReapSignaled() {
-		for (;;) {
+		while (!pending.empty()) {
 			PendingSync current;
-			if (pending.empty()) {
-				return;
-			}
 			if (glClientWaitSync(pending.front().sync, 0u, 0u) == GL_TIMEOUT_EXPIRED) {
 				return;
 			}
@@ -1686,7 +1683,7 @@ namespace fyuu_rhi::opengl {
 		context_ready.store(true, std::memory_order_release);
 		context_ready.notify_all();
 
-		for (;;) {
+		while (!stop.stop_requested()) {
 			ReapSignaled();
 			Submission current;
 			{

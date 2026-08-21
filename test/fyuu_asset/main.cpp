@@ -104,16 +104,14 @@ namespace {
 	) {
 		auto deadline = std::chrono::steady_clock::now() + 5s;
 		std::error_code error;
-		for (;;) {
-			auto current_write = std::filesystem::last_write_time(path, error);
-			if (!error && current_write != previous_write) {
-				break;
-			}
+		auto current_write = std::filesystem::last_write_time(path, error);
+		while (error || current_write == previous_write) {
 			error.clear();
 			if (std::chrono::steady_clock::now() >= deadline) {
 				throw std::runtime_error("Timed out waiting for asynchronous asset update");
 			}
 			std::this_thread::sleep_for(10ms);
+			current_write = std::filesystem::last_write_time(path, error);
 		}
 
 		std::ifstream input(path, std::ios::binary);

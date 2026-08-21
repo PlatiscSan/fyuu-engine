@@ -619,12 +619,14 @@ namespace {
 			operation.start();
 
 			auto const deadline = std::chrono::steady_clock::now() + 30s;
-			for (;;) {
+			bool completed = false;
+			while (!completed) {
 				{
 					std::lock_guard lock(completion->mutex);
-					if (completion->completed) {
-						break;
-					}
+					completed = completion->completed;
+				}
+				if (completed) {
+					break;
 				}
 				if (!window.PumpMessages()) {
 					running = false;

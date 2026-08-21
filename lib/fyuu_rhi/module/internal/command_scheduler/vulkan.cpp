@@ -2261,7 +2261,7 @@ namespace fyuu_rhi::execution {
 			PresentationContext::BackBufferSynchronization* synchronization = nullptr;
 			std::size_t synchronization_index = 0u;
 			std::optional<vk::ResultValue<std::uint32_t>> acquired;
-			for (;;) {
+			while (!stop_token.stop_requested()) {
 				swapchain = &presentation->cache.Get(preparation.target);
 				synchronization_index = (
 					swapchain->last_back_buffer_index + 1u
@@ -2321,6 +2321,9 @@ namespace fyuu_rhi::execution {
 					preparation.target,
 					std::move(replacement)
 				);
+			}
+			if (stop_token.stop_requested()) {
+				break;
 			}
 			if (
 				acquired->result != vk::Result::eSuccess &&
