@@ -1691,9 +1691,13 @@ namespace fyuu_rhi::opengl {
 				// Timed wait: pending fences must be re-polled even when no new
 				// submission arrives. An indefinite wait would strand the last
 				// submission's sync and the token would never complete.
-				local_condition.wait_for(lock, std::chrono::milliseconds(1), [&] {
-					return !local_submissions.empty() || stop.stop_requested();
-				});
+				local_condition.wait_for(
+					lock,
+					std::chrono::milliseconds(1),
+					[&]() {
+						return !local_submissions.empty() || stop.stop_requested();
+					}
+				);
 				if (stop.stop_requested()) {
 					break;
 				}
@@ -1773,14 +1777,9 @@ namespace fyuu_rhi::opengl {
 		DrainPendingOnShutdown();
 		DestroySchedulerObjects(*this);
 		DestroySchedulerContext(*this, handles);
-		submissions.store(nullptr, std::memory_order_release);
-		submission_condition.store(nullptr, std::memory_order_release);
-		submission_mutex.store(nullptr, std::memory_order_release);
 	}
 
-	CommandSchedulerContext::CommandSchedulerContext(
-		CommandSchedulerContext&& other
-	) noexcept
+	CommandSchedulerContext::CommandSchedulerContext(CommandSchedulerContext&& other) noexcept
 		: instance(other.instance),
 		thread(
 			[this](std::stop_token stop_token) {

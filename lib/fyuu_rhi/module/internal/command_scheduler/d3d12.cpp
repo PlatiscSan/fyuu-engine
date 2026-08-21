@@ -1073,9 +1073,7 @@ namespace fyuu_rhi::execution {
 				if (!resource.m_impl) {
 					throw std::invalid_argument("A D3D12 execution resource is empty");
 				}
-				auto native = std::get_if<d3d12::Resource>(
-					&resource.m_impl->native
-				);
+				auto native = std::get_if<d3d12::Resource>(&resource.m_impl->native);
 				if (!native) {
 					throw std::invalid_argument("A D3D12 execution resource uses another backend");
 				}

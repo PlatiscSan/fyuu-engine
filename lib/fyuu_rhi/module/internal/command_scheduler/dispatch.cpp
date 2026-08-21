@@ -27,7 +27,6 @@ namespace fyuu_rhi::execution {
 			std::span<PipelineResourceGroup const>,
 			StopTokenView
 		) const {
-			(void)context;
 			throw std::runtime_error(
 				"Command execution is not implemented for this backend"
 			);
