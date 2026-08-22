@@ -99,7 +99,7 @@ fyuu_rhi::RequestInstance(
 device identifiers, and optional dedicated-memory information. Missing optional
 properties are unavailable data, not zero-valued properties.
 
-`PhysicalDevice::BestPerformance()` provides the default adapter preference.
+`fyuu_rhi::BestPerformance()` provides the default adapter preference.
 Applications may replace it with their own selection policy.
 
 OpenGL callers can bind the instance's shared context on another thread with:
@@ -468,7 +468,7 @@ fyuu_rhi::RequestInstance(
 的专用显存信息。部分图形 API 无法提供全部字段；缺失的可选字段表示数据不可用，
 而不是数值为零。
 
-`PhysicalDevice::BestPerformance()` 提供库内默认的适配器优先级。应用也可以实现
+`fyuu_rhi::BestPerformance()` 提供库内默认的适配器优先级。应用也可以实现
 自己的选择策略。
 
 OpenGL 调用方可以在其他线程绑定实例的共享上下文：
