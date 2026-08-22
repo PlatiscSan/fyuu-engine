@@ -1514,9 +1514,9 @@ export namespace fyuu_rhi::execution {
 
 		template <class Receiver>
 			requires CommandGraphReceiver<std::remove_cvref_t<Receiver>>
-		CommandGraphBindings<std::remove_cvref_t<Receiver>> connect(Receiver&& receiver) && {
-			return { CommandScheduler{ m_context }, details::CompileExecutionPlan(m_graph), std::forward<Receiver>(receiver) };
-		}
+		CommandGraphBindings<std::remove_cvref_t<Receiver>> connect(
+			Receiver&& receiver
+		) &&;
 	};
 
 	class CommandScheduler {
@@ -1815,4 +1815,16 @@ export namespace fyuu_rhi::execution {
 			}
 		}
 	};
+
+	template <class Receiver>
+		requires CommandGraphReceiver<std::remove_cvref_t<Receiver>>
+	CommandGraphBindings<std::remove_cvref_t<Receiver>> CommandGraphBuilder::connect(
+		Receiver&& receiver
+	) && {
+		return CommandGraphBindings<std::remove_cvref_t<Receiver>>(
+			CommandScheduler{ m_context },
+			details::CompileExecutionPlan(m_graph),
+			std::forward<Receiver>(receiver)
+		);
+	}
 } // namespace fyuu_rhi::execution
