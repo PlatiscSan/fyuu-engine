@@ -147,11 +147,6 @@ namespace fyuu_rhi {
 							"The WebGPU pipeline binding value does not match its declaration"
 						);
 					}
-					if (has_view && has_sampler) {
-						throw std::invalid_argument(
-							"WebGPU requires separate texture and sampler bindings"
-						);
-					}
 				}
 			);
 
@@ -172,11 +167,16 @@ namespace fyuu_rhi {
 			}
 
 			std::vector<wgpu::BindGroupEntry> entries;
-			entries.reserve(bindings.size());
-			std::ranges::transform(
+			entries.reserve(bindings.size() * 2u);
+			std::ranges::for_each(
 				bindings,
-				std::back_inserter(entries),
-				[](auto const& binding) {
+				[&](auto const& binding) {
+					auto declaration = std::ranges::find_if(
+						metadata,
+						[&binding](auto const& candidate) {
+							return candidate.slot == binding.slot;
+						}
+					);
 					wgpu::BindGroupEntry entry{
 						.binding = binding.slot
 					};
@@ -212,6 +212,18 @@ namespace fyuu_rhi {
 								"A WebGPU resource binding has an empty view"
 							);
 						}
+						entries.emplace_back(std::move(entry));
+						if (binding.value.BoundSampler()) {
+							entries.emplace_back(
+								wgpu::BindGroupEntry{
+									.binding = declaration->slot + 1u,
+									.sampler = NativeSampler(
+										binding.value.BoundSampler()
+									).impl
+								}
+							);
+						}
+						return;
 					}
 					else if (auto sampler = binding.value.BoundSampler()) {
 						entry.sampler = NativeSampler(sampler).impl;
@@ -221,7 +233,7 @@ namespace fyuu_rhi {
 							"Unsupported WebGPU pipeline binding value"
 						);
 					}
-					return entry;
+					entries.emplace_back(std::move(entry));
 				}
 			);
 

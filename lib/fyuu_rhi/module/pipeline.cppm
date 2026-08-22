@@ -315,10 +315,13 @@ export namespace fyuu_rhi::pipeline {
 			return BindingValue(ViewBinding{ &view });
 		}
 
+		/// Binds a sampler declared independently from its sampled texture.
 		static BindingValue FromSampler(Sampler const& sampler) noexcept {
 			return BindingValue(SamplerBinding{ &sampler });
 		}
 
+		/// Binds one logical combined texture/sampler declaration. Backends whose
+		/// native ABI separates them materialize two adjacent native bindings.
 		static BindingValue FromCombined(
 			View const& view,
 			Sampler const& sampler

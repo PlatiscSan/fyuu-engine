@@ -33,40 +33,36 @@ import :sampler_factory;
 import :view_factory;
 import :vulkan_data;
 
-namespace {
-
-	vk::DescriptorType DescriptorType(fyuu_rhi::ResourceFlags const& flags) {
-		using Bits = fyuu_rhi::ResourceFlagBits;
-		if (flags.Test(Bits::UniformBuffer)) {
-			return vk::DescriptorType::eUniformBuffer;
-		}
-		if (flags.Test(Bits::StorageBuffer)) {
-			return vk::DescriptorType::eStorageBuffer;
-		}
-		bool view = flags.Test(Bits::TextureBinding) || flags.Test(Bits::StorageBinding);
-		bool sampler = flags.Test(Bits::SamplerBinding);
-		if (view && sampler) {
-			return vk::DescriptorType::eCombinedImageSampler;
-		}
-		if (flags.Test(Bits::StorageBinding)) {
-			return vk::DescriptorType::eStorageImage;
-		}
-		if (view) {
-			return vk::DescriptorType::eSampledImage;
-		}
-		if (sampler) {
-			return vk::DescriptorType::eSampler;
-		}
-		throw std::invalid_argument("Unsupported Vulkan pipeline binding type");
-	}
-
-} // namespace
-
 namespace fyuu_rhi {
 
 	template <>
 	struct CreatePipelineResourceGroup<vulkan::Pipeline> {
 		vulkan::Pipeline* native;
+
+		static vk::DescriptorType DescriptorType(ResourceFlags const& flags) {
+			using Bits = ResourceFlagBits;
+			if (flags.Test(Bits::UniformBuffer)) {
+				return vk::DescriptorType::eUniformBuffer;
+			}
+			if (flags.Test(Bits::StorageBuffer)) {
+				return vk::DescriptorType::eStorageBuffer;
+			}
+			bool view = flags.Test(Bits::TextureBinding) || flags.Test(Bits::StorageBinding);
+			bool sampler = flags.Test(Bits::SamplerBinding);
+			if (view && sampler) {
+				return vk::DescriptorType::eCombinedImageSampler;
+			}
+			if (flags.Test(Bits::StorageBinding)) {
+				return vk::DescriptorType::eStorageImage;
+			}
+			if (view) {
+				return vk::DescriptorType::eSampledImage;
+			}
+			if (sampler) {
+				return vk::DescriptorType::eSampler;
+			}
+			throw std::invalid_argument("Unsupported Vulkan pipeline binding type");
+		}
 
 		static vulkan::Resource const& NativeResource(Resource const* resource) {
 			if (!resource || !resource->m_impl) {

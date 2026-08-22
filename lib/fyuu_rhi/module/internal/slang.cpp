@@ -1,6 +1,7 @@
 module;
 #include <version>
 #if !defined(__cpp_lib_modules)
+#include <algorithm>
 #include <cstddef>
 #include <stdexcept>
 #include <utility>
@@ -19,6 +20,7 @@ module;
 
 #include <shared_mutex>
 
+#include <ranges>
 #include <string_view>
 #include <filesystem>
 
@@ -85,16 +87,42 @@ namespace fyuu_rhi::pipeline {
 	std::vector<BindingMetadata> MakePipelineBindingMetadata(SlangPipelineInterface const& interface) {
 		std::vector<BindingMetadata> result;
 		result.reserve(interface.bindings.size());
-		for (auto const& entry : interface.bindings) {
-			result.push_back(
-				{
+		std::ranges::transform(
+			interface.bindings,
+			std::back_inserter(result),
+			[&interface](auto const& entry) {
+				bool combined =
+					entry.flags.Test(ResourceFlagBits::TextureBinding) &&
+					entry.flags.Test(ResourceFlagBits::SamplerBinding);
+				if (combined && entry.count != 1u) {
+					throw std::invalid_argument(
+						"Combined texture/sampler binding arrays are not supported"
+					);
+				}
+				if (
+					combined &&
+					std::ranges::any_of(
+						interface.bindings,
+						[&entry](auto const& candidate) {
+							return
+								&candidate != &entry &&
+								candidate.space == entry.space &&
+								candidate.slot == entry.slot + 1u;
+						}
+					)
+				) {
+					throw std::invalid_argument(
+						"A combined texture/sampler binding reserves its following slot"
+					);
+				}
+				return BindingMetadata{
 					.flags = entry.flags,
 					.slot = entry.slot,
 					.space = entry.space,
 					.count = entry.count
-				}
-			);
-		}
+				};
+			}
+		);
 		return result;
 	}
 
