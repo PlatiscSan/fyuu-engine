@@ -2,21 +2,28 @@ module;
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <exception>
-#include <format>
-#include <iterator>
 #include <memory>
-#include <mutex>
-#include <optional>
-#include <ranges>
-#include <span>
 #include <stdexcept>
-#include <string>
 #include <utility>
-#include <variant>
 #include <vector>
 
-#include <atomic>
+#include <algorithm>
+#include <iterator>
+
+#include <string>
+
 #include <cstdint>
+
+#include <atomic>
+#include <mutex>
+
+#include <optional>
+#include <variant>
+
+#include <ranges>
+#include <span>
+
+#include <format>
 #endif // !defined(__cpp_lib_modules)
 #if defined(_WIN32)
 #include <Windows.h>

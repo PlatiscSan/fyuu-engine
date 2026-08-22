@@ -2,14 +2,24 @@ module;
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <cstddef>
+#include <exception>
+#include <memory>
+
+#include <deque>
 #include <vector>
 
 #include <cstdint>
+#include <unordered_map>
+
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 
 #include <optional>
 #include <variant>
 
-
+#include <stop_token>
 #endif // !defined(__cpp_lib_modules)
 #if defined(_WIN32)
 #include <Windows.h>

@@ -23,6 +23,7 @@ module;
 #define FYUU_RHI_USE_VULKAN_HEADER
 #include <vulkan/vulkan_shared.hpp>
 #endif // !defined(__APPLE__) && defined(__clang__) && defined(_MSVC_STL_VERSION)
+#include <slang.h>
 
 module fyuu_rhi:vulkan_logical_device;
 #if !defined(__APPLE__)

@@ -3,6 +3,8 @@ module;
 #if !defined(__cpp_lib_modules)
 #include <stdexcept>
 #include <variant>
+
+#include <span>
 #endif // !defined(__cpp_lib_modules)
 
 module fyuu_rhi;

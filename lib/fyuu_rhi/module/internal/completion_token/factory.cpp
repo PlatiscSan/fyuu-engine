@@ -1,6 +1,7 @@
 module;
 #include <version>
 #if !defined(__cpp_lib_modules)
+#include <memory>
 #include <utility>
 #include <variant>
 #endif // !defined(__cpp_lib_modules)

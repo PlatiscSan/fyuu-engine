@@ -1,5 +1,38 @@
 module;
 #include <version>
+#if !defined(__cpp_lib_modules)
+#include <cstddef>
+#include <exception>
+#include <memory>
+#include <stdexcept>
+#include <utility>
+
+#include <deque>
+#include <vector>
+
+#include <string>
+
+#include <cstdint>
+#include <type_traits>
+#include <unordered_map>
+
+#include <chrono>
+
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
+
+#include <optional>
+#include <variant>
+
+#include <concepts>
+#include <ranges>
+#include <span>
+
+#include <format>
+
+#include <stop_token>
+#endif // !defined(__cpp_lib_modules)
 #if !defined(__APPLE__)
 #include <glad/glad.h>
 #if defined(_WIN32)
@@ -351,9 +384,12 @@ namespace {
 
 	/// Creates and binds the scheduler's own context, sharing with the instance's
 	/// anchor context. The instance context is never rebound on the scheduler thread.
-	void CreateSchedulerContext(opengl::CommandSchedulerContext& scheduler, SchedulerContextHandles& handles) {
+	void CreateSchedulerContext(
+		opengl::CommandSchedulerContext* scheduler,
+		SchedulerContextHandles& handles
+	) {
 #if defined(_WIN32)
-		auto const& instance = *std::get<opengl::Instance const*>(scheduler.instance);
+		auto const& instance = *std::get<opengl::Instance const*>(scheduler->instance);
 		handles.window = CreateWindowEx(
 			0u,
 			TEXT("FyuuRHI.OpenGL.Instance"),
@@ -432,7 +468,7 @@ namespace {
 			throw std::runtime_error("OpenGL: wglMakeCurrent failed for scheduler context");
 		}
 #elif defined(__ANDROID__)
-		auto const& instance = *std::get<opengl::Instance const*>(scheduler.instance);
+		auto const& instance = *std::get<opengl::Instance const*>(scheduler->instance);
 		handles.context = eglCreateContext(
 			instance.display.get(),
 			instance.config,
@@ -454,7 +490,7 @@ namespace {
 		}
 #elif defined(__linux__)
 		if (auto glx_reference = std::get_if<opengl::GLXInstance const*>(
-			&scheduler.instance
+			&scheduler->instance
 		)) {
 			auto const& glx = **glx_reference;
 			constexpr int attributes[] = {
@@ -484,7 +520,7 @@ namespace {
 		}
 		else {
 			auto const& egl = **std::get_if<opengl::EGLInstance const*>(
-				&scheduler.instance
+				&scheduler->instance
 			);
 			handles.egl_context = eglCreateContext(
 				egl.display.get(),
@@ -511,13 +547,16 @@ namespace {
 
 	/// Binds the scheduler context back on the instance's main drawable. This is
 	/// the restore point after Present switched the context to a target window.
-	void MakeCurrentScheduler(opengl::CommandSchedulerContext& scheduler, SchedulerContextHandles const& handles) {
+	void MakeCurrentScheduler(
+		opengl::CommandSchedulerContext* scheduler,
+		SchedulerContextHandles const& handles
+	) {
 #if defined(_WIN32)
 		if (!wglMakeCurrent(handles.device_context, handles.context)) {
 			throw std::runtime_error("OpenGL: wglMakeCurrent failed restoring scheduler context");
 		}
 #elif defined(__ANDROID__)
-		auto const& instance = *std::get<opengl::Instance const*>(scheduler.instance);
+		auto const& instance = *std::get<opengl::Instance const*>(scheduler->instance);
 		if (!eglMakeCurrent(
 			instance.display.get(),
 			instance.surface.get(),
@@ -528,7 +567,7 @@ namespace {
 		}
 #elif defined(__linux__)
 		if (auto glx_reference = std::get_if<opengl::GLXInstance const*>(
-			&scheduler.instance
+			&scheduler->instance
 		)) {
 			auto const& glx = **glx_reference;
 			if (!glXMakeCurrent(
@@ -541,7 +580,7 @@ namespace {
 		}
 		else {
 			auto const& egl = **std::get_if<opengl::EGLInstance const*>(
-				&scheduler.instance
+				&scheduler->instance
 			);
 			if (!eglMakeCurrent(
 				egl.display.get(),
@@ -556,7 +595,10 @@ namespace {
 	}
 
 	/// Destroys the scheduler context on the GL thread at shutdown.
-	void DestroySchedulerContext(opengl::CommandSchedulerContext& scheduler, SchedulerContextHandles& handles) {
+	void DestroySchedulerContext(
+		opengl::CommandSchedulerContext* scheduler,
+		SchedulerContextHandles& handles
+	) {
 #if defined(_WIN32)
 		if (handles.context) {
 			wglMakeCurrent(nullptr, nullptr);
@@ -572,7 +614,7 @@ namespace {
 			handles.window = nullptr;
 		}
 #elif defined(__ANDROID__)
-		auto const& instance = *std::get<opengl::Instance const*>(scheduler.instance);
+		auto const& instance = *std::get<opengl::Instance const*>(scheduler->instance);
 		if (handles.context != EGL_NO_CONTEXT) {
 			eglMakeCurrent(
 				instance.display.get(),
@@ -585,7 +627,7 @@ namespace {
 		}
 #elif defined(__linux__)
 		if (auto glx_reference = std::get_if<opengl::GLXInstance const*>(
-			&scheduler.instance
+			&scheduler->instance
 		)) {
 			auto const& glx = **glx_reference;
 			if (handles.glx_context) {
@@ -596,7 +638,7 @@ namespace {
 		}
 		else {
 			auto const& egl = **std::get_if<opengl::EGLInstance const*>(
-				&scheduler.instance
+				&scheduler->instance
 			);
 			if (handles.egl_context != EGL_NO_CONTEXT) {
 				eglMakeCurrent(
@@ -644,7 +686,7 @@ namespace {
 	/// between the switch and the restore would leave the context on the wrong
 	/// drawable, corrupting every later submission and glGetError on this thread.
 	struct ContextRestore {
-		opengl::CommandSchedulerContext& scheduler;
+		opengl::CommandSchedulerContext* scheduler;
 		SchedulerContextHandles const& handles;
 		~ContextRestore() noexcept {
 			try {
@@ -660,10 +702,10 @@ namespace {
 	/// can be made current on any drawable sharing its pixel format, so the render
 	/// context is reused and each window only needs its own HDC/surface.
 	PresentTarget& AcquirePresentTarget(
-		opengl::CommandSchedulerContext& scheduler,
+		opengl::CommandSchedulerContext* scheduler,
 		PlatformHandle const& handle
 	) {
-		for (auto& target : scheduler.present_targets) {
+		for (auto& target : scheduler->present_targets) {
 			if (target.handle == handle) {
 				return target;
 			}
@@ -671,7 +713,7 @@ namespace {
 		PresentTarget target;
 		target.handle = handle;
 #if defined(_WIN32)
-		auto const& instance = *std::get<opengl::Instance const*>(scheduler.instance);
+		auto const& instance = *std::get<opengl::Instance const*>(scheduler->instance);
 		target.device_context = GetDC(handle);
 		if (!target.device_context) {
 			throw std::runtime_error("OpenGL present: GetDC failed for the target window");
@@ -683,7 +725,7 @@ namespace {
 		DescribePixelFormat(instance.device_context, pixel_format, sizeof(descriptor), &descriptor);
 		SetPixelFormat(target.device_context, pixel_format, &descriptor);
 #elif defined(__ANDROID__)
-		auto const& instance = *std::get<opengl::Instance const*>(scheduler.instance);
+		auto const& instance = *std::get<opengl::Instance const*>(scheduler->instance);
 		target.surface = eglCreateWindowSurface(
 			instance.display.get(),
 			instance.config,
@@ -695,7 +737,7 @@ namespace {
 		}
 #elif defined(__linux__)
 		if (auto egl_reference = std::get_if<opengl::EGLInstance const*>(
-			&scheduler.instance
+			&scheduler->instance
 		)) {
 			auto const& egl = **egl_reference;
 			auto const& wayland = std::get<WaylandPlatformHandle>(handle);
@@ -711,12 +753,12 @@ namespace {
 		}
 		// GLX presents directly on the X11 window drawable; nothing to create.
 #endif
-		scheduler.present_targets.emplace_back(std::move(target));
-		return scheduler.present_targets.back();
+		scheduler->present_targets.emplace_back(std::move(target));
+		return scheduler->present_targets.back();
 	}
 
 	void MakeCurrentTarget(
-		opengl::CommandSchedulerContext& scheduler,
+		opengl::CommandSchedulerContext* scheduler,
 		PresentTarget const& target,
 		SchedulerContextHandles const& handles
 	) {
@@ -725,7 +767,7 @@ namespace {
 			throw std::runtime_error("OpenGL present: wglMakeCurrent on target failed");
 		}
 #elif defined(__ANDROID__)
-		auto const& instance = *std::get<opengl::Instance const*>(scheduler.instance);
+		auto const& instance = *std::get<opengl::Instance const*>(scheduler->instance);
 		if (!eglMakeCurrent(
 			instance.display.get(),
 			target.surface,
@@ -736,7 +778,7 @@ namespace {
 		}
 #elif defined(__linux__)
 		if (auto glx_reference = std::get_if<opengl::GLXInstance const*>(
-			&scheduler.instance
+			&scheduler->instance
 		)) {
 			auto const& glx = **glx_reference;
 			auto const& x11 = std::get<X11PlatformHandle>(target.handle);
@@ -746,7 +788,7 @@ namespace {
 		}
 		else {
 			auto const& egl = **std::get_if<opengl::EGLInstance const*>(
-				&scheduler.instance
+				&scheduler->instance
 			);
 			if (!eglMakeCurrent(
 				egl.display.get(),
@@ -813,38 +855,38 @@ namespace {
 #endif
 	}
 
-	void DestroySchedulerObjects(opengl::CommandSchedulerContext& scheduler) noexcept {
-		for (auto const& [program, vertex_array] : scheduler.vertex_arrays) {
+	void DestroySchedulerObjects(opengl::CommandSchedulerContext* scheduler) noexcept {
+		for (auto const& [program, vertex_array] : scheduler->vertex_arrays) {
 			(void)program;
 			glDeleteVertexArrays(1u, &vertex_array);
 		}
-		scheduler.vertex_arrays.clear();
+		scheduler->vertex_arrays.clear();
 #if defined(_WIN32)
-		for (auto const& target : scheduler.present_targets) {
+		for (auto const& target : scheduler->present_targets) {
 			if (target.device_context) {
 				(void)ReleaseDC(target.handle, target.device_context);
 			}
 		}
 #elif defined(__ANDROID__)
-		auto const& instance = *std::get<opengl::Instance const*>(scheduler.instance);
-		for (auto const& target : scheduler.present_targets) {
+		auto const& instance = *std::get<opengl::Instance const*>(scheduler->instance);
+		for (auto const& target : scheduler->present_targets) {
 			if (target.surface != EGL_NO_SURFACE) {
 				eglDestroySurface(instance.display.get(), target.surface);
 			}
 		}
 #elif defined(__linux__)
 		if (auto egl_reference = std::get_if<opengl::EGLInstance const*>(
-			&scheduler.instance
+			&scheduler->instance
 		)) {
 			auto const& egl = **egl_reference;
-			for (auto const& target : scheduler.present_targets) {
+			for (auto const& target : scheduler->present_targets) {
 				if (target.surface != EGL_NO_SURFACE) {
 					eglDestroySurface(egl.display.get(), target.surface);
 				}
 			}
 		}
 #endif
-		scheduler.present_targets.clear();
+		scheduler->present_targets.clear();
 	}
 
 } // namespace
@@ -880,7 +922,7 @@ namespace fyuu_rhi::opengl {
 	/// so "recording" is executing; the front-end plan is the command stream itself.
 	struct Replayer {
 		Submission const& submission;
-		opengl::CommandSchedulerContext& scheduler;
+		opengl::CommandSchedulerContext* scheduler;
 		opengl::InstanceReference const& instance;
 		SchedulerContextHandles const& handles;
 
@@ -980,8 +1022,8 @@ namespace fyuu_rhi::opengl {
 
 			// Vertex array: attributes are fixed by the pipeline; vertex buffers are
 			// rebound through glVertexArrayVertexBuffer on each BindVertexBuffer.
-			auto found = scheduler.vertex_arrays.find(value.impl);
-			if (found == scheduler.vertex_arrays.end()) {
+			auto found = scheduler->vertex_arrays.find(value.impl);
+			if (found == scheduler->vertex_arrays.end()) {
 				GLuint created = 0u;
 				glCreateVertexArrays(1u, &created);
 				for (auto const& attribute : value.vertex_attributes) {
@@ -1018,8 +1060,8 @@ namespace fyuu_rhi::opengl {
 						buffer.input_rate == VertexInputRate::Instance ? 1u : 0u
 					);
 				}
-				scheduler.vertex_arrays.emplace(value.impl, created);
-				found = scheduler.vertex_arrays.find(value.impl);
+				scheduler->vertex_arrays.emplace(value.impl, created);
+				found = scheduler->vertex_arrays.find(value.impl);
 			}
 			vao = found->second;
 			glBindVertexArray(vao);
@@ -1665,7 +1707,7 @@ namespace fyuu_rhi::opengl {
 		// The main render context is never bound on this thread. Failure must not
 		// terminate the thread: capture it and let ExecuteCommands surface it.
 		try {
-			CreateSchedulerContext(*this, handles);
+			CreateSchedulerContext(this, handles);
 		}
 		catch (...) {
 			fatal_error = std::current_exception();
@@ -1713,7 +1755,7 @@ namespace fyuu_rhi::opengl {
 				// error-checked in release builds; drain any error it left on the
 				// shared context so replay errors are attributed to replay commands.
 				while (glGetError() != GL_NO_ERROR) {}
-				Replayer replayer{ current, *this, instance, handles };
+				Replayer replayer{ current, this, instance, handles };
 				for (auto const& batch : current.plan.batches) {
 					for (auto const& node : batch.nodes) {
 						// GL executes in order on one context, so only memory
@@ -1767,7 +1809,7 @@ namespace fyuu_rhi::opengl {
 			// Re-assert the scheduler context after every submission: Present switches
 			// the drawable, and any partial failure must not leak that state into
 			// the next submission or the glGetError drain above.
-			MakeCurrentScheduler(*this, handles);
+			MakeCurrentScheduler(this, handles);
 			if (current.state) {
 				GLsync sync = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0u);
 				pending.push_back({ sync, std::move(current.state) });
@@ -1775,8 +1817,8 @@ namespace fyuu_rhi::opengl {
 		}
 
 		DrainPendingOnShutdown();
-		DestroySchedulerObjects(*this);
-		DestroySchedulerContext(*this, handles);
+		DestroySchedulerObjects(this);
+		DestroySchedulerContext(this, handles);
 	}
 
 	CommandSchedulerContext::CommandSchedulerContext(CommandSchedulerContext&& other) noexcept

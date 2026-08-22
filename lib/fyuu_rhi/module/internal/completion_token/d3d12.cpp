@@ -2,12 +2,15 @@ module;
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <exception>
-#include <limits>
-#include <mutex>
 #include <utility>
+
+#include <limits>
+
+#include <mutex>
 #endif // !defined(__cpp_lib_modules)
 #if defined(_WIN32)
 #include <d3d12.h>
+#include <wrl.h>
 #endif // defined(_WIN32)
 
 module fyuu_rhi:d3d12_completion_token;

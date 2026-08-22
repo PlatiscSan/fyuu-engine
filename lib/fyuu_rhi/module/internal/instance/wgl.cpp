@@ -2,6 +2,7 @@ module;
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <stdexcept>
+#include <vector>
 
 #include <array>
 

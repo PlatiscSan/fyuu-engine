@@ -1,37 +1,36 @@
 module;
 #include <version>
 #if !defined(__cpp_lib_modules)
-#include <cstring>
-
+#include <cstddef>
 #include <exception>
-#include <stdexcept>
-
-#include <algorithm>
-#include <limits>
-
 #include <memory>
+#include <stdexcept>
+#include <utility>
 
 #include <deque>
 #include <vector>
 
+#include <algorithm>
 #include <functional>
 
-#include <cstdint>
-#include <utility>
+#include <cstring>
 
-#include <atomic>
-#include <mutex>
+#include <limits>
+
+#include <cstdint>
 
 #include <unordered_map>
 #include <unordered_set>
+
+#include <atomic>
+#include <mutex>
 
 #include <optional>
 #include <variant>
 
 #include <compare>
-#include <span>
-
 #include <ranges>
+#include <span>
 
 #include <format>
 #endif
@@ -165,7 +164,10 @@ namespace {
 	}
 
 	/// Unwraps D3D12MA only at the native API boundary.
-	ID3D12Resource* NativeResource(std::span<std::reference_wrapper<Resource> const> resources, std::size_t index) {
+	ID3D12Resource* NativeResource(
+		std::span<std::reference_wrapper<fyuu_rhi::d3d12::Resource> const> resources,
+		std::size_t index
+	) {
 		return resources[index].get().allocation->GetResource();
 	}
 
@@ -285,7 +287,7 @@ namespace {
 	PresentationWork AcquirePresentation(
 		std::shared_ptr<QueueContext> const& queue,
 		HWND target,
-		Resource const& source,
+		fyuu_rhi::d3d12::Resource const& source,
 		std::uint32_t buffer_count,
 		bool vertical_sync
 	);
@@ -308,16 +310,16 @@ namespace {
 	}
 
 	D3D12_CPU_DESCRIPTOR_HANDLE NativeDescriptor(
-		View const& view,
-		View::Type type
+		fyuu_rhi::d3d12::View const& view,
+		fyuu_rhi::d3d12::View::Type type
 	) {
 		return view.descriptors[static_cast<std::size_t>(type)].CPU();
 	}
 
 	bool CoversWholeMip(
 		RenderArea const& area,
-		Resource const& resource,
-		View const& view
+		fyuu_rhi::d3d12::Resource const& resource,
+		fyuu_rhi::d3d12::View const& view
 	) noexcept {
 		auto resource_desc = resource.allocation->GetResource()->GetDesc();
 		auto width = resource_desc.Width >> view.base_mip_level;
@@ -334,8 +336,8 @@ namespace {
 
 	void DiscardView(
 		Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> const& commands,
-		Resource const& resource,
-		View const& view,
+		fyuu_rhi::d3d12::Resource const& resource,
+		fyuu_rhi::d3d12::View const& view,
 		D3D12_RECT const& rect
 	) {
 		auto resource_desc = resource.allocation->GetResource()->GetDesc();
@@ -361,10 +363,10 @@ namespace {
 
 	void ResolveView(
 		Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> const& commands,
-		Resource const& source,
-		View const& source_view,
-		Resource const& destination,
-		View const& destination_view
+		fyuu_rhi::d3d12::Resource const& source,
+		fyuu_rhi::d3d12::View const& source_view,
+		fyuu_rhi::d3d12::Resource const& destination,
+		fyuu_rhi::d3d12::View const& destination_view
 	) {
 		if (source_view.mip_level_count != destination_view.mip_level_count ||
 			source_view.array_layer_count != destination_view.array_layer_count) {
@@ -397,14 +399,16 @@ namespace {
 	/// Present commands consume reservations prepared serially before recording starts.
 	struct Recorder {
 
-		std::span<std::reference_wrapper<Resource> const> resources;
-		std::span<std::reference_wrapper<View> const> views;
-		std::span<std::reference_wrapper<Pipeline> const> pipelines;
-		std::span<std::reference_wrapper<PipelineResourceGroup> const> groups;
+		std::span<std::reference_wrapper<fyuu_rhi::d3d12::Resource> const> resources;
+		std::span<std::reference_wrapper<fyuu_rhi::d3d12::View> const> views;
+		std::span<std::reference_wrapper<fyuu_rhi::d3d12::Pipeline> const> pipelines;
+		std::span<
+			std::reference_wrapper<fyuu_rhi::d3d12::PipelineResourceGroup> const
+		> groups;
 		Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> const& commands;
 		std::vector<PresentationWork>* presentations;
 		std::size_t presentation_index = 0u;
-		Pipeline const* pipeline = nullptr;
+		fyuu_rhi::d3d12::Pipeline const* pipeline = nullptr;
 		std::optional<BeginRendering> rendering;
 
 		void operator()(BeginRendering const& value) {
@@ -424,7 +428,10 @@ namespace {
 			for (auto const& color : value.colors) {
 				auto const& view = views[color.view].get();
 				render_targets.emplace_back(
-					NativeDescriptor(view, View::Type::RenderTarget)
+					NativeDescriptor(
+						view,
+						fyuu_rhi::d3d12::View::Type::RenderTarget
+					)
 				);
 				if (color.load == LoadOperation::Clear) {
 					float clear[] = { color.clear.red, color.clear.green, color.clear.blue, color.clear.alpha };
@@ -434,7 +441,10 @@ namespace {
 						view
 					);
 					commands->ClearRenderTargetView(
-						NativeDescriptor(view, View::Type::RenderTarget),
+						NativeDescriptor(
+							view,
+							fyuu_rhi::d3d12::View::Type::RenderTarget
+						),
 						clear,
 						whole_mip ? 0u : 1u,
 						whole_mip ? nullptr : &rect
@@ -453,7 +463,10 @@ namespace {
 			D3D12_CPU_DESCRIPTOR_HANDLE* depth_ptr = nullptr;
 			if (value.depth_stencil) {
 				auto const& view = views[value.depth_stencil->view].get();
-				depth = NativeDescriptor(view, View::Type::DepthStencil);
+				depth = NativeDescriptor(
+					view,
+					fyuu_rhi::d3d12::View::Type::DepthStencil
+				);
 				depth_ptr = &depth;
 				UINT flags = 0u;
 				if (value.depth_stencil->depth_load == LoadOperation::Clear) {
@@ -785,7 +798,7 @@ namespace {
 	QueueContext::PresentationContext::SwapChain CreateSwapChain(
 		std::shared_ptr<QueueContext> const& queue,
 		HWND window,
-		Resource const& source,
+		fyuu_rhi::d3d12::Resource const& source,
 		std::uint32_t buffer_count
 	) {
 		constexpr std::uint32_t MinimumFlipModelBufferCount = 2u;
@@ -851,7 +864,7 @@ namespace {
 	void ValidateSwapChain(
 		std::shared_ptr<QueueContext> const& queue,
 		QueueContext::PresentationContext::SwapChain& swapchain,
-		Resource const& source,
+		fyuu_rhi::d3d12::Resource const& source,
 		std::uint32_t buffer_count
 	) {
 		DXGI_SWAP_CHAIN_DESC1 swapchain_desc{};
@@ -902,7 +915,7 @@ namespace {
 	PresentationWork AcquirePresentation(
 		std::shared_ptr<QueueContext> const& queue,
 		HWND target,
-		Resource const& source,
+		fyuu_rhi::d3d12::Resource const& source,
 		std::uint32_t buffer_count,
 		bool vertical_sync
 	) {
@@ -959,11 +972,13 @@ namespace {
 	void RecordBatch(
 		PreparedBatch& prepared,
 		ExecutionPlan const& plan,
-		std::span<std::reference_wrapper<Resource> const> resources,
+		std::span<std::reference_wrapper<fyuu_rhi::d3d12::Resource> const> resources,
 		std::span<D3D12_RESOURCE_STATES const> stable_states,
-		std::span<std::reference_wrapper<View> const> views,
-		std::span<std::reference_wrapper<Pipeline> const> pipelines,
-		std::span<std::reference_wrapper<PipelineResourceGroup> const> groups
+		std::span<std::reference_wrapper<fyuu_rhi::d3d12::View> const> views,
+		std::span<std::reference_wrapper<fyuu_rhi::d3d12::Pipeline> const> pipelines,
+		std::span<
+			std::reference_wrapper<fyuu_rhi::d3d12::PipelineResourceGroup> const
+		> groups
 	) {
 		auto const& commands = prepared.commands.impl;
 		Recorder recorder{

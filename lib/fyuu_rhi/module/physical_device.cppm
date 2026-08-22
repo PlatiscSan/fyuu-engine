@@ -8,6 +8,8 @@ module;
 #include <cstdint>
 
 #include <optional>
+
+#include <span>
 #endif // !defined(__cpp_lib_modules)
 export module fyuu_rhi:physical_device;
 #if defined(__cpp_lib_modules)
@@ -42,7 +44,10 @@ export namespace fyuu_rhi {
 			} type;
 		};
 
-		PhysicalDevice() noexcept = default;
+		PhysicalDevice() noexcept
+			: m_impl(nullptr, [](struct PhysicalDeviceImplementation*) {}) {
+
+		}
 
 		PhysicalDevice(UniqueHandle&& impl) noexcept
 			: m_impl(std::move(impl)) {

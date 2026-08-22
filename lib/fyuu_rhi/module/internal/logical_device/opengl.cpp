@@ -19,6 +19,8 @@ module;
 #include <array>
 
 #include <optional>
+#include <variant>
+
 #include <string_view>
 
 #include <filesystem>

@@ -316,7 +316,7 @@ namespace fyuu_rhi {
 				vk::DebugUtilsMessageTypeFlagBitsEXT::eGeneral |
 					vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation |
 					vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance,
-				reinterpret_cast<PFN_vkDebugUtilsMessengerCallbackEXT>(&DebugMessenger)
+				&DebugMessenger
 			};
 
 			void const* instance_p_next = nullptr;

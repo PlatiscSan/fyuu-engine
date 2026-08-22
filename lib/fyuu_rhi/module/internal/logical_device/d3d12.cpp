@@ -11,6 +11,9 @@ module;
 
 #include <cstdint>
 #include <array>
+#include <unordered_map>
+
+#include <mutex>
 
 #include <string_view>
 #include <filesystem>
