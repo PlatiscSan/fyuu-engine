@@ -23,7 +23,7 @@ namespace fyuu_rhi {
 
 	template <class NativePhysicalDevice>
 	struct CreateLogicalDevice {
-		NativePhysicalDevice* physical_device;
+		NativePhysicalDevice const* physical_device;
 
 		LogicalDevice operator()() const {
 			throw std::runtime_error(

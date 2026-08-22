@@ -40,7 +40,7 @@ namespace fyuu_rhi {
 
 	template <>
 	struct CreateLogicalDevice<metal::PhysicalDevice> {
-		metal::PhysicalDevice* physical_device;
+		metal::PhysicalDevice const* physical_device;
 
 		LogicalDevice operator()() const {
 			// Metal has no separate device-creation step: the MTL::Device is

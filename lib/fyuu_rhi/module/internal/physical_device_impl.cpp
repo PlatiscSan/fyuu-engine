@@ -38,12 +38,12 @@ namespace fyuu_rhi {
 		);
 	}
 
-	LogicalDevice PhysicalDevice::CreateLogicalDevice() {
+	LogicalDevice PhysicalDevice::CreateLogicalDevice() const {
 		if (!m_impl) {
 			throw std::runtime_error("Cannot create a logical device from an empty physical device");
 		}
 		return std::visit(
-			[]<class NativePhysicalDevice>(NativePhysicalDevice& native){
+			[]<class NativePhysicalDevice>(NativePhysicalDevice const& native) {
 				return fyuu_rhi::CreateLogicalDevice<NativePhysicalDevice>{ &native }();
 			},
 			m_impl->native

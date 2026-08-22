@@ -193,7 +193,7 @@ namespace fyuu_rhi {
 
 	template <>
 	struct CreateLogicalDevice<vulkan::PhysicalDevice> {
-		vulkan::PhysicalDevice* physical_device;
+		vulkan::PhysicalDevice const* physical_device;
 
 		LogicalDevice operator()() const {
 			// Phase 1: build the immutable queue pool from the physical device's

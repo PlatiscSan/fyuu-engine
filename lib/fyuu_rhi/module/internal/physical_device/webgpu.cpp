@@ -136,7 +136,7 @@ namespace fyuu_rhi {
 
 	template <>
 	struct CreateLogicalDevice<webgpu::PhysicalDevice> {
-		webgpu::PhysicalDevice* physical_device;
+		webgpu::PhysicalDevice const* physical_device;
 
 		LogicalDevice operator()() const {
 			wgpu::DeviceDescriptor descriptor;

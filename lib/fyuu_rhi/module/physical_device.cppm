@@ -54,7 +54,7 @@ export namespace fyuu_rhi {
 
 		Info GetInfo() const;
 	
-		LogicalDevice CreateLogicalDevice();
+		LogicalDevice CreateLogicalDevice() const;
 	};
 
 	/// Picks the most performant physical device from an enumeration, preferring

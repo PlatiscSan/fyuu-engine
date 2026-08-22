@@ -102,7 +102,7 @@ namespace fyuu_rhi {
 
 	template <>
 	struct CreateLogicalDevice<d3d12::PhysicalDevice> {
-		d3d12::PhysicalDevice* physical_device;
+		d3d12::PhysicalDevice const* physical_device;
 
 		LogicalDevice operator()() const {
 			Microsoft::WRL::ComPtr<ID3D12Device> device;

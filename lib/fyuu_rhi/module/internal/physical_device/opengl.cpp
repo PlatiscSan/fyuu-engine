@@ -96,7 +96,7 @@ namespace fyuu_rhi {
 
 	template <>
 	struct CreateLogicalDevice<opengl::PhysicalDevice> {
-		opengl::PhysicalDevice* physical_device;
+		opengl::PhysicalDevice const* physical_device;
 
 		LogicalDevice operator()() const {
 			// The window + GL context already live on the backend instance; the
