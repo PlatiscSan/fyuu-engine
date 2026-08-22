@@ -23,7 +23,7 @@ function(collect_cxx_modules base_dir group_name out_public_var out_internal_var
 		endif()
 	endforeach()
 	list(REMOVE_ITEM internal_modules ${implementation_units})
-	foreach(module_file IN LISTS public_modules internal_modules)
+	foreach(module_file IN LISTS public_modules internal_modules implementation_units)
 		file(RELATIVE_PATH relative_path "${base_dir}" "${module_file}")
 		get_filename_component(directory_path "${relative_path}" DIRECTORY)
 		if(group_name AND directory_path)
