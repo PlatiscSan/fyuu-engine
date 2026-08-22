@@ -23,8 +23,6 @@ target_sources(${PROJECT_NAME}
         TYPE CXX_MODULES
         BASE_DIRS ${Vulkan_INCLUDE_DIR}
         FILES ${Vulkan_INCLUDE_DIR}/vulkan/vulkan.cppm
-    PRIVATE
-        dispatcher.cpp
 )
 target_compile_features(${PROJECT_NAME} 
     PUBLIC 
