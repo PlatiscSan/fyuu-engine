@@ -31,7 +31,10 @@ export namespace fyuu_rhi {
 		UniqueHandle m_impl;
 
 	public:
-		LogicalDevice() noexcept = default;
+		LogicalDevice() noexcept
+			: m_impl(nullptr, [](LogicalDeviceImplementation*) {}) {
+
+		}
 
 		LogicalDevice(UniqueHandle&& impl) noexcept
 			: m_impl(std::move(impl)) {

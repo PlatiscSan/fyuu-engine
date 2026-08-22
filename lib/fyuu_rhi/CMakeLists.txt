@@ -105,6 +105,7 @@ collect_cxx_modules(
 	""
 	interface_modules
 	internal_modules
+	module_implementation_units
 )
 
 collect_headers(${CMAKE_CURRENT_SOURCE_DIR}/include/ ""
@@ -133,6 +134,7 @@ target_sources(${PROJECT_NAME}
 		${public_headers}
 	PRIVATE
 		${sources}
+		${module_implementation_units}
 )
 
 target_compile_definitions(${PROJECT_NAME} 
