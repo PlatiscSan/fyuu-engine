@@ -1,17 +1,25 @@
-import fyuu_desktop;
-import fyuu_engine;
+#include <version>
+#if !defined(__cpp_lib_modules)
+#include <string_view>
+#endif // !defined(__cpp_lib_modules)
 
-int main() {
-	fyuu_desktop::Descriptor const descriptor{
-		"Fyuu Studio",
-		1600,
-		900,
-		true,
-		true
-	};
-	fyuu_engine::Application application;
+import fyuu_engine;
+import fyuu_studio;
+#if defined(__cpp_lib_modules)
+import std;
+#endif // defined(__cpp_lib_modules)
+
+int main(int argc, char** argv) {
 	try {
-		fyuu_desktop::Run(descriptor, application);
+		auto backend = fyuu_studio::DefaultRenderBackend();
+		for (auto index = 1; index < argc; ++index) {
+			std::string_view const argument{ argv[index] };
+			static constexpr std::string_view Prefix = "--rhi=";
+			if (argument.starts_with(Prefix)) {
+				backend = fyuu_studio::ParseRenderBackend(argument.substr(Prefix.size()));
+			}
+		}
+		fyuu_studio::Run(backend);
 		return 0;
 	}
 	catch (fyuu_engine::Error const&) {
