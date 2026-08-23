@@ -4,6 +4,7 @@ module;
 #include <exception>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #endif // !defined(__cpp_lib_modules)
 #include "fyuu_platform.h"
 #include "fyuu_runtime.h"
@@ -17,7 +18,7 @@ import std;
 
 namespace {
 
-	void ThrowIfFailed(Fyuu_Result const& result) {
+	void ThrowIfFailed(Fyuu_Result result) {
 		switch (result) {
 		case FYUU_RESULT_SUCCESS:
 			return;
@@ -46,8 +47,8 @@ namespace fyuu_engine {
 	// delegate state changes to the C ABI, and translate failed Result values to Error.
 	// Application and Platform callbacks return through the generated :api_glue partition.
 
-	Error::Error(Result const& result, std::string const& message)
-		: std::runtime_error(message),
+	Error::Error(Result result, std::string_view message)
+		: std::runtime_error(std::string{ message }),
 		m_result(result) {
 	}
 
@@ -85,16 +86,21 @@ namespace fyuu_engine {
 		return m_handle;
 	}
 
-	Runtime::Runtime(Platform& platform, Application& application)
-		: m_application(&application),
+	Runtime::Runtime(
+		Platform& platform,
+		Logger& logger,
+		Application& application
+	) : m_application(&application),
+		m_logger(&logger),
 		m_platform(&platform) {
-		if (!platform.Valid()) {
-			throw Error{ Result::InvalidArgument, "Runtime requires a valid Platform" };
+		if (!platform.Valid() || !logger.Valid()) {
+			throw Error{ Result::InvalidArgument, "Runtime requires valid Platform and Logger objects" };
 		}
 		Fyuu_RuntimeDescriptor const descriptor{
 			sizeof(Fyuu_RuntimeDescriptor),
 			FYUU_ABI_VERSION,
 			this,
+			logger.m_handle,
 			nullptr,
 			TickThunk,
 			CloseRequestedThunk,
@@ -120,11 +126,21 @@ namespace fyuu_engine {
 		if (m_platform && m_platform->m_pending_exception) {
 			auto const exception = m_platform->m_pending_exception;
 			m_platform->m_pending_exception = nullptr;
+			try {
+				m_logger->Write(LogLevel::Error, "Runtime", "Platform callback failed");
+			}
+			catch (...) {
+			}
 			std::rethrow_exception(exception);
 		}
 		if (m_pending_exception) {
 			auto const exception = m_pending_exception;
 			m_pending_exception = nullptr;
+			try {
+				m_logger->Write(LogLevel::Error, "Runtime", "Application callback failed");
+			}
+			catch (...) {
+			}
 			std::rethrow_exception(exception);
 		}
 		ThrowIfFailed(result);
@@ -136,6 +152,10 @@ namespace fyuu_engine {
 
 	RuntimeState Runtime::GetState() const noexcept {
 		return static_cast<RuntimeState>(Fyuu_RuntimeGetState(m_handle));
+	}
+
+	Logger& Runtime::GetLogger() const noexcept {
+		return *m_logger;
 	}
 
 	void Runtime::Run() {

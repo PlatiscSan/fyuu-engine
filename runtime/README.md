@@ -23,15 +23,18 @@ Runtime 将平台实现和应用实现分开：
 一次完整启动严格遵循以下顺序：
 
 1. 创建具体的 `Platform`，其基类构造函数创建 ABI Platform，具体构造函数取得原生资源。
-2. 创建具体的 `Application`。
-3. 使用 `Platform` 和 `Application` 构造 `Runtime`，构造函数创建并初始化 ABI Runtime。
-4. 调用 `Runtime::Run`，或手动循环调用 `Tick`。
-5. 先销毁 `Runtime`，再销毁 `Application` 和 `Platform`。
+2. 创建 `LogSink` 和借用它的 `Logger`。
+3. 创建具体的 `Application`。
+4. 使用 `Platform`、`Logger` 和 `Application` 构造 `Runtime`，构造函数创建并初始化 ABI Runtime。
+5. 调用 `Runtime::Run`，或手动循环调用 `Tick`。
+6. 先销毁 `Runtime`，再销毁 `Application`、`Logger`、`LogSink` 和 `Platform`。
 
 对象的借用关系决定了声明顺序。推荐按以下顺序声明局部对象：
 
 ```text
 Platform
+LogSink
+Logger
 Application
 Runtime
 ```
@@ -39,7 +42,7 @@ Runtime
 局部对象按相反顺序析构，因此实际销毁顺序是：
 
 ```text
-Runtime -> Application -> Platform
+Runtime -> Application -> Logger -> LogSink -> Platform
 ```
 
 ### 2. 构建与导入
@@ -96,8 +99,11 @@ int main() {
         .high_pixel_density = true
     };
     StudioApplication application;
+    fyuu_engine::ConsoleLogSink log_sink;
+    fyuu_engine::Logger logger{ log_sink };
+    fyuu_desktop::EventSink event_sink;
     try {
-        fyuu_desktop::Run(descriptor, application);
+        fyuu_desktop::Run(descriptor, logger, event_sink, application);
         return 0;
     }
     catch (fyuu_engine::Error const& error) {
@@ -132,10 +138,13 @@ fyuu_desktop::Descriptor const descriptor{
 };
 
 StudioApplication application;
+fyuu_engine::ConsoleLogSink log_sink;
+fyuu_engine::Logger logger{ log_sink };
+fyuu_desktop::EventSink event_sink;
 
 try {
-    fyuu_desktop::Platform platform{ descriptor };
-    fyuu_engine::Runtime runtime{ platform, application };
+    fyuu_desktop::Platform platform{ descriptor, event_sink };
+    fyuu_engine::Runtime runtime{ platform, logger, application };
     while (runtime.GetState() != fyuu_engine::RuntimeState::Stopped) {
         runtime.Tick();
     }
@@ -240,6 +249,7 @@ Fyuu_RuntimeDescriptor runtime_descriptor = {
     .struct_size = sizeof(Fyuu_RuntimeDescriptor),
     .ABI_version = FYUU_ABI_VERSION,
     .user_data = application_state,
+    .logger = logger,
     .initialize = ApplicationInitialize,
     .tick = ApplicationTick,
     .close_requested = ApplicationCloseRequested,
@@ -307,10 +317,11 @@ FyuuRuntime separates platform behavior from application behavior. Platform and 
 Create objects in this order:
 
 1. Concrete `Platform`; its base constructor creates the ABI Platform and its concrete constructor acquires native resources.
-2. Concrete `Application`.
-3. Construct `Runtime` from Platform and Application; its constructor creates and initializes the ABI Runtime.
-4. Call `Runtime::Run()`, or repeatedly call `Tick()`.
-5. Destroy Runtime before Application and Platform.
+2. A `LogSink` and a `Logger` that borrows it.
+3. Concrete `Application`.
+4. Construct `Runtime` from Platform, Logger, and Application; its constructor creates and initializes the ABI Runtime.
+5. Call `Runtime::Run()`, or repeatedly call `Tick()`.
+6. Destroy Runtime before Application, Logger, LogSink, and Platform.
 
 Recommended local declaration order:
 
@@ -359,8 +370,11 @@ fyuu_desktop::Descriptor const descriptor{
 };
 
 StudioApplication application;
+fyuu_engine::ConsoleLogSink log_sink;
+fyuu_engine::Logger logger{ log_sink };
+fyuu_desktop::EventSink event_sink;
 try {
-    fyuu_desktop::Run(descriptor, application);
+    fyuu_desktop::Run(descriptor, logger, event_sink, application);
     return 0;
 }
 catch (fyuu_engine::Error const& error) {
@@ -387,10 +401,13 @@ Use the explicit lifecycle when the host owns the outer loop:
 
 ```cpp
 StudioApplication application;
+fyuu_engine::ConsoleLogSink log_sink;
+fyuu_engine::Logger logger{ log_sink };
+fyuu_desktop::EventSink event_sink;
 
 try {
-    fyuu_desktop::Platform platform{ descriptor };
-    fyuu_engine::Runtime runtime{ platform, application };
+    fyuu_desktop::Platform platform{ descriptor, event_sink };
+    fyuu_engine::Runtime runtime{ platform, logger, application };
     while (runtime.GetState() != fyuu_engine::RuntimeState::Stopped) {
         runtime.Tick();
     }

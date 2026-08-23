@@ -211,6 +211,7 @@ def render_runtime(schema):
 #include <stdint.h>
 
 #include "api_macro.h"
+#include "fyuu_log.h"
 #include "fyuu_platform.h"
 
 #if defined(__cplusplus)
@@ -241,6 +242,8 @@ typedef struct Fyuu_RuntimeDescriptor {{
 	size_t struct_size;
 	uint32_t ABI_version;
 	void* user_data;
+	/* Optional borrowed logger used by the shared Runtime state machine; must remain alive. */
+	Fyuu_Logger* logger;
 	Fyuu_RuntimeCallback {callbacks['initialize']['c_name']};
 	Fyuu_RuntimeCallback {callbacks['tick']['c_name']};
 	Fyuu_RuntimeCloseRequestedCallback {callbacks['close_requested']['c_name']};

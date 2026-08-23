@@ -2,6 +2,7 @@ module;
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <exception>
+#include <print>
 #include <string_view>
 #endif // !defined(__cpp_lib_modules)
 #include "fyuu_log.h"
@@ -15,7 +16,26 @@ import std;
 
 namespace {
 
-	void ThrowIfLogFailed(Fyuu_Result const& result) {
+	std::string_view LogLevelName(fyuu_engine::LogLevel level) noexcept {
+		switch (level) {
+		case fyuu_engine::LogLevel::Trace:
+			return "Trace";
+		case fyuu_engine::LogLevel::Debug:
+			return "Debug";
+		case fyuu_engine::LogLevel::Info:
+			return "Info";
+		case fyuu_engine::LogLevel::Warning:
+			return "Warning";
+		case fyuu_engine::LogLevel::Error:
+			return "Error";
+		case fyuu_engine::LogLevel::Fatal:
+			return "Fatal";
+		default:
+			return "Unknown";
+		}
+	}
+
+	void ThrowIfLogFailed(Fyuu_Result result) {
 		switch (result) {
 		case FYUU_RESULT_SUCCESS:
 			return;
@@ -35,6 +55,10 @@ namespace {
 namespace fyuu_engine {
 
 	LogSink::~LogSink() noexcept = default;
+
+	void ConsoleLogSink::Write(LogRecord const& record) {
+		std::println("[{}] [{}] {}", LogLevelName(record.level), record.category, record.message);
+	}
 
 	Logger::Logger(LogSink& sink)
 		: m_sink(&sink) {
@@ -72,11 +96,7 @@ namespace fyuu_engine {
 		ThrowIfLogFailed(result);
 	}
 
-	void Logger::Write(
-		LogLevel const& level,
-		std::string_view const& category,
-		std::string_view const& message
-	) {
+	void Logger::Write(LogLevel level, std::string_view category, std::string_view message) {
 		Write(LogRecord{ level, category, message });
 	}
 

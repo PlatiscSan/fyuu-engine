@@ -2,7 +2,9 @@ module;
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <new>
+#include <string_view>
 #endif // !defined(__cpp_lib_modules)
+#include "fyuu_log.h"
 #include "fyuu_platform.h"
 #include "fyuu_runtime.h"
 
@@ -41,6 +43,24 @@ namespace {
 			descriptor.ABI_version == FYUU_ABI_VERSION;
 	}
 
+	void WriteRuntimeLog(
+		Fyuu_Runtime& runtime,
+		Fyuu_LogLevel level,
+		std::string_view message
+	) noexcept {
+		if (!runtime.descriptor.logger) {
+			return;
+		}
+		Fyuu_LogRecord const record{
+			level,
+			"Runtime",
+			7,
+			message.data(),
+			message.size()
+		};
+		Fyuu_LoggerWrite(runtime.descriptor.logger, &record);
+	}
+
 	void StopRuntime(Fyuu_Runtime& runtime) noexcept {
 		// StopRuntime is the single terminal transition. It guarantees that application
 		// shutdown runs at most once before the state becomes Stopped.
@@ -55,6 +75,7 @@ namespace {
 			runtime.descriptor.shutdown(&runtime, runtime.descriptor.user_data);
 		}
 		runtime.state = FYUU_RUNTIME_STATE_STOPPED;
+		WriteRuntimeLog(runtime, FYUU_LOG_LEVEL_INFO, "Runtime stopped");
 	}
 
 }
@@ -132,6 +153,7 @@ extern "C" {
 			runtime->descriptor.initialize(runtime, runtime->descriptor.user_data);
 		}
 		runtime->state = FYUU_RUNTIME_STATE_RUNNING;
+		WriteRuntimeLog(*runtime, FYUU_LOG_LEVEL_INFO, "Runtime started");
 		return FYUU_RESULT_SUCCESS;
 	}
 
@@ -153,13 +175,18 @@ extern "C" {
 			&close_requested
 		);
 		if (result != FYUU_RESULT_SUCCESS) {
+			WriteRuntimeLog(*runtime, FYUU_LOG_LEVEL_ERROR, "Platform event pump failed");
 			return result;
 		}
 		if (close_requested) {
 			auto const can_close = !runtime->descriptor.close_requested ||
 				runtime->descriptor.close_requested(runtime, runtime->descriptor.user_data);
 			if (can_close) {
+				WriteRuntimeLog(*runtime, FYUU_LOG_LEVEL_INFO, "Close request accepted");
 				runtime->state = FYUU_RUNTIME_STATE_STOP_REQUESTED;
+			}
+			else {
+				WriteRuntimeLog(*runtime, FYUU_LOG_LEVEL_INFO, "Close request rejected");
 			}
 		}
 		if (runtime->state == FYUU_RUNTIME_STATE_RUNNING && runtime->descriptor.tick) {
@@ -173,6 +200,7 @@ extern "C" {
 
 	LIB_API void LIB_CALL Fyuu_RuntimeRequestStop(Fyuu_Runtime* runtime) NOEXCEPT {
 		if (runtime && runtime->state == FYUU_RUNTIME_STATE_RUNNING) {
+			WriteRuntimeLog(*runtime, FYUU_LOG_LEVEL_INFO, "Stop requested");
 			runtime->state = FYUU_RUNTIME_STATE_STOP_REQUESTED;
 		}
 	}

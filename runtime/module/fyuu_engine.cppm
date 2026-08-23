@@ -29,7 +29,7 @@ export namespace fyuu_engine {
 		Result m_result;
 
 	public:
-		Error(Result const& result, std::string const& message);
+		Error(Result result, std::string_view message);
 		Result Code() const noexcept;
 	};
 
@@ -46,6 +46,11 @@ export namespace fyuu_engine {
 		virtual void Write(LogRecord const& record) = 0;
 	};
 
+	/// Writes synchronous human-readable records to the process standard output stream.
+	struct ConsoleLogSink final : LogSink {
+		void Write(LogRecord const& record) override;
+	};
+
 	/// Owns an opaque ABI logger and synchronously forwards records to a borrowed LogSink.
 	/// Call chain: Logger::Write -> C ABI -> generated thunk -> LogSink::Write.
 	class Logger {
@@ -53,6 +58,7 @@ export namespace fyuu_engine {
 		Fyuu_Logger* m_handle = nullptr;
 		LogSink* m_sink = nullptr;
 		std::exception_ptr m_pending_exception;
+		friend class Runtime;
 
 		static Fyuu_Result LIB_CALL WriteThunk(
 			Fyuu_Logger* logger,
@@ -72,9 +78,9 @@ export namespace fyuu_engine {
 
 		void Write(LogRecord const& record);
 		void Write(
-			LogLevel const& level,
-			std::string_view const& category,
-			std::string_view const& message
+			LogLevel level,
+			std::string_view category,
+			std::string_view message
 		);
 		bool Valid() const noexcept;
 	};
@@ -126,12 +132,13 @@ export namespace fyuu_engine {
 		bool Valid() const noexcept;
 	};
 
-	/// Owns the opaque C ABI runtime object and borrows Platform and Application.
-	/// Both borrowed objects must outlive this object.
+	/// Owns the opaque C ABI runtime object and borrows Platform, Logger, and Application.
+	/// Every borrowed object must outlive this object.
 	class Runtime {
 	private:
 		Fyuu_Runtime* m_handle = nullptr;
 		Application* m_application = nullptr;
+		Logger* m_logger = nullptr;
 		Platform* m_platform = nullptr;
 		std::exception_ptr m_pending_exception;
 
@@ -141,7 +148,11 @@ export namespace fyuu_engine {
 
 	public:
 		/// Creates and initializes the ABI Runtime; throws Error on failure.
-		Runtime(Platform& platform, Application& application);
+		Runtime(
+			Platform& platform,
+			Logger& logger,
+			Application& application
+		);
 		/// Stops and destroys the ABI Runtime without deleting borrowed objects.
 		~Runtime() noexcept;
 
@@ -157,6 +168,8 @@ export namespace fyuu_engine {
 		void RequestStop() noexcept;
 		/// Returns the state maintained by the C ABI runtime core.
 		RuntimeState GetState() const noexcept;
+		/// Returns the Logger borrowed at construction for application and subsystem use.
+		Logger& GetLogger() const noexcept;
 		/// Calls Tick until Stopped and rethrows any operation failure.
 		void Run();
 		/// Returns true when this wrapper owns a C ABI runtime object.

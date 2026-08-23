@@ -26,7 +26,7 @@ namespace {
 			descriptor.sink;
 	}
 
-	bool ValidLogLevel(Fyuu_LogLevel const& level) noexcept {
+	bool ValidLogLevel(Fyuu_LogLevel level) noexcept {
 		return level >= FYUU_LOG_LEVEL_TRACE &&
 			level <= FYUU_LOG_LEVEL_FATAL;
 	}
