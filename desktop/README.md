@@ -54,6 +54,8 @@ import fyuu_engine;
 
 `FyuuDesktop` 公开传递 `FyuuEngine` 链接依赖，私有链接 `SDL3::SDL3`。公共模块接口不暴露 `SDL_Window*`，SDL 类型只存在于内部实现分区。
 
+`Platform::GetPresentationTarget` 返回一个 `PresentationTarget` variant。它包含当前平台对应的 Win32、X11、Wayland 或 Cocoa 目标，供上层转换为 RHI presentation handle；该接口不暴露 SDL 窗口对象。
+
 ### 3. 窗口描述符
 
 `Descriptor` 是全公开数据结构：
@@ -99,8 +101,11 @@ int main() {
         .height = 720
     };
     DesktopApplication application;
+    fyuu_engine::ConsoleLogSink log_sink;
+    fyuu_engine::Logger logger{ log_sink };
+    fyuu_desktop::EventSink event_sink;
     try {
-        fyuu_desktop::Run(descriptor, application);
+        fyuu_desktop::Run(descriptor, logger, event_sink, application);
         return 0;
     }
     catch (fyuu_engine::Error const& error) {
@@ -124,10 +129,13 @@ int main() {
 
 ```cpp
 DesktopApplication application;
+fyuu_engine::ConsoleLogSink log_sink;
+fyuu_engine::Logger logger{ log_sink };
+fyuu_desktop::EventSink event_sink;
 
 try {
-    fyuu_desktop::Platform platform{ descriptor };
-    fyuu_engine::Runtime runtime{ platform, application };
+    fyuu_desktop::Platform platform{ descriptor, event_sink };
+    fyuu_engine::Runtime runtime{ platform, logger, application };
     while (runtime.GetState() != fyuu_engine::RuntimeState::Stopped) {
         runtime.Tick();
     }
@@ -174,6 +182,8 @@ SDL close event
 
 这样 Studio 可以在关闭窗口前显示未保存文档确认。
 
+Platform 会把窗口尺寸、像素尺寸、焦点、鼠标、键盘和文本输入转换为 `fyuu_desktop::Event`，并在事件泵期间同步调用 `EventSink::ProcessEvent`。鼠标按键和键盘按键分别使用 `MouseButton` 与 `Key`，修饰键使用独立布尔状态，因此 SDL 常量不会越过 Desktop 边界。默认 EventSink 忽略事件，StudioFrontend 则覆盖它用于具体 UI 后端。
+
 ### 8. 所有权和线程约束
 
 `Platform` 不可复制、不可移动。它在构造函数中获得并在析构函数中释放：
@@ -199,9 +209,8 @@ Platform 构造和事件泵可以抛异常，析构函数为 `noexcept`。生成
 
 当前 FyuuDesktop 只实现最小启动闭环，暂不提供：
 
-- SDL 输入事件到 Studio 输入系统的转换。
-- 窗口尺寸、最小化、焦点和 DPI 状态通知。
-- RHI 所需的跨平台原生窗口句柄。
+- 尚未列入 `Key` 的完整键盘按键集合。
+- 最小化和 DPI 比例状态通知。
 - 多窗口管理。
 - 文件选择、剪贴板、拖放和系统对话框。
 - Android、Web 或其他非桌面入口。
@@ -234,6 +243,8 @@ import fyuu_engine;
 
 SDL3 is a private implementation dependency. No SDL type is exposed by the public module.
 
+`Platform::GetPresentationTarget` returns a `PresentationTarget` variant containing the active Win32, X11, Wayland, or Cocoa target. Upper layers may adapt that value to an RHI presentation handle without exposing the SDL window object.
+
 ### 3. Descriptor
 
 ```cpp
@@ -254,8 +265,11 @@ Use `fyuu_desktop::Run` for the standard blocking desktop lifecycle:
 
 ```cpp
 DesktopApplication application;
+fyuu_engine::ConsoleLogSink log_sink;
+fyuu_engine::Logger logger{ log_sink };
+fyuu_desktop::EventSink event_sink;
 try {
-    fyuu_desktop::Run(descriptor, application);
+    fyuu_desktop::Run(descriptor, logger, event_sink, application);
     return 0;
 }
 catch (fyuu_engine::Error const& error) {
@@ -281,10 +295,13 @@ Construct the objects explicitly when the host controls the outer loop:
 
 ```cpp
 DesktopApplication application;
+fyuu_engine::ConsoleLogSink log_sink;
+fyuu_engine::Logger logger{ log_sink };
+fyuu_desktop::EventSink event_sink;
 
 try {
-    fyuu_desktop::Platform platform{ descriptor };
-    fyuu_engine::Runtime runtime{ platform, application };
+    fyuu_desktop::Platform platform{ descriptor, event_sink };
+    fyuu_engine::Runtime runtime{ platform, logger, application };
     while (runtime.GetState() != fyuu_engine::RuntimeState::Stopped) {
         runtime.Tick();
     }
@@ -300,6 +317,8 @@ Declare Platform and Application before Runtime so reverse destruction preserves
 
 `PumpEvents` treats `SDL_EVENT_QUIT` and a main-window `SDL_EVENT_WINDOW_CLOSE_REQUESTED` as close requests. It does not destroy the window. Runtime asks `Application::CloseRequested`, allowing the application to reject closure.
 
+Platform normalizes window size, pixel size, focus, mouse, keyboard, and text input into `fyuu_desktop::Event`, then synchronously calls `EventSink::ProcessEvent` during the event pump. Mouse and keyboard values use the backend-independent `MouseButton` and `Key` enums, with explicit modifier states, so no SDL constant crosses the public module boundary. The default sink ignores events; StudioFrontend overrides it for a concrete UI backend.
+
 The first Platform initializes SDL Video and each Platform owns one internally reference-counted claim. A destructor destroys its window and releases only that claim; SDL Video is shut down after the final claim is released.
 
 ### 7. Ownership and errors
@@ -310,4 +329,4 @@ Invalid descriptors throw `Error{ InvalidArgument }`, invalid lifecycle calls th
 
 ### 8. Current limitations
 
-The initial adapter intentionally does not provide input translation, resize/DPI notifications, native window handles for RHI, multiple windows, file dialogs, clipboard integration, drag and drop, or non-desktop platform entry. These features belong in FyuuDesktop rather than the platform-independent Runtime core.
+The initial adapter still lacks the complete keyboard key set, minimized/DPI scale notifications, multiple windows, file dialogs, clipboard integration, drag and drop, and non-desktop platform entry. These features belong in FyuuDesktop rather than the platform-independent Runtime core.

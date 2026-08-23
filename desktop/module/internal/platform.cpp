@@ -1,11 +1,15 @@
 module;
 #include <version>
 #if !defined(__cpp_lib_modules)
-#include <atomic>
 #include <cstddef>
-#include <cstdint>
-#include <format>
 #include <limits>
+
+#include <cstdint>
+#include <atomic>
+
+#include <optional>
+
+#include <format>
 #endif // !defined(__cpp_lib_modules)
 #include <SDL3/SDL.h>
 
@@ -38,20 +42,141 @@ namespace {
 		}
 	}
 
+	fyuu_desktop::MouseButton TranslateMouseButton(std::uint8_t button) noexcept {
+		switch (button) {
+		case SDL_BUTTON_LEFT:
+			return fyuu_desktop::MouseButton::Left;
+		case SDL_BUTTON_MIDDLE:
+			return fyuu_desktop::MouseButton::Middle;
+		case SDL_BUTTON_RIGHT:
+			return fyuu_desktop::MouseButton::Right;
+		case SDL_BUTTON_X1:
+			return fyuu_desktop::MouseButton::Extra1;
+		case SDL_BUTTON_X2:
+			return fyuu_desktop::MouseButton::Extra2;
+		default:
+			return fyuu_desktop::MouseButton::Unknown;
+		}
+	}
+
+	fyuu_desktop::Key TranslateKey(SDL_Scancode scancode) noexcept {
+		switch (scancode) {
+		case SDL_SCANCODE_TAB: return fyuu_desktop::Key::Tab;
+		case SDL_SCANCODE_LEFT: return fyuu_desktop::Key::LeftArrow;
+		case SDL_SCANCODE_RIGHT: return fyuu_desktop::Key::RightArrow;
+		case SDL_SCANCODE_UP: return fyuu_desktop::Key::UpArrow;
+		case SDL_SCANCODE_DOWN: return fyuu_desktop::Key::DownArrow;
+		case SDL_SCANCODE_PAGEUP: return fyuu_desktop::Key::PageUp;
+		case SDL_SCANCODE_PAGEDOWN: return fyuu_desktop::Key::PageDown;
+		case SDL_SCANCODE_HOME: return fyuu_desktop::Key::Home;
+		case SDL_SCANCODE_END: return fyuu_desktop::Key::End;
+		case SDL_SCANCODE_INSERT: return fyuu_desktop::Key::Insert;
+		case SDL_SCANCODE_DELETE: return fyuu_desktop::Key::Delete;
+		case SDL_SCANCODE_BACKSPACE: return fyuu_desktop::Key::Backspace;
+		case SDL_SCANCODE_SPACE: return fyuu_desktop::Key::Space;
+		case SDL_SCANCODE_RETURN: return fyuu_desktop::Key::Enter;
+		case SDL_SCANCODE_ESCAPE: return fyuu_desktop::Key::Escape;
+		case SDL_SCANCODE_A: return fyuu_desktop::Key::A;
+		case SDL_SCANCODE_C: return fyuu_desktop::Key::C;
+		case SDL_SCANCODE_V: return fyuu_desktop::Key::V;
+		case SDL_SCANCODE_X: return fyuu_desktop::Key::X;
+		case SDL_SCANCODE_Y: return fyuu_desktop::Key::Y;
+		case SDL_SCANCODE_Z: return fyuu_desktop::Key::Z;
+		default: return fyuu_desktop::Key::Unknown;
+		}
+	}
+
+	void TranslateModifiers(SDL_Keymod modifiers, fyuu_desktop::Event& event) noexcept {
+		event.control = (modifiers & SDL_KMOD_CTRL) != 0;
+		event.shift = (modifiers & SDL_KMOD_SHIFT) != 0;
+		event.alt = (modifiers & SDL_KMOD_ALT) != 0;
+		event.super = (modifiers & SDL_KMOD_GUI) != 0;
+	}
+
+	std::optional<fyuu_desktop::PresentationTarget> GetPresentationTarget(
+		SDL_Window* window
+	) noexcept {
+		auto const properties = SDL_GetWindowProperties(window);
+#if defined(_WIN32)
+		auto* native_window = SDL_GetPointerProperty(
+			properties,
+			SDL_PROP_WINDOW_WIN32_HWND_POINTER,
+			nullptr
+		);
+		if (native_window) {
+			return fyuu_desktop::Win32PresentationTarget{ native_window };
+		}
+#elif defined(__linux__)
+		auto* wayland_display = SDL_GetPointerProperty(
+			properties,
+			SDL_PROP_WINDOW_WAYLAND_DISPLAY_POINTER,
+			nullptr
+		);
+		auto* wayland_surface = SDL_GetPointerProperty(
+			properties,
+			SDL_PROP_WINDOW_WAYLAND_SURFACE_POINTER,
+			nullptr
+		);
+		if (wayland_display && wayland_surface) {
+			return fyuu_desktop::WaylandPresentationTarget{
+				wayland_display,
+				wayland_surface
+			};
+		}
+		auto* x11_display = SDL_GetPointerProperty(
+			properties,
+			SDL_PROP_WINDOW_X11_DISPLAY_POINTER,
+			nullptr
+		);
+		auto const x11_window = SDL_GetNumberProperty(
+			properties,
+			SDL_PROP_WINDOW_X11_WINDOW_NUMBER,
+			0
+		);
+		if (x11_display && x11_window != 0) {
+			return fyuu_desktop::X11PresentationTarget{
+				x11_display,
+				static_cast<std::uint64_t>(x11_window)
+			};
+		}
+#elif defined(__APPLE__)
+		auto* native_window = SDL_GetPointerProperty(
+			properties,
+			SDL_PROP_WINDOW_COCOA_WINDOW_POINTER,
+			nullptr
+		);
+		if (native_window) {
+			return fyuu_desktop::CocoaPresentationTarget{ native_window };
+		}
+#endif
+		return std::nullopt;
+	}
+
 }
 
 namespace fyuu_desktop {
 
+	EventSink::~EventSink() noexcept = default;
+
+	void EventSink::ProcessEvent(Event const&) {
+	}
+
 	void Platform::Release() noexcept {
+		m_presentation_target.reset();
 		if (m_window) {
-			SDL_DestroyWindow(static_cast<SDL_Window*>(m_window));
+			auto* window = static_cast<SDL_Window*>(m_window);
+			SDL_StopTextInput(window);
+			SDL_DestroyWindow(window);
 			m_window = nullptr;
 		}
 		ReleaseVideoSubsystem();
 	}
 
-	Platform::Platform(Descriptor const& descriptor)
-		: m_descriptor(descriptor) {
+	Platform::Platform(
+		Descriptor const& descriptor,
+		EventSink& event_sink
+	) : m_descriptor(descriptor),
+		m_event_sink(&event_sink) {
 		auto const maximum_extent = static_cast<std::uint32_t>(std::numeric_limits<int>::max());
 		if (m_descriptor.title.empty() ||
 			m_descriptor.width == 0 ||
@@ -87,6 +212,19 @@ namespace fyuu_desktop {
 			ReleaseVideoSubsystem();
 			throw fyuu_engine::Error{ fyuu_engine::Result::PlatformError, message };
 		}
+		if (!SDL_StartTextInput(static_cast<SDL_Window*>(m_window))) {
+			auto const message = std::format("SDL text input initialization failed: {}", SDL_GetError());
+			Release();
+			throw fyuu_engine::Error{ fyuu_engine::Result::PlatformError, message };
+		}
+		m_presentation_target = ::GetPresentationTarget(static_cast<SDL_Window*>(m_window));
+		if (!m_presentation_target) {
+			Release();
+			throw fyuu_engine::Error{
+				fyuu_engine::Result::PlatformError,
+				"SDL did not provide a native presentation target"
+			};
+		}
 	}
 
 	Platform::~Platform() noexcept {
@@ -95,6 +233,16 @@ namespace fyuu_desktop {
 
 	bool Platform::Valid() const noexcept {
 		return m_window;
+	}
+
+	PresentationTarget const& Platform::GetPresentationTarget() const {
+		if (!m_presentation_target) {
+			throw fyuu_engine::Error{
+				fyuu_engine::Result::InvalidState,
+				"Desktop presentation target is unavailable"
+			};
+		}
+		return *m_presentation_target;
 	}
 
 	void Platform::PumpEvents(bool& close_requested) {
@@ -106,12 +254,88 @@ namespace fyuu_desktop {
 		}
 		close_requested = false;
 		auto const window_ID = SDL_GetWindowID(static_cast<SDL_Window*>(m_window));
-		SDL_Event event{};
-		while (SDL_PollEvent(&event)) {
-			if (event.type == SDL_EVENT_QUIT ||
-				(event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED &&
-					event.window.windowID == window_ID)) {
+		SDL_Event native_event{};
+		while (SDL_PollEvent(&native_event)) {
+			if (native_event.type == SDL_EVENT_QUIT ||
+				(native_event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED &&
+					native_event.window.windowID == window_ID)) {
 				close_requested = true;
+			}
+			Event event{};
+			auto dispatch = true;
+			switch (native_event.type) {
+			case SDL_EVENT_WINDOW_RESIZED:
+				event.type = EventType::WindowResized;
+				event.window_ID = native_event.window.windowID;
+				event.x = static_cast<float>(native_event.window.data1);
+				event.y = static_cast<float>(native_event.window.data2);
+				break;
+			case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+				event.type = EventType::WindowPixelSizeChanged;
+				event.window_ID = native_event.window.windowID;
+				event.x = static_cast<float>(native_event.window.data1);
+				event.y = static_cast<float>(native_event.window.data2);
+				break;
+			case SDL_EVENT_WINDOW_FOCUS_GAINED:
+				event.type = EventType::WindowFocusGained;
+				event.window_ID = native_event.window.windowID;
+				break;
+			case SDL_EVENT_WINDOW_FOCUS_LOST:
+				event.type = EventType::WindowFocusLost;
+				event.window_ID = native_event.window.windowID;
+				break;
+			case SDL_EVENT_MOUSE_MOTION:
+				event.type = EventType::MouseMoved;
+				event.window_ID = native_event.motion.windowID;
+				event.x = native_event.motion.x;
+				event.y = native_event.motion.y;
+				event.delta_x = native_event.motion.xrel;
+				event.delta_y = native_event.motion.yrel;
+				break;
+			case SDL_EVENT_MOUSE_BUTTON_DOWN:
+				event.type = EventType::MouseButtonPressed;
+				event.window_ID = native_event.button.windowID;
+				event.mouse_button = TranslateMouseButton(native_event.button.button);
+				event.x = native_event.button.x;
+				event.y = native_event.button.y;
+				break;
+			case SDL_EVENT_MOUSE_BUTTON_UP:
+				event.type = EventType::MouseButtonReleased;
+				event.window_ID = native_event.button.windowID;
+				event.mouse_button = TranslateMouseButton(native_event.button.button);
+				event.x = native_event.button.x;
+				event.y = native_event.button.y;
+				break;
+			case SDL_EVENT_MOUSE_WHEEL:
+				event.type = EventType::MouseWheel;
+				event.window_ID = native_event.wheel.windowID;
+				event.delta_x = native_event.wheel.x;
+				event.delta_y = native_event.wheel.y;
+				break;
+			case SDL_EVENT_KEY_DOWN:
+				event.type = EventType::KeyPressed;
+				event.window_ID = native_event.key.windowID;
+				event.key = TranslateKey(native_event.key.scancode);
+				TranslateModifiers(native_event.key.mod, event);
+				event.repeat = native_event.key.repeat;
+				break;
+			case SDL_EVENT_KEY_UP:
+				event.type = EventType::KeyReleased;
+				event.window_ID = native_event.key.windowID;
+				event.key = TranslateKey(native_event.key.scancode);
+				TranslateModifiers(native_event.key.mod, event);
+				break;
+			case SDL_EVENT_TEXT_INPUT:
+				event.type = EventType::TextInput;
+				event.window_ID = native_event.text.windowID;
+				event.text = native_event.text.text;
+				break;
+			default:
+				dispatch = false;
+				break;
+			}
+			if (dispatch && event.window_ID == window_ID) {
+				m_event_sink->ProcessEvent(event);
 			}
 		}
 	}
