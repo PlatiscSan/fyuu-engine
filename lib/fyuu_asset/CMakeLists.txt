@@ -90,3 +90,7 @@ target_link_libraries(${PROJECT_NAME}
 )
 
 disable_rtti(${PROJECT_NAME})
+
+if(BUILD_TESTING)
+	add_subdirectory(test)
+endif()

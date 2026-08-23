@@ -51,7 +51,6 @@ GENERATOR_MAP = {
 # MSVC has no explicit drivers: it is driven by the Visual Studio generator.
 COMPILER_MAP = {
 	"Clang": {"cc": "{clang}/bin/clang.exe", "cxx": "{clang}/bin/clang++.exe"},
-	"Clang-cl": {"cc": "{clang}/bin/clang-cl.exe", "cxx": "{clang}/bin/clang-cl.exe"},
 	"GCC": {"cc": "gcc", "cxx": "g++"},
 	"MSVC": None,
 }
@@ -88,13 +87,6 @@ PRESETS = {
 	"clang": {
 		"generator": "Ninja",
 		"compiler": "Clang",
-		"platform": "x64",
-		"build_type": "RelWithDebInfo",
-		"toolchain": "vcpkg",
-	},
-	"clangcl": {
-		"generator": "Ninja",
-		"compiler": "Clang-cl",
 		"platform": "x64",
 		"build_type": "RelWithDebInfo",
 		"toolchain": "vcpkg",
@@ -162,6 +154,23 @@ def is_multi_config(config):
 	return generator.startswith("Visual Studio") or generator == "Xcode"
 
 
+def build_system_ready(build_dir, config):
+	"""True when a previous configure actually generated the build system, so a
+	half-configured directory (cache present but no build file) is not reused."""
+	generator = config["generator"]
+	if generator == "Ninja":
+		return os.path.isfile(os.path.join(build_dir, "build.ninja"))
+	if generator == "Unix Makefiles":
+		return os.path.isfile(os.path.join(build_dir, "Makefile"))
+	if generator.startswith("Visual Studio"):
+		return os.path.isdir(build_dir) and any(
+			name.endswith(".sln") for name in os.listdir(build_dir))
+	if generator == "Xcode":
+		return os.path.isdir(build_dir) and any(
+			name.endswith(".xcodeproj") for name in os.listdir(build_dir))
+	return False
+
+
 def effective_build_type(config, args):
 	return args.config or config["build_type"]
 
@@ -202,8 +211,11 @@ def cache_matches(config, args, resolve, build_dir):
 			return False
 	if config.get("toolchain") == "vcpkg":
 		cached_toolchain = read_cache_value(build_dir, "CMAKE_TOOLCHAIN_FILE")
-		expected = resolve("{vcpkg}/scripts/buildsystems/vcpkg.cmake")
-		if cached_toolchain is None or not same_path(cached_toolchain, expected):
+		# CMake stores the resolved path, and C:\vcpkg may be a junction to a
+		# Visual Studio-bundled copy, so compare the file name rather than the
+		# exact path; any existing vcpkg toolchain file is a match.
+		if cached_toolchain is None or not os.path.isfile(cached_toolchain) \
+			or os.path.basename(cached_toolchain) != "vcpkg.cmake":
 			return False
 	return True
 
@@ -281,16 +293,21 @@ def run_preset(config, args, resolve):
 			print("Codegen check failed; aborting before configure.")
 			return 1
 
-	# Decide whether a fresh configure is required.
+	# Decide whether a fresh configure is required. Reuse an existing cache only
+	# when it matches the preset AND the configure actually generated the build
+	# system; a half-configured directory must be reconfigured.
 	need_configure = True
 	cached_build_type = read_cache_value(build_dir, "CMAKE_BUILD_TYPE")
-	if not args.force_configure and cache_matches(config, args, resolve, build_dir):
+	if not args.force_configure and cache_matches(config, args, resolve, build_dir) \
+		and build_system_ready(build_dir, config):
 		if is_multi_config(config) or cached_build_type == effective_build_type(config, args):
 			need_configure = False
 
 	if args.no_configure and need_configure and not args.force_configure:
 		if read_cache_value(build_dir, "CMAKE_GENERATOR") is None:
 			print("--no-configure requested but no cache exists; configuring.")
+		elif not build_system_ready(build_dir, config):
+			print("--no-configure requested but the build system is missing; configuring.")
 		elif not is_multi_config(config) and cached_build_type != effective_build_type(config, args):
 			print("--no-configure requested but the build type changed; configuring.")
 		else:

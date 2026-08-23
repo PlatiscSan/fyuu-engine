@@ -113,7 +113,3 @@ endif()
 if(FYUU_BUILD_STUDIO AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/studio/CMakeLists.txt")
     add_subdirectory(studio)
 endif()
-
-if(BUILD_TESTING)
-    add_subdirectory("test/fyuu_asset")
-endif()
