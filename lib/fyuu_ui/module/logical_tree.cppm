@@ -1,12 +1,12 @@
 module;
 #include <version>
 #if !defined(__cpp_lib_modules)
+#include <cstddef>
 #include <utility>
 #include <vector>
 #include <algorithm>
 #include <functional>
 #include <string>
-#include <cstddef>
 #include <cstdint>
 #include <type_traits>
 #include <optional>
@@ -296,13 +296,6 @@ export namespace fyuu_ui {
 		InteractionState interaction = InteractionState::Normal;
 	};
 
-	struct MenuItem {
-		std::string title;
-		bool enabled = true;
-		bool checked = false;
-		InteractionState interaction = InteractionState::Normal;
-	};
-
 	/// One menu entry. Non-empty `children` render as a cascading submenu when the
 	/// entry is hovered or opened; a leaf entry activates a command when clicked.
 	struct MenuEntry {
@@ -324,29 +317,30 @@ export namespace fyuu_ui {
 		std::optional<std::vector<std::uint32_t>> open_path;     // engaged = dropdown chain open
 		std::optional<std::vector<std::uint32_t>> hover_path;    // item under the pointer
 		std::optional<std::vector<std::uint32_t>> pressed_path;  // transient press highlight
+	};
 
-		/// Resolves a root-to-item index path to the entry, or nullptr if invalid.
-		[[nodiscard]] MenuEntry const* FindEntry(std::span<std::uint32_t const> path) const noexcept {
-			if (path.empty()) {
-				return nullptr;
-			}
-			auto const* current = entries.data();
-			auto count = entries.size();
-			for (std::size_t depth = 0u; depth < path.size(); ++depth) {
-				auto const index = path[depth];
-				if (current == nullptr || index >= count) {
-					return nullptr;
-				}
-				current = current + index;
-				if (depth + 1u == path.size()) {
-					return current;
-				}
-				count = current->children.size();
-				current = current->children.data();
-			}
+	/// Resolves a root-to-item index path in `bar.entries` to the entry, or nullptr
+	/// if the path is empty or any index is out of range.
+	[[nodiscard]] MenuEntry const* FindMenuEntry(MenuBar const& bar, std::span<std::uint32_t const> path) noexcept {
+		if (path.empty()) {
 			return nullptr;
 		}
-	};
+		auto const* current = bar.entries.data();
+		auto count = bar.entries.size();
+		for (std::size_t depth = 0u; depth < path.size(); ++depth) {
+			auto const index = path[depth];
+			if (current == nullptr || index >= count) {
+				return nullptr;
+			}
+			current = current + index;
+			if (depth + 1u == path.size()) {
+				return current;
+			}
+			count = current->children.size();
+			current = current->children.data();
+		}
+		return nullptr;
+	}
 
 	struct SceneView {
 		Color clear_color;
@@ -379,7 +373,6 @@ export namespace fyuu_ui {
 		TextBox,
 		SearchBox,
 		NumericBox,
-		MenuItem,
 		MenuBar,
 		SceneView,
 		Window

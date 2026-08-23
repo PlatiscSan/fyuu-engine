@@ -416,7 +416,7 @@ m_tree.GetNode(m_selected_entity_node).GetWidget<fyuu_ui::ToggleButton>().title 
 				return;
 			}
 			if (p.size() >= 2u && bar.open_path.has_value()) {
-				auto const* entry = bar.FindEntry(p);
+				auto const* entry = fyuu_ui::FindMenuEntry(bar, p);
 				if (entry != nullptr && !entry->children.empty() && *bar.open_path != p) {
 					bar.open_path = p;
 				}
@@ -595,7 +595,7 @@ m_tree.GetNode(m_selected_entity_node).GetWidget<fyuu_ui::ToggleButton>().title 
 
 		void ActivateMenuPath(fyuu_ui::MenuPath const& path) {
 			auto& bar = m_tree.GetNode(m_menu_bar_node).GetWidget<fyuu_ui::MenuBar>();
-			auto const* entry = bar.FindEntry(path.indices);
+			auto const* entry = fyuu_ui::FindMenuEntry(bar, path.indices);
 			if (entry == nullptr || !entry->enabled) {
 				return;
 			}
@@ -1260,7 +1260,7 @@ m_tree.GetNode(m_selected_entity_node).GetWidget<fyuu_ui::ToggleButton>().title 
 					released->menu_path.has_value() &&
 					released->menu_path->indices == press.indices;
 				if (on_same_entry) {
-					auto const* entry = bar.FindEntry(press.indices);
+					auto const* entry = fyuu_ui::FindMenuEntry(bar, press.indices);
 					if (entry != nullptr && !entry->children.empty()) {
 						// Submenu header: toggle its dropdown / cascade.
 						if (bar.open_path == press.indices) {
@@ -1283,7 +1283,7 @@ m_tree.GetNode(m_selected_entity_node).GetWidget<fyuu_ui::ToggleButton>().title 
 						bar.open_path = path;
 					}
 					else {
-						auto const* entry = bar.FindEntry(path);
+						auto const* entry = fyuu_ui::FindMenuEntry(bar, path);
 						if (entry != nullptr && !entry->children.empty()) {
 							bar.open_path = path;
 						}

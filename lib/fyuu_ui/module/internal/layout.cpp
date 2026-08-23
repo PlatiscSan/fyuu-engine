@@ -209,10 +209,6 @@ namespace {
 			) {
 				return fyuu_ui::Size{ 160.0f, 28.0f };
 			}
-			else if constexpr (std::same_as<State, fyuu_ui::MenuItem>) {
-				auto const text = MeasureText(state.title, inherited_font_size.value_or(13.0f));
-				return fyuu_ui::Size{ text.width + 16.0f, 22.0f };
-			}
 			else if constexpr (std::same_as<State, fyuu_ui::MenuBar>) {
 				auto const item_font = inherited_font_size.value_or(13.0f);
 				auto width = 0.0f;
@@ -1185,32 +1181,6 @@ namespace fyuu_ui {
 									std::nullopt
 								});
 							}
-							else if constexpr (std::same_as<WidgetType, MenuItem>) {
-								auto const style = ResolveStyle(
-									theme.menu_item,
-									style_override,
-									foregrounds[node_id],
-									font_sizes[node_id],
-									widget.interaction,
-									widget.enabled,
-									widget.checked,
-									false
-								);
-								AppendVisual(RectangleVisual{
-									local_bounds,
-									style.visual.background
-								});
-								AppendVisual(TextVisual{
-									Rect{
-										{ local_bounds.position.x + 6.0f, local_bounds.position.y },
-										{ std::max(0.0f, local_bounds.size.width - 12.0f), local_bounds.size.height }
-									},
-									widget.title,
-									style.visual.foreground,
-									style.font_size,
-									std::nullopt
-								});
-							}
 							else if constexpr (
 								std::same_as<WidgetType, TextBox> ||
 								std::same_as<WidgetType, SearchBox>
@@ -1478,8 +1448,10 @@ namespace fyuu_ui {
 									bar_rects.push_back(cursor_x);
 									cursor_x += width;
 									auto const is_open = widget.open_path.has_value() && (*widget.open_path)[0u] == i;
-									auto const is_hover = widget.hover_path.has_value() && (*widget.hover_path)[0u] == i;
-									auto const is_pressed = widget.pressed_path.has_value() && (*widget.pressed_path)[0u] == i;
+									auto const is_hover = widget.hover_path.has_value() && widget.hover_path->size() == 1u &&
+										(*widget.hover_path)[0u] == i;
+									auto const is_pressed = widget.pressed_path.has_value() && widget.pressed_path->size() == 1u &&
+										(*widget.pressed_path)[0u] == i;
 									auto const interaction = is_pressed ? fyuu_ui::InteractionState::Pressed
 										: (is_hover ? fyuu_ui::InteractionState::Hovered : fyuu_ui::InteractionState::Normal);
 									auto const style = ResolveStyle(
