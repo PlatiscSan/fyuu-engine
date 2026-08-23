@@ -9,6 +9,8 @@ module;
 #include <variant>
 #endif // !defined(__cpp_lib_modules)
 
+#include <SDL3/SDL.h>
+
 export module fyuu_desktop;
 
 import fyuu_engine;
@@ -131,8 +133,7 @@ export namespace fyuu_desktop {
 	private:
 		Descriptor m_descriptor{};
 		EventSink* m_event_sink = nullptr;
-		void* m_window = nullptr;
-		std::optional<PresentationTarget> m_presentation_target;
+		SDL_Window* m_window = nullptr;
 
 		void Release() noexcept;
 		void PumpEvents(bool& close_requested) override;
@@ -148,10 +149,8 @@ export namespace fyuu_desktop {
 		Platform(Platform&&) = delete;
 		Platform& operator=(Platform&&) = delete;
 
-		/// Returns true after SDL video and the main window have been initialized.
-		bool Valid() const noexcept;
 		/// Returns the backend-independent native target required by an RHI presentation surface.
-		PresentationTarget const& GetPresentationTarget() const;
+		PresentationTarget GetPresentationTarget() const;
 	};
 
 	/// Runs one Application with a borrowed Logger and SDL desktop platform until it stops or throws.

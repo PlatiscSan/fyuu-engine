@@ -61,7 +61,7 @@ namespace fyuu_rhi::details {
 	/// Implemented in an ordinary source file so TBB headers never enter this
 	/// module partition. MSVC 14.51 (CL 19.51) otherwise emits C1116 while an
 	/// importer loads module std.
-	extern "C" void ParallelFor(
+	extern void ParallelFor(
 		std::size_t first,
 		std::size_t last,
 		void* function,

@@ -4,7 +4,7 @@
 
 namespace fyuu_rhi::details {
 
-	extern "C" void ParallelFor(
+	void ParallelFor(
 		std::size_t first,
 		std::size_t last,
 		void* function,

@@ -54,7 +54,7 @@ import :vulkan_queue_allocator;
 import :vulkan_utility;
 
 namespace fyuu_rhi::details {
-	extern "C" void ParallelFor(
+	extern void ParallelFor(
 		std::size_t first,
 		std::size_t last,
 		void* function,

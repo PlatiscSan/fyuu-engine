@@ -710,17 +710,19 @@ namespace fyuu_studio {
 				}
 			}
 		};
-		return context.GetLogicalDevice().CreateGraphicsPipeline({
-			.program = {
-				.modules = modules,
-				.entry_points = entry_points
-			},
-			.vertex = {
-				.buffers = buffers,
-				.attributes = attributes
-			},
-			.color_targets = color_targets
-		});
+		return context.GetLogicalDevice().CreateGraphicsPipeline(
+			{
+				.program = {
+					.modules = modules,
+					.entry_points = entry_points
+				},
+				.vertex = {
+					.buffers = buffers,
+					.attributes = attributes
+				},
+				.color_targets = color_targets
+			}
+		);
 	}
 
 	/// Owns three complete frame sets so move-only RHI bindings can remain in flight.

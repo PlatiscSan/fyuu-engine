@@ -78,9 +78,7 @@ namespace fyuu_rhi {
 		);
 	}
 
-	Pipeline LogicalDevice::CreateGraphicsPipeline(
-		pipeline::GraphicsPipelineDescriptor const& descriptor
-	) {
+	Pipeline LogicalDevice::CreateGraphicsPipeline(pipeline::GraphicsPipelineDescriptor const& descriptor) {
 		if (!m_impl) {
 			throw std::runtime_error(
 				"Cannot create a graphics pipeline from an empty logical device"
@@ -97,9 +95,7 @@ namespace fyuu_rhi {
 		);
 	}
 
-	Pipeline LogicalDevice::CreateComputePipeline(
-		pipeline::ComputePipelineDescriptor const& descriptor
-	) {
+	Pipeline LogicalDevice::CreateComputePipeline(pipeline::ComputePipelineDescriptor const& descriptor) {
 		if (!m_impl) {
 			throw std::runtime_error(
 				"Cannot create a compute pipeline from an empty logical device"

@@ -93,9 +93,7 @@ namespace {
 		event.super = (modifiers & SDL_KMOD_GUI) != 0;
 	}
 
-	std::optional<fyuu_desktop::PresentationTarget> GetPresentationTarget(
-		SDL_Window* window
-	) noexcept {
+	fyuu_desktop::PresentationTarget GetPresentationTarget(SDL_Window* window) {
 		auto const properties = SDL_GetWindowProperties(window);
 #if defined(_WIN32)
 		auto* native_window = SDL_GetPointerProperty(
@@ -149,7 +147,10 @@ namespace {
 			return fyuu_desktop::CocoaPresentationTarget{ native_window };
 		}
 #endif
-		return std::nullopt;
+		throw fyuu_engine::Error{
+			fyuu_engine::Result::PlatformError,
+			"SDL did not provide a native presentation target"
+		};
 	}
 
 }
@@ -162,9 +163,8 @@ namespace fyuu_desktop {
 	}
 
 	void Platform::Release() noexcept {
-		m_presentation_target.reset();
 		if (m_window) {
-			auto* window = static_cast<SDL_Window*>(m_window);
+			auto* window = m_window;
 			SDL_StopTextInput(window);
 			SDL_DestroyWindow(window);
 			m_window = nullptr;
@@ -176,54 +176,50 @@ namespace fyuu_desktop {
 		Descriptor const& descriptor,
 		EventSink& event_sink
 	) : m_descriptor(descriptor),
-		m_event_sink(&event_sink) {
-		auto const maximum_extent = static_cast<std::uint32_t>(std::numeric_limits<int>::max());
-		if (m_descriptor.title.empty() ||
-			m_descriptor.width == 0 ||
-			m_descriptor.height == 0 ||
-			m_descriptor.width > maximum_extent ||
-			m_descriptor.height > maximum_extent) {
-			throw fyuu_engine::Error{
-				fyuu_engine::Result::InvalidArgument,
-				"Desktop window descriptor is invalid"
-			};
-		}
-		if (!AcquireVideoSubsystem()) {
-			throw fyuu_engine::Error{
-				fyuu_engine::Result::PlatformError,
-				std::format("SDL video initialization failed: {}", SDL_GetError())
-			};
-		}
-		auto flags = SDL_WindowFlags{ 0 };
-		if (m_descriptor.resizable) {
-			flags |= SDL_WINDOW_RESIZABLE;
-		}
-		if (m_descriptor.high_pixel_density) {
-			flags |= SDL_WINDOW_HIGH_PIXEL_DENSITY;
-		}
-		m_window = SDL_CreateWindow(
-			m_descriptor.title.c_str(),
-			static_cast<int>(m_descriptor.width),
-			static_cast<int>(m_descriptor.height),
-			flags
-		);
-		if (!m_window) {
-			auto const message = std::format("SDL window creation failed: {}", SDL_GetError());
-			ReleaseVideoSubsystem();
-			throw fyuu_engine::Error{ fyuu_engine::Result::PlatformError, message };
-		}
-		if (!SDL_StartTextInput(static_cast<SDL_Window*>(m_window))) {
+		m_event_sink(&event_sink),
+		m_window(
+			[this]() {
+				auto const maximum_extent = static_cast<std::uint32_t>(std::numeric_limits<int>::max());
+				if (m_descriptor.title.empty() ||
+					m_descriptor.width == 0 ||
+					m_descriptor.height == 0 ||
+					m_descriptor.width > maximum_extent ||
+					m_descriptor.height > maximum_extent) {
+					throw fyuu_engine::Error{
+						fyuu_engine::Result::InvalidArgument,
+						"Desktop window descriptor is invalid"
+					};
+				}
+				if (!AcquireVideoSubsystem()) {
+					throw fyuu_engine::Error{
+						fyuu_engine::Result::PlatformError,
+						std::format("SDL video initialization failed: {}", SDL_GetError())
+					};
+				}
+				auto flags = SDL_WindowFlags{ 0 };
+				if (m_descriptor.resizable) {
+					flags |= SDL_WINDOW_RESIZABLE;
+				}
+				if (m_descriptor.high_pixel_density) {
+					flags |= SDL_WINDOW_HIGH_PIXEL_DENSITY;
+				}
+				auto window = SDL_CreateWindow(
+					m_descriptor.title.c_str(),
+					static_cast<int>(m_descriptor.width),
+					static_cast<int>(m_descriptor.height),
+					flags
+				);
+				if (!window) {
+					auto const message = std::format("SDL window creation failed: {}", SDL_GetError());
+					ReleaseVideoSubsystem();
+					throw fyuu_engine::Error{ fyuu_engine::Result::PlatformError, message };
+				}
+				return window;
+			}()) {
+		if (!SDL_StartTextInput(m_window)) {
 			auto const message = std::format("SDL text input initialization failed: {}", SDL_GetError());
 			Release();
 			throw fyuu_engine::Error{ fyuu_engine::Result::PlatformError, message };
-		}
-		m_presentation_target = ::GetPresentationTarget(static_cast<SDL_Window*>(m_window));
-		if (!m_presentation_target) {
-			Release();
-			throw fyuu_engine::Error{
-				fyuu_engine::Result::PlatformError,
-				"SDL did not provide a native presentation target"
-			};
 		}
 	}
 
@@ -231,18 +227,8 @@ namespace fyuu_desktop {
 		Release();
 	}
 
-	bool Platform::Valid() const noexcept {
-		return m_window;
-	}
-
-	PresentationTarget const& Platform::GetPresentationTarget() const {
-		if (!m_presentation_target) {
-			throw fyuu_engine::Error{
-				fyuu_engine::Result::InvalidState,
-				"Desktop presentation target is unavailable"
-			};
-		}
-		return *m_presentation_target;
+	PresentationTarget Platform::GetPresentationTarget() const {
+		return ::GetPresentationTarget(m_window);
 	}
 
 	void Platform::PumpEvents(bool& close_requested) {
@@ -253,7 +239,7 @@ namespace fyuu_desktop {
 			};
 		}
 		close_requested = false;
-		auto const window_ID = SDL_GetWindowID(static_cast<SDL_Window*>(m_window));
+		auto const window_ID = SDL_GetWindowID(m_window);
 		SDL_Event native_event{};
 		while (SDL_PollEvent(&native_event)) {
 			if (native_event.type == SDL_EVENT_QUIT ||
