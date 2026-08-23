@@ -561,19 +561,8 @@ export namespace fyuu_ui {
 		LogicalNode Insert(PassKey<LogicalNode>, Container const& container);
 
 		template <RoutedEvent Event, class Handler>
-		std::uint64_t Subscribe(
-			PassKey<LogicalNode>,
-			std::uint64_t node_id,
-			Handler&& handler,
-			RoutingStrategy routes,
-			bool handled_events_too
-		) {
-			return m_events.Subscribe<Event>(
-				node_id,
-				std::forward<Handler>(handler),
-				routes,
-				handled_events_too
-			);
+		std::uint64_t Subscribe(PassKey<LogicalNode>, std::uint64_t node_id, Handler&& handler, RoutingStrategy routes, bool handled_events_too) {
+			return m_events.Subscribe<Event>(node_id, std::forward<Handler>(handler), routes, handled_events_too);
 		}
 
 		void Unsubscribe(PassKey<LogicalNode>, std::uint64_t node_id, std::uint64_t subscription_id) noexcept {
@@ -652,11 +641,7 @@ export namespace fyuu_ui {
 		}
 
 		void Unsubscribe(std::uint64_t subscription_id) noexcept {
-			m_tree->Unsubscribe(
-				PassKey<LogicalNode>{},
-				m_id,
-				subscription_id
-			);
+			m_tree->Unsubscribe(PassKey<LogicalNode>{}, m_id, subscription_id);
 		}
 
 		template <class WidgetType>

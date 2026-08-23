@@ -110,10 +110,6 @@ namespace fyuu_studio {
 			return result;
 		}
 
-		void QueueCommand(StudioCommand command) {
-			m_commands.emplace_back(command);
-		}
-
 		void UpdateZoomStatus() {
 			auto const& slider = m_tree.GetNode(m_slider_node).GetWidget<fyuu_ui::Slider>();
 			auto& status = m_tree.GetNode(m_status_node).GetWidget<fyuu_ui::TextBlock>();
@@ -267,20 +263,6 @@ namespace fyuu_studio {
 			}
 		}
 
-		void ClearNumericFocus() {
-			if (!m_focused_node.has_value() || !IsNumericNode(*m_focused_node)) {
-				return;
-			}
-			m_tree.GetNode(*m_focused_node).GetWidget<fyuu_ui::NumericBox>().focused = false;
-			m_focused_node.reset();
-		}
-
-		void FocusNumericBox(std::uint64_t node) {
-			ClearNumericFocus();
-			m_tree.GetNode(node).GetWidget<fyuu_ui::NumericBox>().focused = true;
-			m_focused_node = node;
-		}
-
 		void AdjustNumericBox(
 			std::uint64_t node,
 			double direction,
@@ -303,7 +285,7 @@ namespace fyuu_studio {
 				numeric.minimum,
 				numeric.maximum
 			);
-			QueueCommand(StudioCommand::DocumentEdited);
+			m_commands.emplace_back(StudioCommand::DocumentEdited);
 		}
 
 		void UpdateNumericBox(float x) {
@@ -317,7 +299,7 @@ namespace fyuu_studio {
 				value = std::round(value / numeric.step) * numeric.step;
 			}
 			numeric.value = std::clamp(value, numeric.minimum, numeric.maximum);
-			QueueCommand(StudioCommand::DocumentEdited);
+			m_commands.emplace_back(StudioCommand::DocumentEdited);
 		}
 
 		void SelectEntity(
@@ -331,11 +313,6 @@ namespace fyuu_studio {
 			m_tree.GetNode(m_inspector_name_node).GetWidget<fyuu_ui::TextBox>().text = selected.title;
 			m_tree.GetNode(m_inspector_visible_node).GetWidget<fyuu_ui::CheckBox>().checked =
 				selected_node == m_camera_node ? m_camera_visible : m_light_visible;
-		}
-
-		void UpdateSelectedEntityName() {
-			auto const& name = m_tree.GetNode(m_inspector_name_node).GetWidget<fyuu_ui::TextBox>().text;
-			m_tree.GetNode(m_selected_entity_node).GetWidget<fyuu_ui::ToggleButton>().title = name;
 		}
 
 		static std::size_t PreviousCodePoint(std::string_view text, std::size_t offset) {
@@ -366,8 +343,9 @@ namespace fyuu_studio {
 			auto& text_box = m_tree.GetNode(m_inspector_name_node).GetWidget<fyuu_ui::TextBox>();
 			text_box.text.insert(text_box.caret_offset, input);
 			text_box.caret_offset += input.size();
-			UpdateSelectedEntityName();
-			QueueCommand(StudioCommand::DocumentEdited);
+			auto const& name = m_tree.GetNode(m_inspector_name_node).GetWidget<fyuu_ui::TextBox>().text;
+m_tree.GetNode(m_selected_entity_node).GetWidget<fyuu_ui::ToggleButton>().title = name;
+			m_commands.emplace_back(StudioCommand::DocumentEdited);
 		}
 
 		void ErasePreviousCodePoint() {
@@ -378,8 +356,9 @@ namespace fyuu_studio {
 			auto const previous = PreviousCodePoint(text_box.text, text_box.caret_offset);
 			text_box.text.erase(previous, text_box.caret_offset - previous);
 			text_box.caret_offset = previous;
-			UpdateSelectedEntityName();
-			QueueCommand(StudioCommand::DocumentEdited);
+			auto const& name = m_tree.GetNode(m_inspector_name_node).GetWidget<fyuu_ui::TextBox>().text;
+m_tree.GetNode(m_selected_entity_node).GetWidget<fyuu_ui::ToggleButton>().title = name;
+			m_commands.emplace_back(StudioCommand::DocumentEdited);
 		}
 
 		void EraseNextCodePoint() {
@@ -389,8 +368,9 @@ namespace fyuu_studio {
 			}
 			auto const next = NextCodePoint(text_box.text, text_box.caret_offset);
 			text_box.text.erase(text_box.caret_offset, next - text_box.caret_offset);
-			UpdateSelectedEntityName();
-			QueueCommand(StudioCommand::DocumentEdited);
+			auto const& name = m_tree.GetNode(m_inspector_name_node).GetWidget<fyuu_ui::TextBox>().text;
+m_tree.GetNode(m_selected_entity_node).GetWidget<fyuu_ui::ToggleButton>().title = name;
+			m_commands.emplace_back(StudioCommand::DocumentEdited);
 		}
 
 		void BeginNameEdit() {
@@ -411,19 +391,11 @@ namespace fyuu_studio {
 			auto& text_box = m_tree.GetNode(m_inspector_name_node).GetWidget<fyuu_ui::TextBox>();
 			if (!commit) {
 				text_box.text = m_name_before_edit;
-				UpdateSelectedEntityName();
+				auto const& name = m_tree.GetNode(m_inspector_name_node).GetWidget<fyuu_ui::TextBox>().text;
+m_tree.GetNode(m_selected_entity_node).GetWidget<fyuu_ui::ToggleButton>().title = name;
 			}
 			text_box.focused = false;
 			m_focused_node.reset();
-		}
-
-		void SelectTransformTool(std::uint64_t selected_node) {
-			m_tree.GetNode(m_translate_node).GetWidget<fyuu_ui::ToggleButton>().checked =
-				selected_node == m_translate_node;
-			m_tree.GetNode(m_rotate_node).GetWidget<fyuu_ui::ToggleButton>().checked =
-				selected_node == m_rotate_node;
-			m_tree.GetNode(m_scale_node).GetWidget<fyuu_ui::ToggleButton>().checked =
-				selected_node == m_scale_node;
 		}
 
 		void ToggleSelectedVisibility() {
@@ -431,13 +403,13 @@ namespace fyuu_studio {
 				m_camera_visible = !m_camera_visible;
 				m_tree.GetNode(m_inspector_visible_node).GetWidget<fyuu_ui::CheckBox>().checked =
 					m_camera_visible;
-				QueueCommand(StudioCommand::DocumentEdited);
+				m_commands.emplace_back(StudioCommand::DocumentEdited);
 				return;
 			}
 			m_light_visible = !m_light_visible;
 			m_tree.GetNode(m_inspector_visible_node).GetWidget<fyuu_ui::CheckBox>().checked =
 				m_light_visible;
-			QueueCommand(StudioCommand::DocumentEdited);
+			m_commands.emplace_back(StudioCommand::DocumentEdited);
 		}
 
 		void CloseMenu() {
@@ -714,10 +686,10 @@ namespace fyuu_studio {
 			}
 			m_status_context = item.title;
 			if (m_active_menu_node == m_file_menu_node && node == m_dropdown_first_node) {
-				QueueCommand(StudioCommand::NewDocument);
+				m_commands.emplace_back(StudioCommand::NewDocument);
 			}
 			else if (m_active_menu_node == m_file_menu_node && node == m_dropdown_third_node) {
-				QueueCommand(StudioCommand::SaveDocument);
+				m_commands.emplace_back(StudioCommand::SaveDocument);
 			}
 			else if (m_active_menu_node == m_view_menu_node && node == m_dropdown_fourth_node) {
 				auto& main = m_tree.GetNode(m_main_split_node).GetContainer<fyuu_ui::SplitView>();
@@ -733,25 +705,8 @@ namespace fyuu_studio {
 			UpdateZoomStatus();
 		}
 
-		void CloseConfirmation() {
-			m_close_confirmation_open = false;
-			auto layout = FixedHeight(0.0f, fyuu_ui::Alignment::Start);
-			m_tree.GetNode(m_close_confirmation_node).SetLayout(layout);
-		}
-
-		void ConfirmSaveAndClose() {
-			CloseConfirmation();
-			QueueCommand(StudioCommand::SaveAndClose);
-		}
-
-		void ConfirmDiscardAndClose() {
-			CloseConfirmation();
-			QueueCommand(StudioCommand::DiscardAndClose);
-		}
-
 		void BuildEditorShell(std::string_view backend_name) {
 			auto root = m_tree.GetRoot();
-			root.AddChild(fyuu_ui::Border{ m_theme.background });
 			auto menu = root.AddChild(fyuu_ui::Border{ m_theme.panel });
 			menu.SetLayout(FixedHeight(24.0f, fyuu_ui::Alignment::Start));
 			auto menu_items = menu.AddChild(
@@ -766,27 +721,27 @@ namespace fyuu_studio {
 			);
 			auto file_menu = menu_items.AddChild(
 				fyuu_ui::MenuItem{
-				"File", true, false, fyuu_ui::InteractionState::Normal
+					"File", true, false, fyuu_ui::InteractionState::Normal
 				}
 			);
 			auto edit_menu = menu_items.AddChild(
 				fyuu_ui::MenuItem{
-				"Edit", true, false, fyuu_ui::InteractionState::Normal
+					"Edit", true, false, fyuu_ui::InteractionState::Normal
 				}
 			);
 			auto view_menu = menu_items.AddChild(
 				fyuu_ui::MenuItem{
-				"View", true, false, fyuu_ui::InteractionState::Normal
+					"View", true, false, fyuu_ui::InteractionState::Normal
 				}
 			);
 			auto build_menu = menu_items.AddChild(
 				fyuu_ui::MenuItem{
-				"Build", true, false, fyuu_ui::InteractionState::Normal
+					"Build", true, false, fyuu_ui::InteractionState::Normal
 				}
 			);
 			auto help_menu = menu_items.AddChild(
 				fyuu_ui::MenuItem{
-				"Help", true, false, fyuu_ui::InteractionState::Normal
+					"Help", true, false, fyuu_ui::InteractionState::Normal
 				}
 			);
 			m_file_menu_node = file_menu.GetID();
@@ -892,19 +847,25 @@ namespace fyuu_studio {
 			m_scale_node = scale.GetID();
 			translate.Subscribe<fyuu_ui::ClickEvent>(
 				[this](fyuu_ui::ClickEvent& event) {
-					SelectTransformTool(m_translate_node);
+					m_tree.GetNode(m_translate_node).GetWidget<fyuu_ui::ToggleButton>().checked = true;
+					m_tree.GetNode(m_rotate_node).GetWidget<fyuu_ui::ToggleButton>().checked = false;
+					m_tree.GetNode(m_scale_node).GetWidget<fyuu_ui::ToggleButton>().checked = false;
 					event.handled = true;
 				}
 			);
 			rotate.Subscribe<fyuu_ui::ClickEvent>(
 				[this](fyuu_ui::ClickEvent& event) {
-					SelectTransformTool(m_rotate_node);
+					m_tree.GetNode(m_translate_node).GetWidget<fyuu_ui::ToggleButton>().checked = false;
+					m_tree.GetNode(m_rotate_node).GetWidget<fyuu_ui::ToggleButton>().checked = true;
+					m_tree.GetNode(m_scale_node).GetWidget<fyuu_ui::ToggleButton>().checked = false;
 					event.handled = true;
 				}
 			);
 			scale.Subscribe<fyuu_ui::ClickEvent>(
 				[this](fyuu_ui::ClickEvent& event) {
-					SelectTransformTool(m_scale_node);
+					m_tree.GetNode(m_translate_node).GetWidget<fyuu_ui::ToggleButton>().checked = false;
+					m_tree.GetNode(m_rotate_node).GetWidget<fyuu_ui::ToggleButton>().checked = false;
+					m_tree.GetNode(m_scale_node).GetWidget<fyuu_ui::ToggleButton>().checked = true;
 					event.handled = true;
 				}
 			);
@@ -1070,19 +1031,27 @@ namespace fyuu_studio {
 			m_close_cancel_node = cancel.GetID();
 			save.Subscribe<fyuu_ui::ClickEvent>(
 				[this](fyuu_ui::ClickEvent& event) {
-					ConfirmSaveAndClose();
+					m_close_confirmation_open = false;
+					auto layout = FixedHeight(0.0f, fyuu_ui::Alignment::Start);
+					m_tree.GetNode(m_close_confirmation_node).SetLayout(layout);
+					m_commands.emplace_back(StudioCommand::SaveAndClose);
 					event.handled = true;
 				}
 			);
 			discard.Subscribe<fyuu_ui::ClickEvent>(
 				[this](fyuu_ui::ClickEvent& event) {
-					ConfirmDiscardAndClose();
+					m_close_confirmation_open = false;
+					auto layout = FixedHeight(0.0f, fyuu_ui::Alignment::Start);
+					m_tree.GetNode(m_close_confirmation_node).SetLayout(layout);
+					m_commands.emplace_back(StudioCommand::DiscardAndClose);
 					event.handled = true;
 				}
 			);
 			cancel.Subscribe<fyuu_ui::ClickEvent>(
 				[this](fyuu_ui::ClickEvent& event) {
-					CloseConfirmation();
+					m_close_confirmation_open = false;
+					auto layout = FixedHeight(0.0f, fyuu_ui::Alignment::Start);
+					m_tree.GetNode(m_close_confirmation_node).SetLayout(layout);
 					event.handled = true;
 				}
 			);
@@ -1150,13 +1119,18 @@ namespace fyuu_studio {
 			if (m_close_confirmation_open &&
 				event.type == fyuu_desktop::EventType::KeyPressed &&
 				event.key == fyuu_desktop::Key::Escape) {
-				CloseConfirmation();
+				m_close_confirmation_open = false;
+				auto layout = FixedHeight(0.0f, fyuu_ui::Alignment::Start);
+				m_tree.GetNode(m_close_confirmation_node).SetLayout(layout);
 				return;
 			}
 			if (m_close_confirmation_open &&
 				event.type == fyuu_desktop::EventType::KeyPressed &&
 				event.key == fyuu_desktop::Key::Enter) {
-				ConfirmSaveAndClose();
+				m_close_confirmation_open = false;
+				auto layout = FixedHeight(0.0f, fyuu_ui::Alignment::Start);
+				m_tree.GetNode(m_close_confirmation_node).SetLayout(layout);
+				m_commands.emplace_back(StudioCommand::SaveAndClose);
 				return;
 			}
 			if (event.type == fyuu_desktop::EventType::MouseMoved) {
@@ -1221,7 +1195,7 @@ namespace fyuu_studio {
 				event.key == fyuu_desktop::Key::Home) {
 				auto& numeric = m_tree.GetNode(*m_focused_node).GetWidget<fyuu_ui::NumericBox>();
 				numeric.value = numeric.minimum;
-				QueueCommand(StudioCommand::DocumentEdited);
+				m_commands.emplace_back(StudioCommand::DocumentEdited);
 				return;
 			}
 			if (event.type == fyuu_desktop::EventType::KeyPressed &&
@@ -1230,7 +1204,7 @@ namespace fyuu_studio {
 				event.key == fyuu_desktop::Key::End) {
 				auto& numeric = m_tree.GetNode(*m_focused_node).GetWidget<fyuu_ui::NumericBox>();
 				numeric.value = numeric.maximum;
-				QueueCommand(StudioCommand::DocumentEdited);
+				m_commands.emplace_back(StudioCommand::DocumentEdited);
 				return;
 			}
 			if (event.type == fyuu_desktop::EventType::KeyPressed &&
@@ -1354,12 +1328,18 @@ namespace fyuu_studio {
 				ClearPointerStates();
 				SetPointerState(hit->logical_id, fyuu_ui::InteractionState::Pressed);
 				if (hit->logical_id == m_inspector_name_node) {
-					ClearNumericFocus();
+					if (m_focused_node.has_value() && IsNumericNode(*m_focused_node)) {
+						m_tree.GetNode(*m_focused_node).GetWidget<fyuu_ui::NumericBox>().focused = false;
+						m_focused_node.reset();
+					}
 					BeginNameEdit();
 				}
 				else {
 					EndNameEdit(true);
-					ClearNumericFocus();
+					if (m_focused_node.has_value() && IsNumericNode(*m_focused_node)) {
+						m_tree.GetNode(*m_focused_node).GetWidget<fyuu_ui::NumericBox>().focused = false;
+						m_focused_node.reset();
+					}
 				}
 				if (hit->logical_id == m_slider_node) {
 					m_focused_node = m_slider_node;
@@ -1390,7 +1370,12 @@ namespace fyuu_studio {
 				else if (IsNumericNode(hit->logical_id)) {
 					auto& numeric = m_tree.GetNode(hit->logical_id).GetWidget<fyuu_ui::NumericBox>();
 					if (!numeric.read_only) {
-						FocusNumericBox(hit->logical_id);
+						if (m_focused_node.has_value() && IsNumericNode(*m_focused_node)) {
+							m_tree.GetNode(*m_focused_node).GetWidget<fyuu_ui::NumericBox>().focused = false;
+							m_focused_node.reset();
+						}
+						m_tree.GetNode(hit->logical_id).GetWidget<fyuu_ui::NumericBox>().focused = true;
+						m_focused_node = hit->logical_id;
 						m_numeric_drag_node = hit->logical_id;
 						m_numeric_drag_start = event.x;
 						m_numeric_drag_value = numeric.value;
