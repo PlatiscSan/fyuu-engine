@@ -1,19 +1,42 @@
 #!/usr/bin/env python3
 """
-Cross-platform CMake interactive build script with last-config quick build.
+FyuuEngine preset build script.
+
+Non-interactive build helper. A preset is one complete configuration in the
+project's standard schema:
+    generator / compiler / platform / build_type / toolchain
+The build directory is derived from the naming convention
+    {Compiler}_{Generator}[_vcpkg]
+so the directory is deterministic and an existing cache is reused when it still
+matches the preset (a single-config Ninja directory holds one build type;
+switching build type reconfigures the same directory).
+
+Usage:
+    python build.py --list
+    python build.py --preset <name> [options]
+    python build.py --preset clang --target FyuuStudio
+    python build.py --preset clang --config Debug
+    python build.py --preset msvc --config RelWithDebInfo --target FyuuStudio
+    python build.py --preset clang --dry-run
+    python build.py --preset clang --no-configure
 """
 
-import curses
+import argparse
+import os
 import subprocess
 import sys
-import os
-import json
-import platform
 
-# ---------- Detect current system ----------
-SYSTEM = platform.system()  # 'Windows', 'Linux', 'Darwin'
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+BUILD_ROOT = os.path.join(SCRIPT_DIR, "cmake-build")
 
-# ---------- Configuration mappings ----------
+DEFAULT_CLANG_DIR = r"C:\Program Files\LLVM"
+DEFAULT_VCPKG_ROOT = r"C:\vcpkg"
+
+# ---------------------------------------------------------------------------
+# Project configuration schema. These tables match the legacy build script and
+# define every value a preset may carry; compilers are names, never paths.
+# ---------------------------------------------------------------------------
+
 GENERATOR_MAP = {
 	"Ninja": "Ninja",
 	"Unix Makefiles": "Unix Makefiles",
@@ -24,10 +47,13 @@ GENERATOR_MAP = {
 	"Visual Studio 2017": "Visual Studio 15 2017",
 }
 
+# Compiler name -> (C, C++) driver. "{clang}" resolves to the LLVM root.
+# MSVC has no explicit drivers: it is driven by the Visual Studio generator.
 COMPILER_MAP = {
-	"Clang": {"CC": "clang", "CXX": "clang++"},
-	"GCC": {"CC": "gcc", "CXX": "g++"},
-	"MSVC": {"CC": "cl", "CXX": "cl"},
+	"Clang": {"cc": "{clang}/bin/clang.exe", "cxx": "{clang}/bin/clang++.exe"},
+	"Clang-cl": {"cc": "{clang}/bin/clang-cl.exe", "cxx": "{clang}/bin/clang-cl.exe"},
+	"GCC": {"cc": "gcc", "cxx": "g++"},
+	"MSVC": None,
 }
 
 PLATFORM_MAP = {
@@ -41,395 +67,312 @@ BUILD_TYPES = ["Release", "Debug", "RelWithDebInfo", "MinSizeRel"]
 
 TOOLCHAIN_OPTIONS = ["None", "vcpkg"]
 
-LAST_CONFIG_FILE = os.path.join(os.path.dirname(__file__), '.last_build_config.json')
+# vcpkg triplet suffix per platform.
+TRIPLET_SUFFIX = {
+	"Windows": "windows",
+	"Linux": "linux",
+	"Darwin": "osx",
+}
 
-# ---------- Helper functions ----------
-def safe_dirname(s):
+# CMake defines applied to every preset unless overridden with --option.
+DEFAULT_OPTIONS = {
+	"FYUU_BUILD_STUDIO": "ON",
+}
+
+# ---------------------------------------------------------------------------
+# Presets. Each entry is a complete configuration in the schema above; the
+# build directory is derived, not stored, so it always follows the convention.
+# ---------------------------------------------------------------------------
+
+PRESETS = {
+	"clang": {
+		"generator": "Ninja",
+		"compiler": "Clang",
+		"platform": "x64",
+		"build_type": "RelWithDebInfo",
+		"toolchain": "vcpkg",
+	},
+	"clangcl": {
+		"generator": "Ninja",
+		"compiler": "Clang-cl",
+		"platform": "x64",
+		"build_type": "RelWithDebInfo",
+		"toolchain": "vcpkg",
+	},
+	"msvc": {
+		"generator": "Visual Studio 2026",
+		"compiler": "MSVC",
+		"platform": "x64",
+		"build_type": "Release",
+		"toolchain": "vcpkg",
+	},
+}
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def safe_dirname(text):
 	"""Replace characters that are problematic in directory names."""
-	return s.replace(' ', '_').replace('/', '_').replace('\\', '_')
+	return text.replace(' ', '_').replace('/', '_').replace('\\', '_')
 
-def save_last_config(config):
-	"""Save configuration to file."""
+
+def build_dir_for(config):
+	"""Derive the build directory from the {Compiler}_{Generator}[_vcpkg] convention."""
+	name = f"{config['compiler']}_{safe_dirname(config['generator'])}"
+	if config.get('toolchain') == 'vcpkg':
+		name += "_vcpkg"
+	return os.path.join(BUILD_ROOT, name)
+
+
+def default_clang_dir():
+	return os.environ.get("FYUU_CLANG_DIR") or DEFAULT_CLANG_DIR
+
+
+def default_vcpkg_root():
+	return os.environ.get("VCPKG_ROOT") or DEFAULT_VCPKG_ROOT
+
+
+def make_resolver(args):
+	"""Return (resolve, clang, vcpkg, triplet) for the current run."""
+	clang = args.clang_dir or default_clang_dir()
+	vcpkg = args.vcpkg_root or default_vcpkg_root()
+	arch = args.arch or "x64"
+	if sys.platform == "win32":
+		os_name = "Windows"
+	elif sys.platform == "darwin":
+		os_name = "Darwin"
+	else:
+		os_name = "Linux"
+	suffix = TRIPLET_SUFFIX.get(os_name, "windows")
+	triplet = f"{arch}-{suffix}"
+
+	def resolve(text):
+		return (text
+			.replace("{clang}", clang)
+			.replace("{vcpkg}", vcpkg)
+			.replace("{triplet}", triplet))
+
+	return resolve, clang, vcpkg, triplet
+
+
+def is_multi_config(config):
+	generator = config["generator"]
+	return generator.startswith("Visual Studio") or generator == "Xcode"
+
+
+def effective_build_type(config, args):
+	return args.config or config["build_type"]
+
+
+def read_cache_value(build_dir, key):
+	"""Read `key:TYPE=value` from a CMakeCache.txt; None when absent."""
+	cache = os.path.join(build_dir, "CMakeCache.txt")
+	if not os.path.isfile(cache):
+		return None
 	try:
-		with open(LAST_CONFIG_FILE, 'w') as f:
-			json.dump(config, f, indent=2)
-	except Exception as e:
-		print(f"Warning: Could not save last config: {e}")
-
-def load_last_config():
-	"""Load configuration from file, return None if not exists or invalid."""
-	if os.path.exists(LAST_CONFIG_FILE):
-		try:
-			with open(LAST_CONFIG_FILE, 'r') as f:
-				config = json.load(f)
-			required_keys = ['generator', 'compiler', 'platform', 'build_type', 'toolchain']
-			if all(k in config for k in required_keys):
-				return config
-			else:
-				print("Last config file is incomplete, ignoring.")
-		except Exception as e:
-			print(f"Error reading last config: {e}")
+		with open(cache, "r", encoding="utf-8", errors="replace") as file:
+			for line in file:
+				line = line.rstrip("\r\n")
+				if "=" not in line:
+					continue
+				name, _, value = line.partition("=")
+				if ":" in name:
+					name, _ = name.split(":", 1)
+				if name == key:
+					return value
+	except OSError:
+		return None
 	return None
 
-def get_vcpkg_path():
-	"""Interactively get vcpkg installation path. Returns path string or None if cancelled."""
-	vcpkg_root = os.environ.get("VCPKG_ROOT")
-	if vcpkg_root and os.path.isdir(vcpkg_root):
-		print(f"Found VCPKG_ROOT environment variable: {vcpkg_root}")
-		use_env = input("Use this path? (y/n): ").strip().lower()
-		if use_env == 'y':
-			return vcpkg_root
-	print("Enter vcpkg installation directory, or leave empty / type 'q' to cancel.")
-	while True:
-		path = input("vcpkg path (e.g., C:/dev/vcpkg or /home/user/vcpkg): ").strip()
-		if path == '' or path.lower() == 'q':
-			return None
-		if os.path.isdir(path):
-			return path
-		print("Invalid path, please try again.")
 
-def get_vcpkg_triplet(system, platform):
-	"""Return vcpkg triplet based on system and platform."""
-	arch_map = {
-		'x86': 'x86',
-		'x64': 'x64',
-		'ARM32': 'arm',
-		'ARM64': 'arm64'
-	}
-	arch = arch_map.get(platform, 'x64')
-	if system == 'Windows':
-		return f"{arch}-windows"
-	elif system == 'Linux':
-		return f"{arch}-linux"
-	elif system == 'Darwin':
-		return f"{arch}-osx"
-	else:
-		return f"{arch}-{system.lower()}"
+def same_path(left, right):
+	return os.path.normcase(os.path.normpath(left)) == os.path.normcase(os.path.normpath(right))
 
-def get_build_dir(config):
-	"""Generate a unique build directory based on configuration."""
-	base_dir = os.path.join(os.getcwd(), "cmake-build")
-	if config.get('compiler') == 'MSVC':
-		# MSVC: flat directory with MSVC prefix (no platform/build_type)
-		dir_name = f"MSVC_{safe_dirname(config['generator'])}"
-		if config.get('toolchain') == 'vcpkg':
-			dir_name += "_vcpkg"
-		return os.path.join(base_dir, dir_name)
-	else:
-		# Other compilers: hierarchical structure
-		components = [
-			safe_dirname(config['generator']),
-			safe_dirname(config['compiler']),
-			safe_dirname(config['platform']),
-			safe_dirname(config['build_type'])
+
+def cache_matches(config, args, resolve, build_dir):
+	"""True when the existing cache was configured with the same key settings."""
+	if read_cache_value(build_dir, "CMAKE_GENERATOR") != GENERATOR_MAP[config["generator"]]:
+		return False
+	compiler = COMPILER_MAP[config["compiler"]]
+	if compiler:
+		cached_cxx = read_cache_value(build_dir, "CMAKE_CXX_COMPILER")
+		if cached_cxx is None or not same_path(cached_cxx, resolve(compiler["cxx"])):
+			return False
+	if config.get("toolchain") == "vcpkg":
+		cached_toolchain = read_cache_value(build_dir, "CMAKE_TOOLCHAIN_FILE")
+		expected = resolve("{vcpkg}/scripts/buildsystems/vcpkg.cmake")
+		if cached_toolchain is None or not same_path(cached_toolchain, expected):
+			return False
+	return True
+
+
+def configure_args(config, args, resolve, build_dir):
+	"""Build the `cmake -B` command for a preset plus CLI overrides."""
+	cmd = ["cmake", "-B", build_dir, "-G", GENERATOR_MAP[config["generator"]]]
+	if config["generator"].startswith("Visual Studio"):
+		cmd += ["-A", PLATFORM_MAP.get(config["platform"], config["platform"])]
+	elif config["generator"] == "Xcode" and sys.platform == "darwin":
+		xcode_arch = {"x64": "x86_64", "x86": "i386", "ARM64": "arm64"}.get(config["platform"])
+		if xcode_arch:
+			cmd += [f"-DCMAKE_OSX_ARCHITECTURES={xcode_arch}"]
+
+	compiler = COMPILER_MAP[config["compiler"]]
+	if compiler:
+		cc = resolve(compiler["cc"])
+		cxx = resolve(compiler["cxx"])
+		for compiler_path in (cc, cxx):
+			if not os.path.isfile(compiler_path):
+				print(f"Warning: compiler not found: {compiler_path}")
+		cmd += [f"-DCMAKE_C_COMPILER={cc}", f"-DCMAKE_CXX_COMPILER={cxx}"]
+
+	if config.get("toolchain") == "vcpkg":
+		toolchain_file = resolve("{vcpkg}/scripts/buildsystems/vcpkg.cmake")
+		if not os.path.isfile(toolchain_file):
+			print(f"Warning: vcpkg toolchain file not found: {toolchain_file}")
+		cmd += [
+			f"-DCMAKE_TOOLCHAIN_FILE={toolchain_file}",
+			f"-DVCPKG_TARGET_TRIPLET={resolve('{triplet}')}",
 		]
-		if config.get('toolchain') == 'vcpkg':
-			components.append('vcpkg')
-		return os.path.join(base_dir, *components)
 
-def run_cmake(config):
-	"""Run CMake configuration and build."""
-	build_dir = get_build_dir(config)
+	cmd.append(f"-DCMAKE_BUILD_TYPE={effective_build_type(config, args)}")
+
+	options = dict(DEFAULT_OPTIONS)
+	for item in args.option:
+		name, _, value = item.partition("=")
+		if not name:
+			print(f"Warning: ignoring malformed option '{item}'")
+			continue
+		options[name] = value
+	for name, value in options.items():
+		cmd.append(f"-D{name}={value}")
+
+	return cmd
+
+
+def build_args(config, args, build_dir):
+	"""Build the `cmake --build` command; multi-config generators carry --config."""
+	cmd = ["cmake", "--build", build_dir]
+	if is_multi_config(config):
+		cmd += ["--config", effective_build_type(config, args)]
+	for target in args.target:
+		cmd += ["--target", target]
+	if args.jobs:
+		cmd += ["--parallel", str(args.jobs)]
+	return cmd
+
+
+def run(cmd, dry_run):
+	print("+ " + " ".join(cmd))
+	if dry_run:
+		return 0
+	return subprocess.run(cmd, cwd=SCRIPT_DIR).returncode
+
+
+def run_preset(config, args, resolve):
+	build_dir = build_dir_for(config)
 	os.makedirs(build_dir, exist_ok=True)
 
-	cmake_cmd = ["cmake", "-B", build_dir]
+	if args.codegen_check:
+		check = [sys.executable,
+			os.path.join(SCRIPT_DIR, "script", "generate_runtime_api.py"), "--check"]
+		if run(check, args.dry_run) != 0:
+			print("Codegen check failed; aborting before configure.")
+			return 1
 
-	# Generator
-	generator = config['generator']
-	if generator not in GENERATOR_MAP:
-		print(f"Error: Unsupported generator '{generator}'")
-		return False
-	cmake_cmd.extend(["-G", GENERATOR_MAP[generator]])
+	# Decide whether a fresh configure is required.
+	need_configure = True
+	cached_build_type = read_cache_value(build_dir, "CMAKE_BUILD_TYPE")
+	if not args.force_configure and cache_matches(config, args, resolve, build_dir):
+		if is_multi_config(config) or cached_build_type == effective_build_type(config, args):
+			need_configure = False
 
-	# Platform architecture (only relevant for Visual Studio and Xcode)
-	platform_choice = config['platform']
-	if generator.startswith("Visual Studio"):
-		vs_arch = PLATFORM_MAP.get(platform_choice, platform_choice)
-		cmake_cmd.extend(["-A", vs_arch])
-	elif generator == "Xcode" and SYSTEM == 'Darwin':
-		# Set target architecture for Xcode
-		xcode_arch_map = {'x64': 'x86_64', 'x86': 'i386', 'ARM64': 'arm64'}
-		if platform_choice in xcode_arch_map:
-			cmake_cmd.append(f"-DCMAKE_OSX_ARCHITECTURES={xcode_arch_map[platform_choice]}")
-	# Other generators do not automatically add architecture flags
-
-	# Compiler
-	compiler = config['compiler']
-	if compiler == "MSVC" and SYSTEM != 'Windows':
-		print("Error: MSVC compiler can only be used on Windows.")
-		return False
-	if compiler != "MSVC":
-		comp = COMPILER_MAP.get(compiler)
-		if comp:
-			cmake_cmd.append(f"-DCMAKE_C_COMPILER={comp['CC']}")
-			cmake_cmd.append(f"-DCMAKE_CXX_COMPILER={comp['CXX']}")
-
-	# Build type
-	build_type = config['build_type']
-	cmake_cmd.append(f"-DCMAKE_BUILD_TYPE={build_type}")
-
-	# vcpkg toolchain
-	if config.get('toolchain') == 'vcpkg':
-		vcpkg_root = config.get('vcpkg_root')
-		if vcpkg_root:
-			toolchain_file = os.path.join(vcpkg_root, "scripts", "buildsystems", "vcpkg.cmake")
-			if os.path.isfile(toolchain_file):
-				cmake_cmd.append(f"-DCMAKE_TOOLCHAIN_FILE={toolchain_file}")
-				triplet = get_vcpkg_triplet(SYSTEM, platform_choice)
-				cmake_cmd.append(f"-DVCPKG_TARGET_TRIPLET={triplet}")
-				print(f"Using vcpkg toolchain: {toolchain_file}, triplet: {triplet}")
-			else:
-				print(f"Warning: vcpkg toolchain file not found at {toolchain_file}, skipping.")
+	if args.no_configure and need_configure and not args.force_configure:
+		if read_cache_value(build_dir, "CMAKE_GENERATOR") is None:
+			print("--no-configure requested but no cache exists; configuring.")
+		elif not is_multi_config(config) and cached_build_type != effective_build_type(config, args):
+			print("--no-configure requested but the build type changed; configuring.")
 		else:
-			print("Warning: vcpkg selected but no path provided, skipping.")
+			need_configure = False
+
+	if need_configure:
+		print("=" * 60)
+		print(f"Build directory: {build_dir}")
+		print("Configuring...")
+		if run(configure_args(config, args, resolve, build_dir), args.dry_run) != 0:
+			print("CMake configuration failed.")
+			return 1
 
 	print("=" * 60)
 	print(f"Build directory: {build_dir}")
-	print("Running CMake configuration...")
-	print(" ".join(cmake_cmd))
-	result = subprocess.run(cmake_cmd, cwd=os.getcwd())
-	if result.returncode != 0:
-		print("CMake configuration failed.")
-		return False
+	print("Building...")
+	return run(build_args(config, args, build_dir), args.dry_run)
 
-	# Build for all compilers (including MSVC)
-	build_cmd = ["cmake", "--build", build_dir, "--config", build_type]
-	print("\nRunning build...")
-	print(" ".join(build_cmd))
-	result = subprocess.run(build_cmd, cwd=os.getcwd())
-	if result.returncode != 0:
-		print("Build failed.")
-		return False
 
-	print("Build succeeded!")
-	save_last_config(config)
-	return True
+def print_presets():
+	print("Available presets (directory derived from {Compiler}_{Generator}[_vcpkg]):")
+	print(f"  {'name':<10} {'directory':<32} {'generator':<20} {'compiler':<12} {'type':<14} {'toolchain'}")
+	for name, config in PRESETS.items():
+		print(f"  {name:<10} {os.path.basename(build_dir_for(config)):<32} "
+			f"{config['generator']:<20} {config['compiler']:<12} {config['build_type']:<14} {config['toolchain']}")
 
-# ---------- curses menu functions ----------
-def draw_menu(stdscr, title, options, current_row):
-	stdscr.clear()
-	h, w = stdscr.getmaxyx()
-	start_y = max(0, h // 2 - len(options) // 2 - 2)
-	start_x = max(0, w // 2 - max(len(title), max(len(o) for o in options)) // 2)
 
-	stdscr.addstr(start_y, start_x, title, curses.A_BOLD)
+def parse_args():
+	parser = argparse.ArgumentParser(
+		description="FyuuEngine preset build script (non-interactive).",
+		formatter_class=argparse.RawDescriptionHelpFormatter,
+		epilog="Presets:\n" + "\n".join(
+			f"  {name:<10} {os.path.basename(build_dir_for(config))}"
+			for name, config in PRESETS.items()),
+	)
+	parser.add_argument("--list", action="store_true",
+		help="list available presets and exit")
+	parser.add_argument("--preset", choices=sorted(PRESETS),
+		help="build configuration to use")
+	parser.add_argument("--target", action="append", default=[],
+		help="target to build (repeatable, e.g. --target FyuuStudio)")
+	parser.add_argument("--config", choices=BUILD_TYPES,
+		help="build type override; on single-config Ninja this reconfigures the directory")
+	parser.add_argument("--option", action="append", default=[],
+		help="extra CMake define NAME=VALUE (repeatable)")
+	parser.add_argument("--jobs", type=int, help="parallel build jobs")
+	parser.add_argument("--no-configure", action="store_true",
+		help="build only; fail-safe configure only when the cache is missing or stale")
+	parser.add_argument("--force-configure", action="store_true",
+		help="always reconfigure even when the existing cache matches")
+	parser.add_argument("--dry-run", action="store_true",
+		help="print commands without running them")
+	parser.add_argument("--codegen-check", action="store_true",
+		help="run script/generate_runtime_api.py --check before configuring")
+	parser.add_argument("--clang-dir", help="LLVM installation root (default %(default)s)")
+	parser.add_argument("--vcpkg", dest="vcpkg_root", help="vcpkg installation root (default %(default)s)")
+	parser.add_argument("--arch", default="x64", help="target architecture for the vcpkg triplet (default %(default)s)")
+	return parser.parse_args()
 
-	for idx, opt in enumerate(options):
-		y = start_y + 2 + idx
-		x = start_x
-		if y >= h:
-			break
-		if idx == current_row:
-			stdscr.attron(curses.A_REVERSE)
-			stdscr.addstr(y, x, opt[:w-x])
-			stdscr.attroff(curses.A_REVERSE)
-		else:
-			stdscr.addstr(y, x, opt[:w-x])
 
-	stdscr.refresh()
+def main():
+	args = parse_args()
+	if args.list or not args.preset:
+		print_presets()
+		if not args.preset:
+			print("\nUse --preset <name> to build.")
+		return 0
 
-def menu(stdscr, title, options):
-	curses.curs_set(0)
-	current_row = 0
+	config = PRESETS[args.preset]
+	resolve, _, _, _ = make_resolver(args)
+	print("=" * 60)
+	print(f"Preset:      {args.preset}")
+	print(f"Generator:   {config['generator']}")
+	print(f"Build type:  {effective_build_type(config, args)}")
+	compiler = COMPILER_MAP[config["compiler"]]
+	if compiler:
+		print(f"C++ compiler: {resolve(compiler['cxx'])}")
+	print(f"Directory:   {build_dir_for(config)}")
+	print("=" * 60)
 
-	while True:
-		try:
-			draw_menu(stdscr, title, options, current_row)
-		except curses.error:
-			stdscr.clear()
-			stdscr.addstr(0, 0, "Terminal window too small, please enlarge and press any key...")
-			stdscr.getch()
-			continue
+	return run_preset(config, args, resolve)
 
-		key = stdscr.getch()
-		if key == curses.KEY_UP and current_row > 0:
-			current_row -= 1
-		elif key == curses.KEY_DOWN and current_row < len(options) - 1:
-			current_row += 1
-		elif key == ord('\n'):
-			return options[current_row]
 
-def reset_following(config, steps, start_key):
-	"""Reset config values from start_key onward (inclusive) to None."""
-	keys_order = [k for k, _ in steps]
-	try:
-		idx = keys_order.index(start_key)
-	except ValueError:
-		return
-	for k in keys_order[idx:]:
-		config[k] = None
-	# Also remove vcpkg_root if toolchain is cleared
-	if 'toolchain' in keys_order[idx:] and config.get('toolchain') is None:
-		config.pop('vcpkg_root', None)
-
-def main(stdscr):
-	# Generate compiler options dynamically based on system
-	compiler_options = list(COMPILER_MAP.keys())
-	if SYSTEM != 'Windows':
-		compiler_options = [c for c in compiler_options if c != 'MSVC']
-
-	# Steps definition
-	steps = [
-		('generator', list(GENERATOR_MAP.keys()) + ['Back']),
-		('compiler', compiler_options + ['Back']),
-		('platform', list(PLATFORM_MAP.keys()) + ['Back']),
-		('build_type', BUILD_TYPES + ['Back']),
-		('toolchain', TOOLCHAIN_OPTIONS + ['Back'])
-	]
-
-	config = {key: None for key, _ in steps}
-	step_idx = 0
-
-	while step_idx < len(steps):
-		key, options = steps[step_idx]
-
-		# --- Automatic skipping logic: only skip compiler for Visual Studio ---
-		if key == 'compiler' and config.get('generator', '').startswith('Visual Studio'):
-			config['compiler'] = 'MSVC'
-			step_idx += 1
-			continue
-		# --- end of automatic skipping ---
-
-		title = f"Select {key.capitalize()} (arrow keys, Enter to confirm)"
-		choice = menu(stdscr, title, options)
-
-		if choice == 'Back':
-			if step_idx > 0:
-				# step back
-				step_idx -= 1
-				# Skip steps that are automatically skipped under current configuration
-				while step_idx >= 0:
-					k, _ = steps[step_idx]
-					should_skip = False
-					if k == 'compiler' and config.get('generator', '').startswith('Visual Studio'):
-						should_skip = True
-					if should_skip:
-						step_idx -= 1
-					else:
-						break
-				# Reset all values starting from the new step_idx
-				if step_idx >= 0:
-					reset_following(config, steps, steps[step_idx][0])
-				else:
-					# Exited all steps and exited the program directly.
-					return
-			else:
-				return
-		else:
-			config[key] = choice
-
-			# Post-selection cleanup
-			if key == 'generator':
-				# Generator changed, reset all subsequent choices
-				reset_following(config, steps, 'compiler')
-			elif key == 'compiler':
-				# Compiler changed, platform and build_type need to be reselected
-				config['platform'] = None
-				config['build_type'] = None
-			elif key == 'toolchain' and choice == 'vcpkg':
-				# Temporarily exit curses to get vcpkg path
-				curses.endwin()
-				vcpkg_path = get_vcpkg_path()
-				# Re-enter curses
-				stdscr = curses.initscr()
-				curses.noecho()
-				curses.cbreak()
-				stdscr.keypad(True)
-
-				if vcpkg_path is None:
-					# User cancelled vcpkg selection, reset toolchain to None and stay on same step
-					config['toolchain'] = None
-					config.pop('vcpkg_root', None)
-					# Do not increment step_idx, so loop repeats this step
-					continue
-				else:
-					config['vcpkg_root'] = vcpkg_path
-					# Proceed to next step
-					step_idx += 1
-					continue  # skip the default step_idx increment below
-
-			step_idx += 1
-
-	# Final confirmation
-	while True:
-		stdscr.clear()
-		h, w = stdscr.getmaxyx()
-		lines = [
-			"Current configuration:",
-			f"  Generator: {config['generator']}",
-			f"  Compiler:  {config['compiler']}",
-			f"  Platform:  {config['platform']}",
-			f"  Type:	  {config['build_type']}",
-			f"  Toolchain: {config['toolchain']}",
-		]
-		if config.get('vcpkg_root'):
-			lines.append(f"  vcpkg path: {config['vcpkg_root']}")
-
-		lines.extend([
-			"",
-			"Start build?",
-			"1) Yes, start build",
-			"2) No, reselect"
-		])
-		start_y = max(0, h // 2 - len(lines) // 2)
-		start_x = max(0, w // 2 - max(len(l) for l in lines) // 2)
-		for i, line in enumerate(lines):
-			try:
-				stdscr.addstr(start_y + i, start_x, line)
-			except curses.error:
-				pass
-		stdscr.refresh()
-
-		key = stdscr.getch()
-		if key == ord('1'):
-			curses.endwin()
-			success = run_cmake(config)
-			if success:
-				print("Build completed.")
-			else:
-				print("Build/Generation failed, please check errors.")
-			return
-		elif key == ord('2'):
-			step_idx = 0
-			# Reset entire config
-			config = {k: None for k, _ in steps}
-			break
-			
-# ---------- Entry point ----------
 if __name__ == "__main__":
-	# Check for last config and offer quick build
-	last_config = load_last_config()
-	if last_config:
-		print("Found previous build configuration:")
-		print(f"  Generator: {last_config['generator']}")
-		print(f"  Compiler:  {last_config['compiler']}")
-		print(f"  Platform:  {last_config['platform']}")
-		print(f"  Type:	  {last_config['build_type']}")
-		print(f"  Toolchain: {last_config['toolchain']}")
-		if last_config.get('vcpkg_root'):
-			print(f"  vcpkg path: {last_config['vcpkg_root']}")
-		use_last = input("Use this configuration to build now? (y/n): ").strip().lower()
-		if use_last == 'y':
-			success = run_cmake(last_config)
-			if success:
-				print("Build completed.")
-			else:
-				print("Build/Generation failed.")
-			sys.exit(0 if success else 1)
-
-	# Interactive menu
-	try:
-		import curses
-	except ImportError:
-		print("Error: curses module not found.")
-		print("On Windows, install windows-curses: pip install windows-curses")
-		sys.exit(1)
-
-	try:
-		curses.wrapper(main)
-	except KeyboardInterrupt:
-		print("\nInterrupted by user.")
-		sys.exit(0)
-	except Exception as e:
-		print(f"An error occurred: {e}")
-		sys.exit(1)
+	sys.exit(main())
