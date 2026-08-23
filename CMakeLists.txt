@@ -21,6 +21,19 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 project(FyuuEngine)
 include(CTest)
 
+# Whether this toolchain can provide `import std;` for the experimental Vulkan-Hpp
+# C++ named module. clang + MSVC STL cannot, so the RHI Vulkan backend falls back
+# to <vulkan/vulkan_shared.hpp> and the VulkanHppModule target is skipped there.
+include(CheckCXXSourceCompiles)
+check_cxx_source_compiles(
+	"#include <version>
+	#if !defined(__clang__) || !defined(_MSVC_STL_VERSION)
+	#error Vulkan module is available for this standard-library configuration
+	#endif
+	int main() { return 0; }"
+	FYUU_RHI_USE_VULKAN_HEADER
+)
+
 option(FYUU_BUILD_STUDIO "Build Fyuu Studio" OFF)
 option(FYUU_BUILD_DESKTOP "Build the SDL3 desktop platform adapter" ON)
 
@@ -89,6 +102,7 @@ add_subdirectory(lib/vulkan_hpp)
 add_subdirectory(lib/PixEvents-cmake)
 add_subdirectory(lib/fyuu_rhi)
 add_subdirectory(lib/fyuu_asset)
+add_subdirectory(lib/fyuu_ui)
 
 add_subdirectory(runtime)
 

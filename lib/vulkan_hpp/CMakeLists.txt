@@ -1,6 +1,14 @@
 cmake_minimum_required(VERSION 3.28)
 project(VulkanHppModule)
 
+# The experimental Vulkan-Hpp C++ module does `export import std;`, which clang +
+# MSVC STL cannot provide. In that configuration the RHI Vulkan backend uses
+# <vulkan/vulkan_shared.hpp> and never links this target, so skip building it.
+if(FYUU_RHI_USE_VULKAN_HEADER)
+	message(STATUS "VulkanHppModule: skipped; clang + MSVC STL lacks import std (RHI uses headers)")
+	return()
+endif()
+
 add_library(${PROJECT_NAME} STATIC)
 
 find_package(Vulkan REQUIRED)
