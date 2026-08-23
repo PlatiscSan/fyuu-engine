@@ -213,6 +213,17 @@ namespace {
 				auto const text = MeasureText(state.title, inherited_font_size.value_or(13.0f));
 				return fyuu_ui::Size{ text.width + 16.0f, 22.0f };
 			}
+			else if constexpr (std::same_as<State, fyuu_ui::MenuBar>) {
+				auto const item_font = inherited_font_size.value_or(13.0f);
+				auto width = 0.0f;
+				if (!state.title.empty()) {
+					width += MeasureText(state.title, 14.0f).width + 16.0f;
+				}
+				for (auto const& entry : state.entries) {
+					width += MeasureText(entry.title, item_font).width + 16.0f;
+				}
+				return fyuu_ui::Size{ width, 24.0f };
+			}
 			else if constexpr (std::same_as<State, fyuu_ui::SceneView>) {
 				return fyuu_ui::Size{ 640.0f, 360.0f };
 			}
@@ -1439,6 +1450,118 @@ namespace fyuu_ui {
 									});
 								}
 							}
+							else if constexpr (std::same_as<WidgetType, fyuu_ui::MenuBar>) {
+								auto const item_font = font_sizes[node_id].value_or(theme.menu_item.font_size);
+								auto const bar_height = local_bounds.size.height;
+								// Bar background.
+								AppendVisual(RectangleVisual{ local_bounds, theme.panel });
+								// Optional brand label.
+								auto cursor_x = 0.0f;
+								if (!widget.title.empty()) {
+									auto const text = MeasureText(widget.title, 14.0f);
+									AppendVisual(TextVisual{
+										Rect{ { 8.0f, 0.0f }, { text.width, bar_height } },
+										widget.title,
+										theme.text,
+										14.0f,
+										std::nullopt
+									});
+									cursor_x = text.width + 16.0f;
+								}
+								// Bar items; record each item's left offset for popup placement.
+								std::vector<float> bar_rects;
+								bar_rects.reserve(widget.entries.size());
+								for (std::size_t i = 0u; i < widget.entries.size(); ++i) {
+									auto const& entry = widget.entries[i];
+									auto const width = MeasureText(entry.title, item_font).width + 16.0f;
+									auto const item_rect = Rect{ { cursor_x, 0.0f }, { width, bar_height } };
+									bar_rects.push_back(cursor_x);
+									cursor_x += width;
+									auto const is_open = widget.open_path.has_value() && (*widget.open_path)[0u] == i;
+									auto const is_hover = widget.hover_path.has_value() && (*widget.hover_path)[0u] == i;
+									auto const is_pressed = widget.pressed_path.has_value() && (*widget.pressed_path)[0u] == i;
+									auto const interaction = is_pressed ? fyuu_ui::InteractionState::Pressed
+										: (is_hover ? fyuu_ui::InteractionState::Hovered : fyuu_ui::InteractionState::Normal);
+									auto const style = ResolveStyle(
+										theme.menu_item, style_override, foregrounds[node_id], font_sizes[node_id],
+										interaction, true, is_open, false
+									);
+									AppendVisual(RectangleVisual{ item_rect, style.visual.background });
+									AppendVisual(TextVisual{
+										Rect{ { item_rect.position.x + 6.0f, item_rect.position.y },
+											{ std::max(0.0f, item_rect.size.width - 12.0f), item_rect.size.height } },
+										entry.title, style.visual.foreground, style.font_size, std::nullopt
+									});
+									AppendVisual(HitTestVisual{
+										item_rect, fyuu_ui::HitTestRole::MenuContent, fyuu_ui::WindowResizeRegion::None,
+										fyuu_ui::MenuPath{ { static_cast<std::uint32_t>(i) } }
+									});
+								}
+								// Open dropdown chain (nested cascading panels), only when open_path is engaged.
+								if (widget.open_path.has_value()) {
+									auto const& open = *widget.open_path;
+									if (!open.empty() && open[0u] < widget.entries.size() && !widget.entries[open[0u]].children.empty()) {
+										auto const* menu_entries = widget.entries[open[0u]].children.data();
+										auto menu_count = widget.entries[open[0u]].children.size();
+										auto panel_origin = fyuu_ui::Point{ bar_rects[open[0u]], bar_height + 8.0f };
+										for (std::size_t level = 0u; level < open.size(); ++level) {
+											auto panel_width = 180.0f;
+											for (std::size_t i = 0u; i < menu_count; ++i) {
+												panel_width = std::max(panel_width, MeasureText(menu_entries[i].title, item_font).width + 16.0f);
+											}
+											auto const panel = fyuu_ui::Rect{ panel_origin, { panel_width, static_cast<float>(menu_count) * 22.0f } };
+											AppendVisual(RectangleVisual{ panel, theme.raised_surface });
+											for (std::size_t i = 0u; i < menu_count; ++i) {
+												auto const item_rect = fyuu_ui::Rect{
+													{ panel_origin.x, panel_origin.y + static_cast<float>(i) * 22.0f },
+													{ panel_width, 22.0f }
+												};
+												std::vector<std::uint32_t> path(open.begin(), open.begin() + level + 1);
+												path.push_back(static_cast<std::uint32_t>(i));
+												auto const is_hover = widget.hover_path.has_value() && *widget.hover_path == path;
+												auto const is_pressed = widget.pressed_path.has_value() && *widget.pressed_path == path;
+												auto const selected = (level + 1u < open.size() && open[level + 1u] == i) || menu_entries[i].checked;
+												auto const interaction = is_pressed ? fyuu_ui::InteractionState::Pressed
+													: (is_hover ? fyuu_ui::InteractionState::Hovered : fyuu_ui::InteractionState::Normal);
+												auto const style = ResolveStyle(
+													theme.menu_item, style_override, foregrounds[node_id], font_sizes[node_id],
+													interaction, menu_entries[i].enabled, selected, false
+												);
+												AppendVisual(RectangleVisual{ item_rect, style.visual.background });
+												AppendVisual(TextVisual{
+													Rect{ { item_rect.position.x + 6.0f, item_rect.position.y },
+														{ std::max(0.0f, item_rect.size.width - 12.0f), item_rect.size.height } },
+													menu_entries[i].title, style.visual.foreground, style.font_size, std::nullopt
+												});
+												if (!menu_entries[i].children.empty()) {
+													AppendVisual(TextVisual{
+														Rect{ { item_rect.position.x + item_rect.size.width - 18.0f, item_rect.position.y },
+															{ 14.0f, item_rect.size.height } },
+														"\u203A", theme.muted_text, style.font_size, std::nullopt
+													});
+												}
+												AppendVisual(HitTestVisual{
+													item_rect, fyuu_ui::HitTestRole::MenuContent, fyuu_ui::WindowResizeRegion::None,
+													fyuu_ui::MenuPath{ std::move(path) }
+												});
+											}
+											if (level + 1u < open.size()) {
+												auto const parent_index = open[level + 1u];
+												if (parent_index < menu_count) {
+													auto const& parent_item = menu_entries[parent_index];
+													panel_origin = fyuu_ui::Point{
+														panel.position.x + panel.size.width + 6.0f,
+														panel.position.y + static_cast<float>(parent_index) * 22.0f
+													};
+													menu_entries = parent_item.children.data();
+													menu_count = parent_item.children.size();
+												}
+											}
+										}
+									}
+								}
+							}
+
 							else {
 								static_assert(std::same_as<WidgetType, Spacer>);
 							}

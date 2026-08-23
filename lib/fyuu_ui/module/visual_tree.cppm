@@ -22,6 +22,7 @@ export namespace fyuu_ui {
 
 	enum class HitTestRole : std::uint8_t {
 		Content,
+		MenuContent,
 		WindowNonClient,
 		WindowNonClientButton,
 		WindowResize
@@ -59,10 +60,17 @@ export namespace fyuu_ui {
 		float thickness = 1.0f;
 	};
 
+	/// Identifies one menu entry by its index path from the menu bar root.
+	/// `{ 1 }` is the second bar item; `{ 1, 0 }` is the first item in its dropdown.
+	struct MenuPath {
+		std::vector<std::uint32_t> indices;
+	};
+
 	struct HitTestVisual {
 		Rect bounds;
 		HitTestRole role = HitTestRole::Content;
 		WindowResizeRegion resize_region = WindowResizeRegion::None;
+		std::optional<MenuPath> menu_path;
 	};
 
 	struct TextVisual {
@@ -146,6 +154,7 @@ export namespace fyuu_ui {
 		Size size;
 		HitTestRole role = HitTestRole::Content;
 		WindowResizeRegion resize_region = WindowResizeRegion::None;
+		std::optional<MenuPath> menu_path;
 	};
 
 	/// Owns one immutable visual graph. Nodes are append-only during construction,

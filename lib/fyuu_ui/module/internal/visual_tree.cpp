@@ -206,8 +206,9 @@ namespace fyuu_ui {
 			else {
 				auto hit_test_role = HitTestRole::Content;
 				auto resize_region = WindowResizeRegion::None;
+				std::optional<MenuPath> menu_path;
 				auto bounds = std::visit(
-					[&hit_test_role, &resize_region](auto const& state) {
+					[&hit_test_role, &resize_region, &menu_path](auto const& state) {
 						using State = std::remove_cvref_t<decltype(state)>;
 						if constexpr (std::same_as<State, RectangleVisual>) {
 							hit_test_role = state.hit_test_role;
@@ -223,6 +224,7 @@ namespace fyuu_ui {
 						else if constexpr (std::same_as<State, HitTestVisual>) {
 							hit_test_role = state.role;
 							resize_region = state.resize_region;
+							menu_path = state.menu_path;
 							return state.bounds;
 						}
 						else {
@@ -256,7 +258,8 @@ namespace fyuu_ui {
 							},
 							bounds.size,
 							hit_test_role,
-							resize_region
+							resize_region,
+							menu_path
 						};
 					}
 				}

@@ -66,17 +66,8 @@ namespace fyuu_studio {
 		std::uint64_t m_workspace_split_node = 0u;
 		std::uint64_t m_scene_view_node = 0u;
 		std::uint64_t m_status_node = 0u;
-		std::uint64_t m_file_menu_node = 0u;
-		std::uint64_t m_edit_menu_node = 0u;
-		std::uint64_t m_view_menu_node = 0u;
-		std::uint64_t m_build_menu_node = 0u;
-		std::uint64_t m_help_menu_node = 0u;
-		std::uint64_t m_dropdown_node = 0u;
-		std::uint64_t m_dropdown_first_node = 0u;
-		std::uint64_t m_dropdown_second_node = 0u;
-		std::uint64_t m_dropdown_third_node = 0u;
-		std::uint64_t m_dropdown_fourth_node = 0u;
-		std::uint64_t m_active_menu_node = 0u;
+		std::uint64_t m_menu_bar_node = 0u;
+		std::optional<fyuu_ui::MenuPath> m_pressed_menu_path;
 		std::uint64_t m_window_layer_node = 0u;
 		std::uint64_t m_close_confirmation_node = 0u;
 		std::uint64_t m_close_dialog_node = 0u;
@@ -178,15 +169,7 @@ namespace fyuu_studio {
 		}
 
 		void SetPointerState(std::uint64_t node, fyuu_ui::InteractionState state) {
-			if (node == m_file_menu_node || node == m_edit_menu_node ||
-				node == m_view_menu_node || node == m_build_menu_node ||
-				node == m_help_menu_node || node == m_dropdown_first_node ||
-				node == m_dropdown_second_node || node == m_dropdown_third_node ||
-				node == m_dropdown_fourth_node) {
-				auto& item = m_tree.GetNode(node).GetWidget<fyuu_ui::MenuItem>();
-				item.interaction = item.enabled ? state : fyuu_ui::InteractionState::Normal;
-			}
-			else if (node == m_camera_node || node == m_light_node ||
+			if (node == m_camera_node || node == m_light_node ||
 				node == m_translate_node || node == m_rotate_node ||
 				node == m_scale_node) {
 				m_tree.GetNode(node).GetWidget<fyuu_ui::ToggleButton>().interaction = state;
@@ -211,15 +194,6 @@ namespace fyuu_studio {
 				auto& window = m_tree.GetNode(*m_about_window_node).GetWidget<fyuu_ui::Window>();
 				window.non_client_button_interaction = fyuu_ui::InteractionState::Normal;
 			}
-			SetPointerState(m_file_menu_node, fyuu_ui::InteractionState::Normal);
-			SetPointerState(m_edit_menu_node, fyuu_ui::InteractionState::Normal);
-			SetPointerState(m_view_menu_node, fyuu_ui::InteractionState::Normal);
-			SetPointerState(m_build_menu_node, fyuu_ui::InteractionState::Normal);
-			SetPointerState(m_help_menu_node, fyuu_ui::InteractionState::Normal);
-			SetPointerState(m_dropdown_first_node, fyuu_ui::InteractionState::Normal);
-			SetPointerState(m_dropdown_second_node, fyuu_ui::InteractionState::Normal);
-			SetPointerState(m_dropdown_third_node, fyuu_ui::InteractionState::Normal);
-			SetPointerState(m_dropdown_fourth_node, fyuu_ui::InteractionState::Normal);
 			SetPointerState(m_close_save_node, fyuu_ui::InteractionState::Normal);
 			SetPointerState(m_close_discard_node, fyuu_ui::InteractionState::Normal);
 			SetPointerState(m_close_cancel_node, fyuu_ui::InteractionState::Normal);
@@ -254,6 +228,13 @@ namespace fyuu_studio {
 			auto const hit = tree.HitTest({ x, y });
 			if (hit.has_value()) {
 				SetPointerState(hit->logical_id, fyuu_ui::InteractionState::Hovered);
+				if (hit->logical_id == m_menu_bar_node) {
+					SetMenuHover(hit->menu_path);
+				}
+				else {
+					auto& bar = m_tree.GetNode(m_menu_bar_node).GetWidget<fyuu_ui::MenuBar>();
+					bar.hover_path.reset();
+				}
 				if (m_about_window_node == hit->logical_id) {
 					auto& window = m_tree.GetNode(*m_about_window_node).GetWidget<fyuu_ui::Window>();
 					if (hit->role == fyuu_ui::HitTestRole::WindowNonClientButton) {
@@ -413,105 +394,38 @@ m_tree.GetNode(m_selected_entity_node).GetWidget<fyuu_ui::ToggleButton>().title 
 		}
 
 		void CloseMenu() {
-			m_tree.GetNode(m_file_menu_node).GetWidget<fyuu_ui::MenuItem>().checked = false;
-			m_tree.GetNode(m_edit_menu_node).GetWidget<fyuu_ui::MenuItem>().checked = false;
-			m_tree.GetNode(m_view_menu_node).GetWidget<fyuu_ui::MenuItem>().checked = false;
-			m_tree.GetNode(m_build_menu_node).GetWidget<fyuu_ui::MenuItem>().checked = false;
-			m_tree.GetNode(m_help_menu_node).GetWidget<fyuu_ui::MenuItem>().checked = false;
-			m_active_menu_node = 0u;
-			auto layout = FixedHeight(0.0f, fyuu_ui::Alignment::Start);
-			layout.width = 180.0f;
-			layout.margin.top = 32.0f;
-			m_tree.GetNode(m_dropdown_node).SetLayout(layout);
+			auto& bar = m_tree.GetNode(m_menu_bar_node).GetWidget<fyuu_ui::MenuBar>();
+			bar.open_path.reset();
+			bar.hover_path.reset();
+			bar.pressed_path.reset();
 		}
 
-		void SelectMenu(
-			std::uint64_t selected_node,
-			std::string_view title,
-			float left
-		) {
-			if (m_active_menu_node == selected_node) {
-				CloseMenu();
-				m_status_context = "Ready";
+		void SetMenuHover(std::optional<fyuu_ui::MenuPath> const& path) {
+			auto& bar = m_tree.GetNode(m_menu_bar_node).GetWidget<fyuu_ui::MenuBar>();
+			if (!path.has_value()) {
+				bar.hover_path.reset();
+				return;
+			}
+			auto const& p = path->indices;
+			bar.hover_path = p;
+			if (p.size() == 1u && bar.open_path.has_value() &&
+				(*bar.open_path)[0u] != p[0u] && !bar.entries[p[0u]].children.empty()) {
+				bar.open_path = p;
+				m_status_context = std::format("{} menu", bar.entries[p[0u]].title);
 				UpdateZoomStatus();
 				return;
 			}
-			m_tree.GetNode(m_file_menu_node).GetWidget<fyuu_ui::MenuItem>().checked =
-				selected_node == m_file_menu_node;
-			m_tree.GetNode(m_edit_menu_node).GetWidget<fyuu_ui::MenuItem>().checked =
-				selected_node == m_edit_menu_node;
-			m_tree.GetNode(m_view_menu_node).GetWidget<fyuu_ui::MenuItem>().checked =
-				selected_node == m_view_menu_node;
-			m_tree.GetNode(m_build_menu_node).GetWidget<fyuu_ui::MenuItem>().checked =
-				selected_node == m_build_menu_node;
-			m_tree.GetNode(m_help_menu_node).GetWidget<fyuu_ui::MenuItem>().checked =
-				selected_node == m_help_menu_node;
-			m_active_menu_node = selected_node;
-			auto& first = m_tree.GetNode(m_dropdown_first_node).GetWidget<fyuu_ui::MenuItem>();
-			auto& second = m_tree.GetNode(m_dropdown_second_node).GetWidget<fyuu_ui::MenuItem>();
-			auto& third = m_tree.GetNode(m_dropdown_third_node).GetWidget<fyuu_ui::MenuItem>();
-			auto& fourth = m_tree.GetNode(m_dropdown_fourth_node).GetWidget<fyuu_ui::MenuItem>();
-			if (selected_node == m_file_menu_node) {
-				first.title = "New Scene";
-				first.enabled = true;
-				second.title = "Open...";
-				second.enabled = false;
-				third.title = "Save";
-				third.enabled = true;
-				fourth.title = "Save As...";
-				fourth.enabled = false;
+			if (p.size() >= 2u && bar.open_path.has_value()) {
+				auto const* entry = bar.FindEntry(p);
+				if (entry != nullptr && !entry->children.empty() && *bar.open_path != p) {
+					bar.open_path = p;
+				}
 			}
-			else if (selected_node == m_edit_menu_node) {
-				first.title = "Undo";
-				second.title = "Redo";
-				third.title = "Cut";
-				fourth.title = "Copy";
-				first.enabled = false;
-				second.enabled = false;
-				third.enabled = false;
-				fourth.enabled = false;
-			}
-			else if (selected_node == m_view_menu_node) {
-				first.title = "Hierarchy";
-				second.title = "Inspector";
-				third.title = "Console";
-				fourth.title = "Reset Layout";
-				first.enabled = false;
-				second.enabled = false;
-				third.enabled = false;
-				fourth.enabled = true;
-			}
-			else if (selected_node == m_build_menu_node) {
-				first.title = "Build Project";
-				second.title = "Rebuild";
-				third.title = "Clean";
-				fourth.title = "Settings";
-				first.enabled = false;
-				second.enabled = false;
-				third.enabled = false;
-				fourth.enabled = false;
-			}
-			else {
-				first.title = "Documentation";
-				second.title = "Shortcuts";
-				third.title = "Report Issue";
-				fourth.title = "About";
-				first.enabled = false;
-				second.enabled = false;
-				third.enabled = false;
-				fourth.enabled = true;
-			}
-			auto layout = FixedHeight(88.0f, fyuu_ui::Alignment::Start);
-			layout.width = 180.0f;
-			layout.margin.left = left;
-			layout.margin.top = 32.0f;
-			m_tree.GetNode(m_dropdown_node).SetLayout(layout);
-			m_status_context = std::format("{} menu", title);
-			UpdateZoomStatus();
 		}
 
+
 		void ShowAboutWindow() {
-			// Help -> About calls this function through ActivateMenuItem. The first
+			// Help -> About calls this function through ActivateMenuPath. The first
 			// activation inserts the window and its retained content into WindowLayer;
 			// later activations reuse the same logical subtree and only move it above
 			// its siblings. BuildVisualTree observes that new sibling order next frame.
@@ -679,26 +593,26 @@ m_tree.GetNode(m_selected_entity_node).GetWidget<fyuu_ui::ToggleButton>().title 
 			return true;
 		}
 
-		void ActivateMenuItem(std::uint64_t node) {
-			auto const& item = m_tree.GetNode(node).GetWidget<fyuu_ui::MenuItem>();
-			if (!item.enabled) {
+		void ActivateMenuPath(fyuu_ui::MenuPath const& path) {
+			auto& bar = m_tree.GetNode(m_menu_bar_node).GetWidget<fyuu_ui::MenuBar>();
+			auto const* entry = bar.FindEntry(path.indices);
+			if (entry == nullptr || !entry->enabled) {
 				return;
 			}
-			m_status_context = item.title;
-			if (m_active_menu_node == m_file_menu_node && node == m_dropdown_first_node) {
+			m_status_context = entry->title;
+			if (path.indices == std::vector<std::uint32_t>{ 0u, 0u, 0u }) {
 				m_commands.emplace_back(StudioCommand::NewDocument);
 			}
-			else if (m_active_menu_node == m_file_menu_node && node == m_dropdown_third_node) {
+			else if (path.indices == std::vector<std::uint32_t>{ 0u, 2u }) {
 				m_commands.emplace_back(StudioCommand::SaveDocument);
 			}
-			else if (m_active_menu_node == m_view_menu_node && node == m_dropdown_fourth_node) {
+			else if (path.indices == std::vector<std::uint32_t>{ 2u, 3u }) {
 				auto& main = m_tree.GetNode(m_main_split_node).GetContainer<fyuu_ui::SplitView>();
 				auto& workspace = m_tree.GetNode(m_workspace_split_node).GetContainer<fyuu_ui::SplitView>();
 				main.split = 0.20f;
 				workspace.split = 0.76f;
 			}
-			else if (m_active_menu_node == m_help_menu_node &&
-				node == m_dropdown_fourth_node) {
+			else if (path.indices == std::vector<std::uint32_t>{ 4u, 3u }) {
 				ShowAboutWindow();
 			}
 			CloseMenu();
@@ -707,78 +621,42 @@ m_tree.GetNode(m_selected_entity_node).GetWidget<fyuu_ui::ToggleButton>().title 
 
 		void BuildEditorShell(std::string_view backend_name) {
 			auto root = m_tree.GetRoot();
-			auto menu = root.AddChild(fyuu_ui::Border{ m_theme.panel });
-			menu.SetLayout(FixedHeight(24.0f, fyuu_ui::Alignment::Start));
-			auto menu_items = menu.AddChild(
-				fyuu_ui::StackPanel{ fyuu_ui::Orientation::Horizontal, 0.0f }
-			);
-			menu_items.AddChild(
-				fyuu_ui::TextBlock{
-					"Fyuu Studio",
-					m_theme.text,
-					14.0f
-				}
-			);
-			auto file_menu = menu_items.AddChild(
-				fyuu_ui::MenuItem{
-					"File", true, false, fyuu_ui::InteractionState::Normal
-				}
-			);
-			auto edit_menu = menu_items.AddChild(
-				fyuu_ui::MenuItem{
-					"Edit", true, false, fyuu_ui::InteractionState::Normal
-				}
-			);
-			auto view_menu = menu_items.AddChild(
-				fyuu_ui::MenuItem{
-					"View", true, false, fyuu_ui::InteractionState::Normal
-				}
-			);
-			auto build_menu = menu_items.AddChild(
-				fyuu_ui::MenuItem{
-					"Build", true, false, fyuu_ui::InteractionState::Normal
-				}
-			);
-			auto help_menu = menu_items.AddChild(
-				fyuu_ui::MenuItem{
-					"Help", true, false, fyuu_ui::InteractionState::Normal
-				}
-			);
-			m_file_menu_node = file_menu.GetID();
-			m_edit_menu_node = edit_menu.GetID();
-			m_view_menu_node = view_menu.GetID();
-			m_build_menu_node = build_menu.GetID();
-			m_help_menu_node = help_menu.GetID();
-			file_menu.Subscribe<fyuu_ui::ClickEvent>(
-				[this](fyuu_ui::ClickEvent& event) {
-					SelectMenu(m_file_menu_node, "File", 92.0f);
-					event.handled = true;
-				}
-			);
-			edit_menu.Subscribe<fyuu_ui::ClickEvent>(
-				[this](fyuu_ui::ClickEvent& event) {
-					SelectMenu(m_edit_menu_node, "Edit", 139.0f);
-					event.handled = true;
-				}
-			);
-			view_menu.Subscribe<fyuu_ui::ClickEvent>(
-				[this](fyuu_ui::ClickEvent& event) {
-					SelectMenu(m_view_menu_node, "View", 186.0f);
-					event.handled = true;
-				}
-			);
-			build_menu.Subscribe<fyuu_ui::ClickEvent>(
-				[this](fyuu_ui::ClickEvent& event) {
-					SelectMenu(m_build_menu_node, "Build", 233.0f);
-					event.handled = true;
-				}
-			);
-			help_menu.Subscribe<fyuu_ui::ClickEvent>(
-				[this](fyuu_ui::ClickEvent& event) {
-					SelectMenu(m_help_menu_node, "Help", 288.0f);
-					event.handled = true;
-				}
-			);
+			std::vector<fyuu_ui::MenuEntry> menu_entries{
+				{ "File", true, false, {
+					{ "New", true, false, {
+						{ "Scene", true, false, {} },
+						{ "Project", false, false, {} }
+					} },
+					{ "Open...", false, false, {} },
+					{ "Save", true, false, {} },
+					{ "Save As...", false, false, {} }
+				} },
+				{ "Edit", true, false, {
+					{ "Undo", false, false, {} },
+					{ "Redo", false, false, {} },
+					{ "Cut", false, false, {} },
+					{ "Copy", false, false, {} }
+				} },
+				{ "View", true, false, {
+					{ "Hierarchy", false, false, {} },
+					{ "Inspector", false, false, {} },
+					{ "Console", false, false, {} },
+					{ "Reset Layout", true, false, {} }
+				} },
+				{ "Build", true, false, {
+					{ "Build Project", false, false, {} },
+					{ "Rebuild", false, false, {} },
+					{ "Clean", false, false, {} },
+					{ "Settings", false, false, {} }
+				} },
+				{ "Help", true, false, {
+					{ "Documentation", false, false, {} },
+					{ "Shortcuts", false, false, {} },
+					{ "Report Issue", false, false, {} },
+					{ "About", true, false, {} }
+				} }
+			};
+
 
 			auto main = root.AddChild(
 				fyuu_ui::SplitView{
@@ -930,53 +808,18 @@ m_tree.GetNode(m_selected_entity_node).GetWidget<fyuu_ui::ToggleButton>().title 
 			);
 			m_status_node = status_text.GetID();
 
-			auto dropdown = root.AddChild(fyuu_ui::Overlay{ true });
-			m_dropdown_node = dropdown.GetID();
-			auto dropdown_layout = FixedHeight(0.0f, fyuu_ui::Alignment::Start);
-			dropdown_layout.width = 180.0f;
-			dropdown_layout.margin.top = 32.0f;
-			dropdown.SetLayout(dropdown_layout);
-			dropdown.AddChild(fyuu_ui::Border{ m_theme.raised_surface });
-			auto dropdown_items = dropdown.AddChild(
-				fyuu_ui::StackPanel{ fyuu_ui::Orientation::Vertical, 0.0f }
-			);
-			auto first_item = dropdown_items.AddChild(fyuu_ui::MenuItem{
-				"", true, false, fyuu_ui::InteractionState::Normal
+			// MenuBar emits its popup panels inline, so it must sit after the main
+			// content (and status bar) in the root's child order to draw on top of
+			// them; window_layer above lets floating windows cover the bar row.
+			auto menu_bar = root.AddChild(fyuu_ui::MenuBar{
+				"Fyuu Studio",
+				std::move(menu_entries)
 			});
-			auto second_item = dropdown_items.AddChild(fyuu_ui::MenuItem{
-				"", true, false, fyuu_ui::InteractionState::Normal
-			});
-			auto third_item = dropdown_items.AddChild(fyuu_ui::MenuItem{
-				"", true, false, fyuu_ui::InteractionState::Normal
-			});
-			auto fourth_item = dropdown_items.AddChild(fyuu_ui::MenuItem{
-				"", true, false, fyuu_ui::InteractionState::Normal
-			});
-			m_dropdown_first_node = first_item.GetID();
-			m_dropdown_second_node = second_item.GetID();
-			m_dropdown_third_node = third_item.GetID();
-			m_dropdown_fourth_node = fourth_item.GetID();
-			first_item.Subscribe<fyuu_ui::ClickEvent>(
-				[this](fyuu_ui::ClickEvent& event) {
-					ActivateMenuItem(m_dropdown_first_node);
-					event.handled = true;
-				}
-			);
-			second_item.Subscribe<fyuu_ui::ClickEvent>(
-				[this](fyuu_ui::ClickEvent& event) {
-					ActivateMenuItem(m_dropdown_second_node);
-					event.handled = true;
-				}
-			);
-			third_item.Subscribe<fyuu_ui::ClickEvent>(
-				[this](fyuu_ui::ClickEvent& event) {
-					ActivateMenuItem(m_dropdown_third_node);
-					event.handled = true;
-				}
-			);
-			fourth_item.Subscribe<fyuu_ui::ClickEvent>(
-				[this](fyuu_ui::ClickEvent& event) {
-					ActivateMenuItem(m_dropdown_fourth_node);
+			m_menu_bar_node = menu_bar.GetID();
+			menu_bar.SetLayout(FixedHeight(24.0f, fyuu_ui::Alignment::Start));
+			menu_bar.Subscribe<fyuu_ui::MenuActivatedEvent>(
+				[this](fyuu_ui::MenuActivatedEvent& event) {
+					ActivateMenuPath(event.path);
 					event.handled = true;
 				}
 			);
@@ -1312,21 +1155,22 @@ m_tree.GetNode(m_selected_entity_node).GetWidget<fyuu_ui::ToggleButton>().title 
 					m_pressed_node.reset();
 					return;
 				}
-				if (m_active_menu_node != 0u &&
-					hit->logical_id != m_file_menu_node &&
-					hit->logical_id != m_edit_menu_node &&
-					hit->logical_id != m_view_menu_node &&
-					hit->logical_id != m_build_menu_node &&
-					hit->logical_id != m_help_menu_node &&
-					hit->logical_id != m_dropdown_first_node &&
-					hit->logical_id != m_dropdown_second_node &&
-					hit->logical_id != m_dropdown_third_node &&
-					hit->logical_id != m_dropdown_fourth_node) {
+				if (m_menu_bar_node != 0u && hit->logical_id != m_menu_bar_node) {
 					CloseMenu();
 				}
 				m_pressed_node = hit->logical_id;
 				ClearPointerStates();
 				SetPointerState(hit->logical_id, fyuu_ui::InteractionState::Pressed);
+				if (m_menu_bar_node != 0u && hit->logical_id == m_menu_bar_node) {
+					if (hit->menu_path.has_value()) {
+						m_pressed_menu_path = hit->menu_path;
+						m_tree.GetNode(m_menu_bar_node).GetWidget<fyuu_ui::MenuBar>().pressed_path =
+							hit->menu_path->indices;
+					}
+					else {
+						CloseMenu();
+					}
+				}
 				if (hit->logical_id == m_inspector_name_node) {
 					if (m_focused_node.has_value() && IsNumericNode(*m_focused_node)) {
 						m_tree.GetNode(*m_focused_node).GetWidget<fyuu_ui::NumericBox>().focused = false;
@@ -1406,7 +1250,47 @@ m_tree.GetNode(m_selected_entity_node).GetWidget<fyuu_ui::ToggleButton>().title 
 			m_split_drag_node.reset();
 			m_numeric_drag_node.reset();
 			auto const released = visual_tree.HitTest({ event.x, event.y });
-			if (released.has_value() && released->logical_id == m_pressed_node) {
+			if (m_pressed_menu_path.has_value()) {
+				auto& bar = m_tree.GetNode(m_menu_bar_node).GetWidget<fyuu_ui::MenuBar>();
+				auto const press = *m_pressed_menu_path;
+				m_pressed_menu_path.reset();
+				bar.pressed_path.reset();
+				auto const on_same_entry = released.has_value() &&
+					released->logical_id == m_menu_bar_node &&
+					released->menu_path.has_value() &&
+					released->menu_path->indices == press.indices;
+				if (on_same_entry) {
+					auto const* entry = bar.FindEntry(press.indices);
+					if (entry != nullptr && !entry->children.empty()) {
+						// Submenu header: toggle its dropdown / cascade.
+						if (bar.open_path == press.indices) {
+							bar.open_path.reset();
+						}
+						else {
+							bar.open_path = press.indices;
+						}
+					}
+					else {
+						fyuu_ui::MenuActivatedEvent event{ press };
+						m_tree.GetNode(m_menu_bar_node).Dispatch(event);
+					}
+				}
+				else if (released.has_value() && released->logical_id == m_menu_bar_node &&
+					released->menu_path.has_value()) {
+					auto const& path = released->menu_path->indices;
+					if (path.size() == 1u) {
+						// Drag released on another bar item: switch the open menu.
+						bar.open_path = path;
+					}
+					else {
+						auto const* entry = bar.FindEntry(path);
+						if (entry != nullptr && !entry->children.empty()) {
+							bar.open_path = path;
+						}
+					}
+				}
+			}
+			else if (released.has_value() && released->logical_id == m_pressed_node) {
 				auto node = m_tree.GetNode(released->logical_id);
 				fyuu_ui::ClickEvent click{ { event.x, event.y } };
 				node.Dispatch(click);
