@@ -110,7 +110,7 @@ namespace fyuu_studio::model {
 
 		/// Selects a live entity; `std::nullopt` clears the selection.
 		bool Select(std::optional<EntityID> id) {
-			if (id.has_value() && !m_scene.Alive(*id)) {
+			if (id && !m_scene.Alive(*id)) {
 				return false;
 			}
 			m_selection = id;

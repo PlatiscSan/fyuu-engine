@@ -35,3 +35,7 @@ endif()
 target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_23)
 
 disable_rtti(${PROJECT_NAME})
+
+if(BUILD_TESTING)
+	add_subdirectory(test)
+endif()

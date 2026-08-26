@@ -1,6 +1,7 @@
 module;
 #include <version>
 #if !defined(__cpp_lib_modules)
+#include <cstddef>
 #include <exception>
 #include <stdexcept>
 
@@ -53,14 +54,12 @@ import :vulkan_data;
 import :vulkan_queue_allocator;
 import :vulkan_utility;
 
-namespace fyuu_rhi::details {
-	extern void ParallelFor(
-		std::size_t first,
-		std::size_t last,
-		void* function,
-		void (*invoke)(void*, std::size_t)
-	);
-}
+extern "C" void ParallelFor(
+	std::size_t first,
+	std::size_t last,
+	void* function,
+	void (*invoke)(void*, std::size_t)
+);
 
 namespace {
 
@@ -75,7 +74,7 @@ namespace {
 		std::size_t last,
 		Function&& function
 	) {
-		fyuu_rhi::details::ParallelFor(
+		::ParallelFor(
 			first,
 			last,
 			std::addressof(function),

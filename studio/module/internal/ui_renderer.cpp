@@ -93,6 +93,7 @@ namespace fyuu_studio {
 			32u
 		};
 		std::array<std::array<float, 96u>, FontCount> advances;
+		std::array<float, FontCount> line_heights;
 	};
 
 	FontAtlas CreateFontAtlas() {
@@ -132,6 +133,7 @@ namespace fyuu_studio {
 				throw std::runtime_error("FreeType could not set the Studio font size");
 			}
 			auto const baseline = static_cast<std::int32_t>(face->size->metrics.ascender >> 6u) + 1;
+			result.line_heights[font_index] = static_cast<float>(face->size->metrics.height >> 6u);
 			for (auto character = 32u; character < 128u; ++character) {
 				auto const glyph = character - 32u;
 				if (FT_Load_Char(face, character, FT_LOAD_RENDER | FT_LOAD_TARGET_NORMAL) != 0) {
@@ -175,6 +177,39 @@ namespace fyuu_studio {
 	FontAtlas const& GetFontAtlas() {
 		static FontAtlas const Atlas = CreateFontAtlas();
 		return Atlas;
+	}
+
+	std::uint32_t SelectFontIndex(FontAtlas const& atlas, float physical_font_size) noexcept {
+		std::uint32_t result = 0u;
+		for (std::uint32_t index = 1u; index < FontAtlas::FontCount; ++index) {
+			if (std::abs(static_cast<float>(atlas.pixel_sizes[index]) - physical_font_size) <
+				std::abs(static_cast<float>(atlas.pixel_sizes[result]) - physical_font_size)) {
+				result = index;
+			}
+		}
+		return result;
+	}
+
+	fyuu_ui::Size MeasureUIText(
+		std::string_view text,
+		float font_size,
+		float scale_x,
+		float scale_y
+	) {
+		scale_x = scale_x > 0.0f ? scale_x : 1.0f;
+		scale_y = scale_y > 0.0f ? scale_y : 1.0f;
+		auto const& atlas = GetFontAtlas();
+		auto const font_index = SelectFontIndex(atlas, font_size * scale_y);
+		auto width = 0.0f;
+		for (auto const character : text) {
+			auto const code = static_cast<std::uint8_t>(character);
+			if (code < 32u || code >= 128u) {
+				width += std::round(font_size * 0.58f * scale_x) / scale_x;
+				continue;
+			}
+			width += atlas.advances[font_index][code - 32u] / scale_x;
+		}
+		return { width, atlas.line_heights[font_index] / scale_y };
 	}
 
 	std::uint32_t PackColor(fyuu_ui::Color const& color) {
@@ -397,32 +432,28 @@ namespace fyuu_studio {
 					else if constexpr (std::same_as<State, fyuu_ui::DrawTextCommand>) {
 						auto const& atlas = GetFontAtlas();
 						auto const physical_font_size = state.font_size * scale_y;
-						std::uint32_t font_index = 0u;
-						for (std::uint32_t index = 1u; index < FontAtlas::FontCount; ++index) {
-							if (std::abs(static_cast<float>(atlas.pixel_sizes[index]) - physical_font_size) <
-								std::abs(static_cast<float>(atlas.pixel_sizes[font_index]) - physical_font_size)) {
-								font_index = index;
-							}
-						}
-						auto caret_advance = 0.0f;
-						if (state.caret_offset.has_value()) {
+						auto const font_index = SelectFontIndex(atlas, physical_font_size);
+						auto TextAdvance = [&](std::size_t end) {
+							auto advance = 0.0f;
 							for (std::size_t offset = 0u;
-								offset < (std::min)(*state.caret_offset, state.text.size());
-								++offset) {
+							     offset < (std::min)(end, state.text.size());
+							     ++offset) {
 								auto const code = static_cast<std::uint8_t>(state.text[offset]);
-								if (code < 32u || code >= 128u) {
-									caret_advance += std::round(state.font_size * 0.58f * scale_x) /
-										scale_x;
-									continue;
-								}
-								auto const glyph = static_cast<std::uint32_t>(code - 32u);
-								caret_advance += atlas.advances[font_index][glyph] / scale_x;
+								advance += code < 32u || code >= 128u ?
+								    std::round(state.font_size * 0.58f * scale_x) / scale_x :
+								    atlas.advances[font_index][static_cast<std::uint32_t>(code - 32u)] /
+								        scale_x;
 							}
-						}
+							return advance;
+						};
+						auto const caret_advance = state.caret_offset ? TextAdvance(*state.caret_offset) : 0.0f;
 						auto const caret_width = 1.0f / scale_x;
 						auto const horizontal_scroll = std::max(
-							0.0f,
-							caret_advance - std::max(0.0f, state.bounds.size.width - caret_width)
+							state.horizontal_offset,
+							std::max(
+								0.0f,
+								caret_advance - std::max(0.0f, state.bounds.size.width - caret_width)
+							)
 						);
 						auto cursor_x = std::round(
 							(state.bounds.position.x + translations.back().x) * scale_x
@@ -431,6 +462,18 @@ namespace fyuu_studio {
 							(state.bounds.position.y + translations.back().y) * scale_y
 						) / scale_y;
 						auto const first_index = static_cast<std::uint32_t>(result.indices.size());
+						if (state.selection_start && state.selection_end) {
+							auto const selection_x = cursor_x + TextAdvance(*state.selection_start);
+							auto const selection_end_x = cursor_x + TextAdvance(*state.selection_end);
+							append_quad(
+								fyuu_ui::Rect{
+								    {selection_x, state.bounds.position.y + translations.back().y},
+								    {std::max(0.0f, selection_end_x - selection_x), state.bounds.size.height}
+								},
+								state.selection_color,
+								fyuu_ui::Rect{}
+							);
+						}
 						for (std::size_t offset = 0u; offset <= state.text.size(); ++offset) {
 							if (state.caret_offset == offset) {
 								auto const caret_x = (std::min)(
@@ -455,8 +498,12 @@ namespace fyuu_studio {
 							}
 							auto const character = state.text[offset];
 							auto const code = static_cast<std::uint8_t>(character);
+							auto const advance = code < 32u || code >= 128u ?
+								std::round(state.font_size * 0.58f * scale_x) / scale_x :
+								atlas.advances[font_index][static_cast<std::uint32_t>(code - 32u)] /
+									scale_x;
 							if (code < 32u || code >= 128u) {
-								cursor_x += std::round(state.font_size * 0.58f * scale_x) / scale_x;
+								cursor_x += advance;
 								continue;
 							}
 							auto const glyph = static_cast<std::uint32_t>(code - 32u);
@@ -484,7 +531,7 @@ namespace fyuu_studio {
 									}
 								}
 							);
-							cursor_x += atlas.advances[font_index][glyph] / scale_x;
+							cursor_x += advance;
 						}
 						auto const index_count = static_cast<std::uint32_t>(result.indices.size()) - first_index;
 						if (index_count != 0u) {

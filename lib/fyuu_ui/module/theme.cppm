@@ -58,7 +58,6 @@ export namespace fyuu_ui {
 		WidgetStyle input;
 		WidgetStyle menu_item;
 		WidgetStyle slider_thumb;
-		WidgetStyle progress_bar;
 		Color window_client;
 		Color window_client_text;
 		Color window_client_muted_text;
@@ -144,7 +143,6 @@ export namespace fyuu_ui {
 			control_style,
 			control_style,
 			menu_style,
-			control_style,
 			control_style,
 			{ 0.050f, 0.058f, 0.072f, 1.0f },
 			{ 0.875f, 0.890f, 0.920f, 1.0f },

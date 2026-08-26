@@ -139,14 +139,19 @@ namespace plastic::concurrency {
 		bool TestAndSet(Enum e, bool value = true, std::memory_order success = std::memory_order::acq_rel, std::memory_order failure = std::memory_order::relaxed) noexcept {
 			auto [idx, mask] = Locate(e);
 			Word old = m_bits[idx].load(std::memory_order::relaxed);
+			bool exchanged = false;
 			do {
 				bool was_set = (old & mask) != 0;
 				Word desired = value ? (old | mask) : (old & ~mask);
-				if (desired == old || m_bits[idx].compare_exchange_weak(old, desired, success, failure)) {
+				if (desired == old) {
 					return was_set;
 				}
-			} while (true);
-			std::unreachable();
+				exchanged = m_bits[idx].compare_exchange_weak(old, desired, success, failure);
+				if (exchanged) {
+					return was_set;
+				}
+			} while (!exchanged);
+			return false;
 		}
 
 		bool Test(Enum e, std::memory_order mem_order = std::memory_order::acquire) const noexcept {
@@ -242,13 +247,15 @@ namespace plastic::concurrency {
 				std::array<Word, kWordCount> old, cur;
 				for (std::size_t i = 0; i < kWordCount; ++i)
 					old[i] = m_bits[i].load(std::memory_order_acquire);
-				while (true) {
+				bool stable = false;
+				while (!stable) {
 					for (std::size_t i = 0; i < kWordCount; ++i)
 						cur[i] = m_bits[i].load(std::memory_order_acquire);
-					if (cur == old)
-						return cur;
-					old = cur;
+					stable = cur == old;
+					if (!stable)
+						old = cur;
 				}
+				return cur;
 			}
 		}
 

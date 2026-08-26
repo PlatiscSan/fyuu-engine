@@ -270,6 +270,10 @@ namespace fyuu_desktop {
 				event.type = EventType::WindowFocusLost;
 				event.window_ID = native_event.window.windowID;
 				break;
+			case SDL_EVENT_WINDOW_MOUSE_LEAVE:
+				event.type = EventType::WindowMouseLeave;
+				event.window_ID = native_event.window.windowID;
+				break;
 			case SDL_EVENT_MOUSE_MOTION:
 				event.type = EventType::MouseMoved;
 				event.window_ID = native_event.motion.windowID;
@@ -284,6 +288,7 @@ namespace fyuu_desktop {
 				event.mouse_button = TranslateMouseButton(native_event.button.button);
 				event.x = native_event.button.x;
 				event.y = native_event.button.y;
+				event.click_count = native_event.button.clicks;
 				break;
 			case SDL_EVENT_MOUSE_BUTTON_UP:
 				event.type = EventType::MouseButtonReleased;
@@ -291,6 +296,7 @@ namespace fyuu_desktop {
 				event.mouse_button = TranslateMouseButton(native_event.button.button);
 				event.x = native_event.button.x;
 				event.y = native_event.button.y;
+				event.click_count = native_event.button.clicks;
 				break;
 			case SDL_EVENT_MOUSE_WHEEL:
 				event.type = EventType::MouseWheel;
@@ -324,6 +330,19 @@ namespace fyuu_desktop {
 				m_event_sink->ProcessEvent(event);
 			}
 		}
+	}
+
+	std::string ClipboardText() {
+		auto* text = SDL_GetClipboardText();
+		if (text == nullptr)
+			return {};
+		std::string result{text};
+		SDL_free(text);
+		return result;
+	}
+
+	void ClipboardText(std::string_view text) {
+		SDL_SetClipboardText(std::string{text}.c_str());
 	}
 
 }

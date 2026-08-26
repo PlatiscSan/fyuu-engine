@@ -57,17 +57,12 @@ import :resource_factory;
 import :sampler_factory;
 import :view_factory;
 
-namespace fyuu_rhi::details {
-	/// Implemented in an ordinary source file so TBB headers never enter this
-	/// module partition. MSVC 14.51 (CL 19.51) otherwise emits C1116 while an
-	/// importer loads module std.
-	extern void ParallelFor(
-		std::size_t first,
-		std::size_t last,
-		void* function,
-		void (*invoke)(void*, std::size_t)
-	);
-}
+extern "C" void ParallelFor(
+	std::size_t first,
+	std::size_t last,
+	void* function,
+	void (*invoke)(void*, std::size_t)
+);
 
 namespace {
 	using namespace fyuu_rhi::d3d12;
@@ -82,7 +77,7 @@ namespace {
 		std::size_t last,
 		Function&& function
 	) {
-		fyuu_rhi::details::ParallelFor(
+		::ParallelFor(
 			first,
 			last,
 			std::addressof(function),

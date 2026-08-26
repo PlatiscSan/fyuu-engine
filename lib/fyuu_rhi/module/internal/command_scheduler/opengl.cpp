@@ -2001,7 +2001,7 @@ namespace fyuu_rhi::execution {
 						.impl = native->impl.get(),
 						.target = native->target,
 						.format = native->format,
-						.texture = !native->buffer_range.has_value()
+						.texture = !static_cast<bool>(native->buffer_range)
 					}
 				);
 			}

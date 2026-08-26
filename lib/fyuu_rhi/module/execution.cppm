@@ -758,7 +758,8 @@ export namespace fyuu_rhi::execution {
 						ResourceUsage::ColorAttachment,
 						"Color attachment is missing its declared attachment access"
 					);
-					if (color.resolve_resource.has_value() != color.resolve_view.has_value()) {
+					if (static_cast<bool>(color.resolve_resource) !=
+					    static_cast<bool>(color.resolve_view)) {
 						throw std::invalid_argument(
 							"Resolve attachment requires both a resource and a view"
 						);

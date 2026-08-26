@@ -30,7 +30,10 @@ button.SetStyle(fyuu_ui::StyleOverride{
 });
 auto visual_tree = tree.BuildVisualTree(
 	{ 1280.0f, 720.0f },
-	theme
+	theme,
+	[&font_system](std::string_view text, float font_size) {
+		return font_system.MeasureText(text, font_size);
+	}
 );
 
 auto draw_commands = visual_tree.WriteDrawList();
@@ -39,7 +42,7 @@ auto draw_commands = visual_tree.WriteDrawList();
 调用链为：
 
 1. `LogicalTree` 保存容器、控件状态和层级关系。
-2. `BuildVisualTree(Size, Theme)` 正向传播可继承属性，再完成非递归测量与排列。
+2. `BuildVisualTree(Size, Theme, TextMeasurer)` 使用渲染端的真实字体度量，正向传播可继承属性，再完成非递归测量与排列。
 3. 视觉生成先解析主题中的控件状态，再应用继承值和节点局部覆盖。
 4. `VisualTree::WriteDrawList` 将视觉节点批量转换为绘制命令。
 5. 前端渲染器消费 `std::vector<DrawCommand>`；FyuuUI 不依赖具体 RHI 后端。

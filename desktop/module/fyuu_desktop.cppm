@@ -2,6 +2,7 @@ module;
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <string>
+#include <string_view>
 
 #include <cstdint>
 
@@ -60,6 +61,7 @@ export namespace fyuu_desktop {
 		WindowPixelSizeChanged,
 		WindowFocusGained,
 		WindowFocusLost,
+		WindowMouseLeave,
 		MouseMoved,
 		MouseButtonPressed,
 		MouseButtonReleased,
@@ -118,8 +120,13 @@ export namespace fyuu_desktop {
 		bool shift = false;
 		bool alt = false;
 		bool super = false;
+		std::uint8_t click_count = 0u;
 		std::string text;
 	};
+
+	/// Returns and replaces UTF-8 clipboard text through the active desktop backend.
+	[[nodiscard]] std::string ClipboardText();
+	void ClipboardText(std::string_view text);
 
 	/// Receives normalized events during Platform::PumpEvents.
 	struct EventSink {

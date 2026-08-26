@@ -1,0 +1,206 @@
+---
+Language: Cpp
+BasedOnStyle: LLVM
+
+# ============================================================
+# Indentation
+# ============================================================
+
+IndentWidth: 4
+TabWidth: 4
+UseTab: ForIndentation
+ContinuationIndentWidth: 4
+BracedInitializerIndentWidth: 4
+
+NamespaceIndentation: All
+
+# ============================================================
+# Line width
+# ============================================================
+
+ColumnLimit: 100
+
+# ============================================================
+# Pointer / Reference
+# ============================================================
+
+PointerAlignment: Left
+ReferenceAlignment: Left
+DerivePointerAlignment: false
+
+# ============================================================
+# Braces
+# ============================================================
+
+BreakBeforeBraces: Custom
+
+BraceWrapping:
+  AfterCaseLabel: false
+  AfterClass: false
+  AfterControlStatement: Never
+  AfterEnum: false
+  AfterExternBlock: false
+  AfterFunction: false
+  AfterNamespace: false
+  AfterStruct: false
+  AfterUnion: false
+  BeforeCatch: false
+  BeforeElse: false
+  BeforeLambdaBody: false
+  IndentBraces: false
+  SplitEmptyFunction: false
+  SplitEmptyRecord: false
+  SplitEmptyNamespace: false
+
+# ============================================================
+# Short statements
+# ============================================================
+
+AllowShortBlocksOnASingleLine: Never
+AllowShortFunctionsOnASingleLine: None
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortLambdasOnASingleLine: Empty
+
+# ============================================================
+# Alignment
+# ============================================================
+
+# clang-format 22: bool
+AlignAfterOpenBracket: BlockIndent
+
+AlignOperands: DontAlign
+
+# ============================================================
+# Function calls / parameters
+# ============================================================
+
+BinPackArguments: false
+BinPackParameters: false
+
+AllowAllArgumentsOnNextLine: false
+AllowAllParametersOfDeclarationOnNextLine: false
+
+BreakAfterOpenBracketFunction: true
+BreakBeforeCloseBracketFunction: true
+
+# ============================================================
+# if / loops / switch
+# ============================================================
+
+BreakAfterOpenBracketIf: true
+BreakBeforeCloseBracketIf: true
+
+BreakAfterOpenBracketLoop: true
+BreakBeforeCloseBracketLoop: true
+
+BreakAfterOpenBracketSwitch: true
+BreakBeforeCloseBracketSwitch: true
+
+# ============================================================
+# Braced initializer
+# ============================================================
+
+Cpp11BracedListStyle: FunctionCall
+
+BreakAfterOpenBracketBracedList: true
+BreakBeforeCloseBracketBracedList: true
+
+# ============================================================
+# Ternary
+# ============================================================
+
+# condition ?
+#     true :
+#     false
+BreakBeforeTernaryOperators: false
+
+# ============================================================
+# Binary operators
+# ============================================================
+
+BreakBeforeBinaryOperators: None
+
+# ============================================================
+# Constructor initializers
+# ============================================================
+
+ConstructorInitializerIndentWidth: 4
+BreakConstructorInitializers: AfterColon
+
+# ============================================================
+# Access modifier
+# ============================================================
+
+AccessModifierOffset: -4
+
+# ============================================================
+# switch / case
+# ============================================================
+
+IndentCaseLabels: true
+IndentCaseBlocks: false
+
+# ============================================================
+# Lambda
+# ============================================================
+
+LambdaBodyIndentation: Signature
+
+# ============================================================
+# Spaces
+# ============================================================
+
+SpaceBeforeParens: ControlStatements
+SpaceBeforeAssignmentOperators: true
+
+SpacesInParentheses: false
+SpacesInSquareBrackets: false
+SpacesInAngles: Never
+
+SpaceAfterCStyleCast: false
+SpaceBeforeCpp11BracedList: false
+
+# ============================================================
+# Member access
+# ============================================================
+
+PenaltyBreakBeforeMemberAccess: 1000
+
+# ============================================================
+# Namespace
+# ============================================================
+
+FixNamespaceComments: true
+
+# ============================================================
+# Includes
+# ============================================================
+
+SortIncludes: Never
+
+# ============================================================
+# Preprocessor
+# ============================================================
+
+IndentPPDirectives: None
+
+# ============================================================
+# Comments / blank lines
+# ============================================================
+
+ReflowComments: Never
+MaxEmptyLinesToKeep: 1
+
+# ============================================================
+# Function return type
+# ============================================================
+
+# MenuEntry const* FindMenuEntry(...)
+#
+# Not:
+#
+# MenuEntry const*
+# FindMenuEntry(...)
+BreakAfterReturnType: Automatic
+PenaltyReturnTypeOnItsOwnLine: 1000

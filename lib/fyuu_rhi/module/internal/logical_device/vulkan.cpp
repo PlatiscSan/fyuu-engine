@@ -556,7 +556,7 @@ namespace fyuu_rhi {
 			vk::PipelineInputAssemblyStateCreateInfo input_assembly(
 				{},
 				NativePrimitiveTopology(descriptor.primitive.topology),
-				descriptor.primitive.strip_index_format.has_value()
+				static_cast<bool>(descriptor.primitive.strip_index_format)
 			);
 			vk::PipelineViewportStateCreateInfo viewport(
 				{},
