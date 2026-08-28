@@ -118,6 +118,7 @@ namespace fyuu_ui {
 
 	void FileDialogue::RebuildContent() {
 		auto& session = m_session;
+		session.subscriptions.clear();
 		if (session.content_id != 0u)
 			m_events->Remove(*m_tree, session.content_id);
 		session.entries.clear();
@@ -227,11 +228,11 @@ namespace fyuu_ui {
 			auto parent =
 			    entry_list.AddChild(FileItem{"..", true, false, true, InteractionState::Normal});
 			session.visible_entries.emplace_back(parent.GetID(), parent_directory);
-			m_events->Subscribe<ClickEvent>(parent, [this, parent_directory](ClickEvent& event) {
+			session.subscriptions.emplace_back(m_events->Subscribe<ClickEvent>(parent, [this, parent_directory](ClickEvent& event) {
 				m_session.pending = PendingAction::Navigate;
 				m_session.pending_path = parent_directory;
 				event.handled = true;
-			});
+			}));
 		}
 		for (auto const& path : session.entries) {
 			std::error_code type_error;
@@ -262,12 +263,12 @@ namespace fyuu_ui {
 			);
 			session.visible_entries.emplace_back(item.GetID(), path);
 			if (selectable) {
-				m_events->Subscribe<ClickEvent>(item, [this, path, directory](ClickEvent& event) {
+				session.subscriptions.emplace_back(m_events->Subscribe<ClickEvent>(item, [this, path, directory](ClickEvent& event) {
 					m_session.pending =
 					    directory ? PendingAction::Navigate : PendingAction::Select;
 					m_session.pending_path = path;
 					event.handled = true;
-				});
+				}));
 			}
 		}
 		auto footer = content.AddChild(StackPanel{Orientation::Vertical, 6.0f});
@@ -311,16 +312,16 @@ namespace fyuu_ui {
 		    Button{session.mode == FileDialogMode::Open ? "Open" : "Save", true, true}
 		);
 		session.button_ids.emplace_back(accept.GetID());
-		m_events->Subscribe<ClickEvent>(accept, [this](ClickEvent& event) {
+		session.subscriptions.emplace_back(m_events->Subscribe<ClickEvent>(accept, [this](ClickEvent& event) {
 			m_session.pending = PendingAction::Accept;
 			event.handled = true;
-		});
+		}));
 		auto cancel = actions.AddChild(Button{"Cancel", true, false});
 		session.button_ids.emplace_back(cancel.GetID());
-		m_events->Subscribe<ClickEvent>(cancel, [this](ClickEvent& event) {
+		session.subscriptions.emplace_back(m_events->Subscribe<ClickEvent>(cancel, [this](ClickEvent& event) {
 			m_session.pending = PendingAction::Cancel;
 			event.handled = true;
-		});
+		}));
 	}
 
 	void FileDialogue::Update() {

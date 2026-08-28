@@ -1,8 +1,9 @@
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <utility>
-#include <variant>
+#include <vector>
 #include <string>
+#include <variant>
 #include <string_view>
 #endif
 
@@ -14,13 +15,14 @@ import std;
 int main() {
 	fyuu_ui::LogicalTree tree{fyuu_ui::Overlay{}};
 	auto events = tree.BuildEventBus();
+	std::vector<fyuu_ui::SubscriptionHandle> subscriptions;
 	auto root = tree.GetRoot();
 	auto first = root.AddChild(fyuu_ui::TextBox{"first", {}, false, false, 0u});
 	auto second = root.AddChild(fyuu_ui::TextBox{"second", {}, false, false, 0u});
 	auto modal = root.AddChild(fyuu_ui::Overlay{});
 	auto modal_button = modal.AddChild(fyuu_ui::Button{"OK"});
 	auto focus_changes = 0u;
-	events.Subscribe<fyuu_ui::FocusChangedEvent>(first, [&focus_changes](auto&) { ++focus_changes; });
+	subscriptions.emplace_back(events.Subscribe<fyuu_ui::FocusChangedEvent>(first, [&focus_changes](auto&) { ++focus_changes; }));
 	if (!events.Focus(tree, first) || !first.AsWidget<fyuu_ui::TextBox>().focused)
 		return 1;
 	if (!events.MoveFocus(tree, fyuu_ui::FocusDirection::Next) || !events.IsFocused(second) ||
@@ -40,10 +42,10 @@ int main() {
 	if (!events.CapturePointer(tree, modal_button) || events.CapturedPointerNodeIDs().size() != 1u)
 		return 6;
 	auto pointer_events = 0u;
-	events.Subscribe<fyuu_ui::PointerPressedEvent>(modal_button, [&pointer_events](auto& event) {
+	subscriptions.emplace_back(events.Subscribe<fyuu_ui::PointerPressedEvent>(modal_button, [&pointer_events](auto& event) {
 		++pointer_events;
 		event.handled = true;
-	});
+	}));
 	fyuu_ui::PointerPressedEvent pointer{
 	    {12.0f, 16.0f}, fyuu_ui::PointerButton::Left, 1u, false
 	};
@@ -51,23 +53,23 @@ int main() {
 	if (!pointer.handled || pointer_events != 1u)
 		return 7;
 	auto value_events = 0u;
-	events.Subscribe<fyuu_ui::ValueChangedEvent>(modal_button, [&value_events](auto& event) {
+	subscriptions.emplace_back(events.Subscribe<fyuu_ui::ValueChangedEvent>(modal_button, [&value_events](auto& event) {
 		if (std::get<float>(event.previous) == 1.0f &&
 		    std::get<float>(event.current) == 2.0f) {
 			++value_events;
 		}
-	});
+	}));
 	fyuu_ui::ValueChangedEvent value{1.0f, 2.0f};
 	events.Dispatch(tree, modal_button, value);
 	if (value_events != 1u)
 		return 8;
 	auto self_unsubscribe_calls = 0u;
-	std::uint64_t self_subscription = 0u;
+	fyuu_ui::SubscriptionHandle self_subscription;
 	self_subscription = events.Subscribe<fyuu_ui::ClickEvent>(
 		modal_button,
 		[&](fyuu_ui::ClickEvent&) {
 			++self_unsubscribe_calls;
-			events.Unsubscribe(modal_button.GetID(), self_subscription);
+			self_subscription.Reset();
 		}
 	);
 	fyuu_ui::ClickEvent click{};
@@ -179,5 +181,22 @@ int main() {
 	dialogs.Close(first_dialog.GetID());
 	if (dialogs.IsOpen() || !dialogs.AllowsInput(behind.GetID()))
 		return 27;
+
+	// Moving EventBus rebinds every live SubscriptionHandle without allocating a shared
+	// control block. Reset must therefore unsubscribe from the destination bus.
+	fyuu_ui::LogicalTree movable_tree{fyuu_ui::Overlay{}};
+	auto movable_button = movable_tree.GetRoot().AddChild(fyuu_ui::Button{"Move"});
+	auto source_bus = movable_tree.BuildEventBus();
+	auto moved_clicks = 0u;
+	auto moved_handle = source_bus.Subscribe<fyuu_ui::ClickEvent>(
+	    movable_button, [&moved_clicks](auto&) { ++moved_clicks; }
+	);
+	auto destination_bus = std::move(source_bus);
+	fyuu_ui::ClickEvent moved_click{{}};
+	destination_bus.Dispatch(movable_tree, movable_button, moved_click);
+	moved_handle.Reset();
+	destination_bus.Dispatch(movable_tree, movable_button, moved_click);
+	if (moved_clicks != 1u)
+		return 28;
 	return 0;
 }

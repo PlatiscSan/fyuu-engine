@@ -66,53 +66,12 @@ namespace fyuu_studio {
 		}
 	};
 
-	/// Owns the editable state of the active Studio document.
-	/// Command handlers will call MarkEdited and MarkSaved; close handling calls CanClose.
-	class StudioDocument {
-	private:
-		std::string m_title = "Untitled";
-		std::uint64_t m_revision = 0;
-		std::uint64_t m_saved_revision = 0;
-
-	public:
-		void Reset(std::string_view title) {
-			m_title = title;
-			m_revision = 0;
-			m_saved_revision = 0;
-		}
-
-		void MarkEdited() noexcept {
-			++m_revision;
-		}
-
-		void MarkSaved() noexcept {
-			m_saved_revision = m_revision;
-		}
-
-		bool Dirty() const noexcept {
-			return m_revision != m_saved_revision;
-		}
-
-		bool CanClose() const noexcept {
-			return !Dirty();
-		}
-
-		std::string_view Title() const noexcept {
-			return m_title;
-		}
-
-		std::uint64_t Revision() const noexcept {
-			return m_revision;
-		}
-	};
-
 	/// Owns services shared by StudioApplication and future panels.
 	/// Construction order guarantees Logger is destroyed before its borrowed StudioLogSink.
 	class StudioContext {
 	private:
 		StudioLogSink m_log_sink;
 		fyuu_engine::Logger m_logger;
-		StudioDocument m_document;
 
 	public:
 		StudioContext()
@@ -126,10 +85,6 @@ namespace fyuu_studio {
 
 		fyuu_engine::Logger& GetLogger() noexcept {
 			return m_logger;
-		}
-
-		decltype(auto) GetDocument(this auto&& self) noexcept {
-			return self.m_document;
 		}
 
 	};
@@ -161,52 +116,28 @@ namespace fyuu_studio {
 		/// Records the first successful Studio frame, then becomes the future UI update entry.
 		void Tick(fyuu_engine::Runtime& runtime) override {
 			if (!m_started) {
-				auto const& document = m_context->GetDocument();
-				auto message = std::format(
-					"Studio application started with document '{}' at revision {}",
-					document.Title(),
-					document.Revision()
-				);
 				m_context->GetLogger().Write(
 					fyuu_engine::LogLevel::Info,
 					"Studio",
-					message
+					"Studio application started"
 				);
 				m_started = true;
 			}
 			m_ui->DrainCommands(m_commands);
 			for (auto const command : m_commands) {
 				switch (command) {
-				case StudioCommand::DocumentEdited:
-					m_context->GetDocument().MarkEdited();
-					break;
 				case StudioCommand::NewDocument:
-					m_context->GetDocument().Reset("Untitled Scene");
 					m_ui->ResetDocument();
 					break;
 				case StudioCommand::SaveDocument:
-					m_context->GetDocument().MarkSaved();
 					m_context->GetLogger().Write(
 						fyuu_engine::LogLevel::Info,
 						"Studio",
-						"Active document marked as saved"
+						"Scene asset saving is not connected yet"
 					);
-					break;
-				case StudioCommand::SaveAndClose:
-					m_context->GetDocument().MarkSaved();
-					runtime.RequestStop();
-					break;
-				case StudioCommand::DiscardAndClose:
-					runtime.RequestStop();
 					break;
 				}
 			}
-			auto const& document = m_context->GetDocument();
-			m_ui->SetDocumentState(
-				document.Title(),
-				document.Revision(),
-				document.Dirty()
-			);
 			m_renderer->Submit(
 				m_ui->BuildDrawList(),
 				m_ui->GetLogicalWidth(),
@@ -216,17 +147,8 @@ namespace fyuu_studio {
 			);
 		}
 
-		/// Accepts the close request after recording it; document confirmation belongs here later.
+		/// Accepts the close request until asset-backed editing supplies real save state.
 		bool CloseRequested(fyuu_engine::Runtime&) override {
-			if (!m_context->GetDocument().CanClose()) {
-				m_ui->ShowCloseConfirmation();
-				m_context->GetLogger().Write(
-					fyuu_engine::LogLevel::Warning,
-					"Studio",
-					"Close request rejected because the active document has unsaved changes"
-				);
-				return false;
-			}
 			m_context->GetLogger().Write(
 				fyuu_engine::LogLevel::Info,
 				"Studio",
@@ -316,7 +238,6 @@ namespace fyuu_studio {
 			true
 		};
 		StudioContext context;
-		context.GetDocument().Reset("Untitled Scene");
 		StudioUI ui{ descriptor.width, descriptor.height, RenderBackendName(backend) };
 		fyuu_desktop::Platform platform{ descriptor, ui };
 		auto const& presentation_target = platform.GetPresentationTarget();

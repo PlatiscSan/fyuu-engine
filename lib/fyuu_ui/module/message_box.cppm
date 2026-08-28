@@ -1,6 +1,7 @@
 module;
 #include <version>
 #if !defined(__cpp_lib_modules)
+#include <vector>
 #include <string>
 #include <cstdint>
 #include <string_view>
@@ -24,6 +25,7 @@ export namespace fyuu_ui {
 		std::uint64_t m_content_id = 0u;
 		std::uint64_t m_text_id = 0u;
 		std::uint64_t m_button_id = 0u;
+		std::vector<SubscriptionHandle> m_subscriptions;
 		bool m_open = false;
 		bool m_close_pending = false;
 

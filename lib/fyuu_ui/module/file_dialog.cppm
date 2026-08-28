@@ -57,6 +57,7 @@ export namespace fyuu_ui {
 			std::uint64_t file_name_id = 0u;
 			std::vector<std::uint64_t> button_ids;
 			std::vector<std::pair<std::uint64_t, std::filesystem::path>> visible_entries;
+			std::vector<SubscriptionHandle> subscriptions;
 			PendingAction pending = PendingAction::None;
 			std::filesystem::path pending_path;
 		};

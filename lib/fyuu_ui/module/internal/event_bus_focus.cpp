@@ -1,6 +1,8 @@
 module;
 #include <version>
 #if !defined(__cpp_lib_modules)
+#include <memory>
+#include <utility>
 #include <vector>
 #include <algorithm>
 #include <cstdint>
@@ -14,6 +16,121 @@ import std;
 import :event_bus;
 
 namespace fyuu_ui {
+	void EventBus::Attach(PassKey<SubscriptionHandle>, SubscriptionHandle* handle) noexcept {
+		handle->SetLinks(PassKey<EventBus>{}, nullptr, m_handles);
+		if (m_handles != nullptr)
+			m_handles->SetLinks(PassKey<EventBus>{}, handle, m_handles->Next(PassKey<EventBus>{}));
+		m_handles = handle;
+	}
+
+	void EventBus::Detach(PassKey<SubscriptionHandle>, SubscriptionHandle* handle) noexcept {
+		auto* previous = handle->Previous(PassKey<EventBus>{});
+		auto* next = handle->Next(PassKey<EventBus>{});
+		if (previous != nullptr)
+			previous->SetLinks(PassKey<EventBus>{}, previous->Previous(PassKey<EventBus>{}), next);
+		else
+			m_handles = next;
+		if (next != nullptr)
+			next->SetLinks(PassKey<EventBus>{}, previous, next->Next(PassKey<EventBus>{}));
+		handle->SetLinks(PassKey<EventBus>{}, nullptr, nullptr);
+	}
+
+	void EventBus::Replace(
+	    PassKey<SubscriptionHandle>,
+	    SubscriptionHandle* old_handle,
+	    SubscriptionHandle* new_handle
+	) noexcept {
+		auto* previous = old_handle->Previous(PassKey<EventBus>{});
+		auto* next = old_handle->Next(PassKey<EventBus>{});
+		new_handle->SetLinks(PassKey<EventBus>{}, previous, next);
+		if (previous != nullptr)
+			previous->SetLinks(
+			    PassKey<EventBus>{},
+			    previous->Previous(PassKey<EventBus>{}),
+			    new_handle
+			);
+		else
+			m_handles = new_handle;
+		if (next != nullptr)
+			next->SetLinks(PassKey<EventBus>{}, new_handle, next->Next(PassKey<EventBus>{}));
+		old_handle->SetLinks(PassKey<EventBus>{}, nullptr, nullptr);
+	}
+
+	EventBus::~EventBus() noexcept {
+		for (auto* handle = m_handles; handle != nullptr;) {
+			auto* next = handle->Next(PassKey<EventBus>{});
+			handle->Rebind(PassKey<EventBus>{}, nullptr);
+			handle->SetLinks(PassKey<EventBus>{}, nullptr, nullptr);
+			handle = next;
+		}
+	}
+
+	EventBus::EventBus(EventBus&& other) noexcept :
+	    m_entries(std::move(other.m_entries)), m_index(std::move(other.m_index)),
+	    m_next_subscription_id(other.m_next_subscription_id),
+	    m_dispatch_depth(other.m_dispatch_depth), m_focused(std::move(other.m_focused)),
+	    m_modal_scopes(std::move(other.m_modal_scopes)),
+	    m_pointer_capture_node_id(other.m_pointer_capture_node_id),
+	    m_handles(std::exchange(other.m_handles, nullptr)) {
+		for (
+		    auto* handle = m_handles; handle != nullptr; handle = handle->Next(PassKey<EventBus>{})
+		)
+			handle->Rebind(PassKey<EventBus>{}, this);
+	}
+
+	EventBus& EventBus::operator=(EventBus&& other) noexcept {
+		if (this == &other)
+			return *this;
+		this->~EventBus();
+		std::construct_at(this, std::move(other));
+		return *this;
+	}
+
+	SubscriptionHandle::SubscriptionHandle(
+	    PassKey<EventBus>,
+	    EventBus* bus,
+	    std::uint64_t subscription_id
+	) noexcept : m_bus(bus), m_subscription_id(subscription_id) {
+		m_bus->Attach(PassKey<SubscriptionHandle>{}, this);
+	}
+
+	SubscriptionHandle::~SubscriptionHandle() noexcept {
+		Reset();
+	}
+
+	SubscriptionHandle& SubscriptionHandle::operator=(SubscriptionHandle&& other) noexcept {
+		if (this == &other)
+			return *this;
+		Reset();
+		m_bus = other.m_bus;
+		m_subscription_id = other.m_subscription_id;
+		if (m_bus != nullptr) {
+			m_bus->Replace(PassKey<SubscriptionHandle>{}, &other, this);
+			other.m_bus = nullptr;
+		}
+		return *this;
+	}
+
+	SubscriptionHandle::SubscriptionHandle(SubscriptionHandle&& other) noexcept :
+	    m_bus(other.m_bus), m_subscription_id(other.m_subscription_id) {
+		if (m_bus != nullptr) {
+			m_bus->Replace(PassKey<SubscriptionHandle>{}, &other, this);
+			other.m_bus = nullptr;
+		}
+	}
+
+	void SubscriptionHandle::Reset() noexcept {
+		if (m_bus == nullptr)
+			return;
+		auto* bus = std::exchange(m_bus, nullptr);
+		bus->Detach(PassKey<SubscriptionHandle>{}, this);
+		bus->Unsubscribe(m_subscription_id);
+	}
+
+	EventBus LogicalTree::BuildEventBus() const {
+		return EventBus{PassKey<LogicalTree>{}};
+	}
+
 	bool EventBus::IsFocusable(LogicalTree const& tree, std::uint64_t node_id) const noexcept {
 		// LogicalTree owns the policy that maps enabled/editable controls to a
 		// focusable result; EventBus only owns routing state.
@@ -49,11 +166,7 @@ namespace fyuu_ui {
 		m_focused.clear();
 	}
 
-	bool EventBus::Focus(
-	    PassKey<EventBus> key,
-	    LogicalTree& tree,
-	    std::uint64_t node_id
-	) {
+	bool EventBus::Focus(PassKey<EventBus> key, LogicalTree& tree, std::uint64_t node_id) {
 		// Attachment is checked independently from focusability: detached nodes must
 		// never enter focus state even if their control type would normally qualify.
 		if (!tree.IsAttached(PassKey<EventBus>{}, node_id) ||
@@ -72,11 +185,7 @@ namespace fyuu_ui {
 		return true;
 	}
 
-	bool EventBus::Move(
-	    PassKey<EventBus> key,
-	    LogicalTree& tree,
-	    FocusDirection direction
-	) {
+	bool EventBus::Move(PassKey<EventBus> key, LogicalTree& tree, FocusDirection direction) {
 		auto const candidates = BuildFocusOrder(tree);
 		if (candidates.empty()) {
 			Clear(key, tree);
@@ -90,10 +199,12 @@ namespace fyuu_ui {
 		std::uint64_t target;
 		if (direction == FocusDirection::Next) {
 			target = current == candidates.end() || ++current == candidates.end() ?
-			    candidates.front() : *current;
+			    candidates.front() :
+			    *current;
 		} else {
 			target = current == candidates.begin() || current == candidates.end() ?
-			    candidates.back() : *--current;
+			    candidates.back() :
+			    *--current;
 		}
 		return Focus(key, tree, target);
 	}
@@ -145,8 +256,7 @@ namespace fyuu_ui {
 		std::erase_if(m_modal_scopes, [subtree](std::uint64_t id) {
 			return std::ranges::find(subtree, id) != subtree.end();
 		});
-		if (m_focused.empty() ||
-		    std::ranges::find(subtree, m_focused.front()) == subtree.end()) {
+		if (m_focused.empty() || std::ranges::find(subtree, m_focused.front()) == subtree.end()) {
 			return;
 		}
 		// BuildFocusOrder must run while LogicalTree still has the old links. The old

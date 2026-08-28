@@ -55,20 +55,20 @@ namespace fyuu_ui {
 		button_layout.horizontal_alignment = Alignment::End;
 		button_layout.vertical_alignment = Alignment::End;
 		button.SetLayout(button_layout);
-		m_events->Subscribe<ClickEvent>(button,
+		m_subscriptions.emplace_back(m_events->Subscribe<ClickEvent>(button,
 			[this](ClickEvent& event) {
 				m_close_pending = true;
 				event.handled = true;
 			}
-		);
-		m_events->Subscribe<KeyDownEvent>(button, [this](KeyDownEvent& event) {
+		));
+		m_subscriptions.emplace_back(m_events->Subscribe<KeyDownEvent>(button, [this](KeyDownEvent& event) {
 			// Enter and Escape are content-level choices; DialogHost only guarantees
 			// that the key cannot escape to the obscured window beneath this one.
 			if (event.key == Key::Enter || event.key == Key::Escape) {
 				m_close_pending = true;
 				event.handled = true;
 			}
-		});
+		}));
 		m_host->Activate(m_window_id);
 	}
 
@@ -84,6 +84,7 @@ namespace fyuu_ui {
 			return;
 		}
 		auto const window_id = m_window_id;
+		m_subscriptions.clear();
 		m_window_id = 0u;
 		m_content_id = 0u;
 		m_text_id = 0u;

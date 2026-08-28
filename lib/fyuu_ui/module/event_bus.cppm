@@ -22,6 +22,51 @@ import :logical_tree;
 
 export namespace fyuu_ui {
 	enum class FocusDirection : std::uint8_t { Next, Previous };
+	class EventBus;
+
+	/// Move-only ownership of one EventBus subscription. Destroying or resetting the
+	/// handle unregisters the callback; moving transfers that responsibility.
+	class SubscriptionHandle final {
+	private:
+		EventBus* m_bus = nullptr;
+		std::uint64_t m_subscription_id = 0u;
+		SubscriptionHandle* m_previous = nullptr;
+		SubscriptionHandle* m_next = nullptr;
+
+	public:
+		SubscriptionHandle() noexcept = default;
+		SubscriptionHandle(
+		    PassKey<EventBus>,
+		    EventBus* bus,
+		    std::uint64_t subscription_id
+		) noexcept;
+		~SubscriptionHandle() noexcept;
+		SubscriptionHandle(SubscriptionHandle const&) = delete;
+		SubscriptionHandle& operator=(SubscriptionHandle const&) = delete;
+		SubscriptionHandle(SubscriptionHandle&& other) noexcept;
+		SubscriptionHandle& operator=(SubscriptionHandle&& other) noexcept;
+		void Reset() noexcept;
+		explicit operator bool() const noexcept {
+			return m_bus != nullptr;
+		}
+		[[nodiscard]] SubscriptionHandle* Next(PassKey<EventBus>) const noexcept {
+			return m_next;
+		}
+		[[nodiscard]] SubscriptionHandle* Previous(PassKey<EventBus>) const noexcept {
+			return m_previous;
+		}
+		void SetLinks(
+		    PassKey<EventBus>,
+		    SubscriptionHandle* previous,
+		    SubscriptionHandle* next
+		) noexcept {
+			m_previous = previous;
+			m_next = next;
+		}
+		void Rebind(PassKey<EventBus>, EventBus* bus) noexcept {
+			m_bus = bus;
+		}
+	};
 
 	/// Owns routed-event handlers and all state needed while routing input. It keeps
 	/// no LogicalTree pointer: every operation receives the current tree explicitly.
@@ -126,6 +171,7 @@ export namespace fyuu_ui {
 		std::vector<std::uint64_t> m_focused;
 		std::vector<std::uint64_t> m_modal_scopes;
 		std::uint64_t m_pointer_capture_node_id = 0u;
+		SubscriptionHandle* m_handles = nullptr;
 
 		[[nodiscard]] bool IsFocusable(
 		    LogicalTree const& tree,
@@ -151,12 +197,9 @@ export namespace fyuu_ui {
 		void FinishDispatch() noexcept {
 			--m_dispatch_depth;
 			if (m_dispatch_depth == 0u) {
-				std::erase_if(
-					m_entries, 
-					[](auto const& item) {
-						return !item.second.IsActive();
-					}
-				);
+				std::erase_if(m_entries, [](auto const& item) {
+					return !item.second.IsActive();
+				});
 			}
 		}
 
@@ -196,13 +239,20 @@ export namespace fyuu_ui {
 		}
 
 	public:
+		void Attach(PassKey<SubscriptionHandle>, SubscriptionHandle* handle) noexcept;
+		void Detach(PassKey<SubscriptionHandle>, SubscriptionHandle* handle) noexcept;
+		void Replace(
+		    PassKey<SubscriptionHandle>,
+		    SubscriptionHandle* old_handle,
+		    SubscriptionHandle* new_handle
+		) noexcept;
 		explicit EventBus(PassKey<LogicalTree>) noexcept {
 		}
-		~EventBus() noexcept = default;
+		~EventBus() noexcept;
 		EventBus(EventBus const&) = delete;
 		EventBus& operator=(EventBus const&) = delete;
-		EventBus(EventBus&&) noexcept = default;
-		EventBus& operator=(EventBus&&) noexcept = default;
+		EventBus(EventBus&& other) noexcept;
+		EventBus& operator=(EventBus&& other) noexcept;
 
 		bool Focus(LogicalTree& tree, LogicalNode const& node) {
 			auto const before = m_focused;
@@ -275,7 +325,7 @@ export namespace fyuu_ui {
 		}
 
 		template <RoutedEvent Event, class Handler>
-		std::uint64_t Subscribe(
+		[[nodiscard]] SubscriptionHandle Subscribe(
 		    std::uint64_t node_id,
 		    Handler&& handler,
 		    RoutingStrategy routes = Event::Routing,
@@ -313,11 +363,11 @@ export namespace fyuu_ui {
 				m_entries.erase(subscription_id);
 				throw;
 			}
-			return subscription_id;
+			return SubscriptionHandle{PassKey<EventBus>{}, this, subscription_id};
 		}
 
 		template <RoutedEvent Event, class Handler>
-		std::uint64_t Subscribe(
+		[[nodiscard]] SubscriptionHandle Subscribe(
 		    LogicalNode const& node,
 		    Handler&& handler,
 		    RoutingStrategy routes = Event::Routing,
@@ -382,10 +432,11 @@ export namespace fyuu_ui {
 			Dispatch(tree, source.GetID(), event);
 		}
 
-		void Unsubscribe(std::uint64_t node_id, std::uint64_t subscription_id) noexcept {
+		void Unsubscribe(std::uint64_t subscription_id) noexcept {
 			auto const entry = m_entries.find(subscription_id);
-			if (entry == m_entries.end() || entry->second.GetNodeID() != node_id)
+			if (entry == m_entries.end())
 				return;
+			auto const node_id = entry->second.GetNodeID();
 			if (auto const indexed = m_index.find(node_id); indexed != m_index.end()) {
 				for (auto& [event_id, subscriptions] : indexed->second)
 					std::erase(subscriptions, subscription_id);
@@ -416,8 +467,4 @@ export namespace fyuu_ui {
 			m_index.erase(indexed);
 		}
 	};
-
-	inline EventBus LogicalTree::BuildEventBus() const {
-		return EventBus{PassKey<LogicalTree>{}};
-	}
 } // namespace fyuu_ui
