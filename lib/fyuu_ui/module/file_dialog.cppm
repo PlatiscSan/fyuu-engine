@@ -19,7 +19,7 @@ import :dialog_host;
 import :message_box;
 
 export namespace fyuu_ui {
-	enum class FileDialogMode { Open, Save };
+	enum class FileDialogMode { Open, Save, SelectDirectory };
 
 	/// One human-readable file type and its extensions without leading dots.
 	/// An empty extension list accepts every regular file.
@@ -42,7 +42,16 @@ export namespace fyuu_ui {
 	/// after input dispatch so callbacks are never destroyed while they are running.
 	class FileDialogue final {
 	private:
-		enum class PendingAction { None, Navigate, Select, Accept, Cancel };
+		enum class PendingAction {
+			None,
+			Navigate,
+			Select,
+			BeginCreateDirectory,
+			CreateDirectory,
+			CancelCreateDirectory,
+			Accept,
+			Cancel
+		};
 
 		struct Session {
 			FileDialogMode mode = FileDialogMode::Open;
@@ -54,12 +63,14 @@ export namespace fyuu_ui {
 			std::uint64_t window_id = 0u;
 			std::uint64_t content_id = 0u;
 			std::uint64_t path_id = 0u;
+			std::uint64_t directory_name_id = 0u;
 			std::uint64_t file_name_id = 0u;
 			std::vector<std::uint64_t> button_ids;
 			std::vector<std::pair<std::uint64_t, std::filesystem::path>> visible_entries;
 			std::vector<SubscriptionHandle> subscriptions;
 			PendingAction pending = PendingAction::None;
 			std::filesystem::path pending_path;
+			bool creating_directory = false;
 		};
 
 		DialogHost* m_host;
@@ -91,6 +102,10 @@ export namespace fyuu_ui {
 		    std::function<void(std::filesystem::path const&)> callback
 		);
 		void ShowSave(
+		    FileDialogOptions const& options,
+		    std::function<void(std::filesystem::path const&)> callback
+		);
+		void ShowSelectDirectory(
 		    FileDialogOptions const& options,
 		    std::function<void(std::filesystem::path const&)> callback
 		);

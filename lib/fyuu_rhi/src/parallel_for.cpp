@@ -1,4 +1,3 @@
-#include <version>
 #include <cstddef>
 #include <tbb/parallel_for.h>
 

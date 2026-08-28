@@ -55,23 +55,23 @@ namespace fyuu_asset::execution::detail {
 		static TaskQueue tasks;
 		static std::mutex mutex;
 		static std::condition_variable_any condition;
-		static std::jthread worker(
-			[](std::stop_token token) noexcept {
-				while (!token.stop_requested()) {
-					AssetTask task;
-					{
-						std::unique_lock lock(mutex);
-						condition.wait(lock, token, [&] { return !tasks.empty(); });
-						if (tasks.empty()) {
-							return;
-						}
-						task = std::move(tasks.front());
-						tasks.pop_front();
+		static std::jthread worker([](std::stop_token token) noexcept {
+			while (!token.stop_requested()) {
+				AssetTask task;
+				{
+					std::unique_lock lock(mutex);
+					condition.wait(lock, token, [&] {
+						return !tasks.empty();
+					});
+					if (tasks.empty()) {
+						return;
 					}
-					task(token);
+					task = std::move(tasks.front());
+					tasks.pop_front();
 				}
+				task(token);
 			}
-		);
+		});
 
 		{
 			std::lock_guard lock(mutex);
@@ -79,7 +79,7 @@ namespace fyuu_asset::execution::detail {
 		}
 		condition.notify_one();
 	}
-}
+} // namespace fyuu_asset::execution::detail
 
 namespace fyuu_asset::execution {
 
@@ -87,12 +87,12 @@ namespace fyuu_asset::execution {
 	/// the load on a worker thread and completes the receiver with set_value /
 	/// set_error / set_stopped.
 	export template <class Receiver> class AssetLoadOperation {
-private:
+	private:
 		friend class AssetLoader;
 		Receiver m_receiver;
 
-		explicit AssetLoadOperation(Receiver&& receiver) noexcept
-			: m_receiver(std::move(receiver)) {
+		explicit AssetLoadOperation(Receiver&& receiver) noexcept :
+		    m_receiver(std::move(receiver)) {
 		}
 
 	public:
@@ -103,14 +103,15 @@ private:
 		void start() noexcept {
 #if defined(__cpp_lib_senders) && __cpp_lib_senders >= 202406L
 			detail::AssetTask task = [receiver = std::move(m_receiver)](
-				std::stop_token token
-			) mutable noexcept {
+			                             std::stop_token token
+			                         ) mutable noexcept {
 				auto stopped = token.stop_requested();
 				if constexpr (requires {
-					std::execution::get_stop_token(std::execution::get_env(receiver));
-				}) {
-					stopped = stopped || std::execution::get_stop_token(
-						std::execution::get_env(receiver)).stop_requested();
+					              std::execution::get_stop_token(std::execution::get_env(receiver));
+				              }) {
+					stopped = stopped ||
+					    std::execution::get_stop_token(std::execution::get_env(receiver))
+					        .stop_requested();
 				}
 				if (stopped) {
 					std::execution::set_stopped(std::move(receiver));
@@ -119,29 +120,26 @@ private:
 				std::execution::set_value(std::move(receiver));
 			};
 #else
-			detail::AssetTask task = [receiver = std::move(m_receiver)](
-				std::stop_token token
-			) mutable noexcept {
-				auto stopped = token.stop_requested();
-				if constexpr (requires { receiver.get_env().get_stop_token(); }) {
-					stopped = stopped || receiver.get_env().get_stop_token().stop_requested();
-				}
-				if (stopped) {
-					std::move(receiver).set_stopped();
-					return;
-				}
-				std::move(receiver).set_value();
-			};
+			detail::AssetTask task =
+			    [receiver = std::move(m_receiver)](std::stop_token token) mutable noexcept {
+				    auto stopped = token.stop_requested();
+				    if constexpr (requires { receiver.get_env().get_stop_token(); }) {
+					    stopped = stopped || receiver.get_env().get_stop_token().stop_requested();
+				    }
+				    if (stopped) {
+					    std::move(receiver).set_stopped();
+					    return;
+				    }
+				    std::move(receiver).set_value();
+			    };
 #endif
 			detail::ScheduleAssetTask(std::move(task));
 		}
-
-
 	};
 
 	/// Sender produced by AssetScheduler::schedule().
 	export class AssetLoader {
-private:
+	private:
 		friend class AssetScheduler;
 
 	public:
@@ -150,10 +148,9 @@ private:
 #if defined(__cpp_lib_senders) && __cpp_lib_senders >= 202406L
 		using sender_concept = std::execution::sender_t;
 		using completion_signatures = std::execution::completion_signatures<
-			std::execution::set_value_t(),
-			std::execution::set_error_t(std::exception_ptr),
-			std::execution::set_stopped_t()
-		>;
+		    std::execution::set_value_t(),
+		    std::execution::set_error_t(std::exception_ptr),
+		    std::execution::set_stopped_t()>;
 #endif
 		template <class T>
 		[[nodiscard]] typename Asset<T>::ManagedAsset Load(UUID const& id) const {
@@ -166,35 +163,31 @@ private:
 			structure_name = std::meta::identifier_of(^^T);
 #else
 			structure_name = boost::typeindex::type_id<T>().pretty_name();
-			if (auto position = structure_name.rfind("::");
-				position != std::string::npos) {
+			if (auto position = structure_name.rfind("::"); position != std::string::npos) {
 				structure_name.erase(0, position + 2);
 			}
-			if (auto position = structure_name.find('[');
-				position != std::string::npos) {
+			if (auto position = structure_name.find('['); position != std::string::npos) {
 				structure_name.erase(position);
 			}
 #endif
-			std::erase_if(
-				structure_name,
-				[](char character) {
-					return !((character >= 'a' && character <= 'z') ||
-						(character >= 'A' && character <= 'Z') ||
-						(character >= '0' && character <= '9') ||
-						character == '_');
-				}
-			);
+			std::erase_if(structure_name, [](char character) {
+				return !(
+				    (character >= 'a' && character <= 'z') ||
+				    (character >= 'A' && character <= 'Z') ||
+				    (character >= '0' && character <= '9') || character == '_'
+				);
+			});
 
-			auto path = GetPath(
-				std::filesystem::path{ structure_name } / (id.ToString() + ".json")
-			);
+			auto path = GetPath(std::filesystem::path{structure_name} / (id.ToString() + ".json"));
 			return Asset<T>::CreateWithID(id, T::Deserialize(path));
 		}
 
 		template <class Receiver>
-		[[nodiscard]] AssetLoadOperation<std::remove_cvref_t<Receiver>> connect(Receiver&& receiver) && noexcept {
+		[[nodiscard]] AssetLoadOperation<std::remove_cvref_t<Receiver>> connect(
+		    Receiver&& receiver
+		) && noexcept {
 			return AssetLoadOperation<std::remove_cvref_t<Receiver>>{
-				std::forward<Receiver>(receiver)
+			    std::forward<Receiver>(receiver)
 			};
 		}
 	};
@@ -214,9 +207,6 @@ private:
 		}
 
 		std::strong_ordering operator<=>(AssetScheduler const&) const noexcept = default;
-
-
 	};
-
 
 } // namespace fyuu_asset::execution

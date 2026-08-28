@@ -12,5 +12,6 @@ export namespace fyuu_ui {
 		float minimum_second = 0.0f;
 		float spacing = 0.0f;
 		bool resizable = true;
+		InteractionState interaction = InteractionState::Normal;
 	};
 } // namespace fyuu_ui

@@ -102,7 +102,19 @@ namespace fyuu_ui::detail {
 			divider.position.y += first;
 			divider.size.height = value.spacing;
 		}
-		output.Append(RectangleVisual{divider, theme.divider});
+		Color divider_color;
+		switch (value.interaction) {
+			case InteractionState::Normal:
+				divider_color = theme.divider;
+				break;
+			case InteractionState::Hovered:
+				divider_color = theme.slider_thumb.hovered.background;
+				break;
+			case InteractionState::Pressed:
+				divider_color = theme.slider_thumb.pressed.background;
+				break;
+		}
+		output.Append(RectangleVisual{divider, divider_color});
 		return output;
 	}
 } // namespace fyuu_ui::detail

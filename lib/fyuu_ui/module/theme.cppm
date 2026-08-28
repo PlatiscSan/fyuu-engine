@@ -88,6 +88,8 @@ export namespace fyuu_ui {
 		float window_non_client_button_font_size = 14.0f;
 		float window_non_client_button_width = 36.0f;
 		float window_resize_border = 5.0f;
+		float display_font_size = 28.0f;
+		float heading_font_size = 18.0f;
 	};
 
 	/// Creates FyuuUI's built-in dark theme. Callers may copy and modify the

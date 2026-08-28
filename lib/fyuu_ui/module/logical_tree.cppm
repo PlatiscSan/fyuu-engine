@@ -8,6 +8,7 @@ module;
 #include <algorithm>
 #include <functional>
 #include <string>
+#include <stdexcept>
 #include <cstdint>
 #include <type_traits>
 #include <unordered_map>
@@ -319,12 +320,37 @@ export namespace fyuu_ui {
 
 		template <class WidgetType>
 		WidgetType& AsWidget(PassKey<LogicalNode>, std::uint64_t node_id) {
-			return std::get<WidgetType>(std::get<Widget>(m_nodes[node_id]->content));
+			auto* widget = std::get_if<Widget>(&m_nodes[node_id]->content);
+			if (widget == nullptr) {
+				throw std::logic_error{
+					"Logical node " + std::to_string(node_id) + " is not a widget"
+				};
+			}
+			auto* value = std::get_if<WidgetType>(widget);
+			if (value == nullptr) {
+				throw std::logic_error{
+					"Logical node " + std::to_string(node_id) + " has widget variant index " +
+					std::to_string(widget->index())
+				};
+			}
+			return *value;
 		}
 
 		template <class ContainerType>
 		ContainerType& AsContainer(PassKey<LogicalNode>, std::uint64_t node_id) {
-			return std::get<ContainerType>(std::get<Container>(m_nodes[node_id]->content));
+			auto* container = std::get_if<Container>(&m_nodes[node_id]->content);
+			if (container == nullptr) {
+				throw std::logic_error{
+					"Logical node " + std::to_string(node_id) + " is not a container"
+				};
+			}
+			auto* value = std::get_if<ContainerType>(container);
+			if (value == nullptr) {
+				throw std::logic_error{
+					"Logical node " + std::to_string(node_id) + " has a different container type"
+				};
+			}
+			return *value;
 		}
 
 		template <class ContainerType>

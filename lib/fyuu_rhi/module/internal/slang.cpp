@@ -49,8 +49,16 @@ namespace fyuu_rhi::pipeline {
 	struct SlangPipelineBinding {
 		std::string name;
 		ResourceFlags flags;
+		/// Backend-neutral binding consumed by the public RHI resource-group API.
 		std::uint32_t slot = 0;
 		std::uint32_t space = 0;
+		/// Native resource register. For a combined binding this is the texture
+		/// register and is independent from sampler_slot.
+		std::uint32_t resource_slot = 0;
+		std::uint32_t resource_space = 0;
+		/// Native sampler register used by sampler and combined bindings.
+		std::uint32_t sampler_slot = 0;
+		std::uint32_t sampler_space = 0;
 		std::uint32_t count = 1;
 		std::uint32_t visibility = 0;
 	};
@@ -97,22 +105,6 @@ namespace fyuu_rhi::pipeline {
 				if (combined && entry.count != 1u) {
 					throw std::invalid_argument(
 						"Combined texture/sampler binding arrays are not supported"
-					);
-				}
-				if (
-					combined &&
-					std::ranges::any_of(
-						interface.bindings,
-						[&entry](auto const& candidate) {
-							return
-								&candidate != &entry &&
-								candidate.space == entry.space &&
-								candidate.slot == entry.slot + 1u;
-						}
-					)
-				) {
-					throw std::invalid_argument(
-						"A combined texture/sampler binding reserves its following slot"
 					);
 				}
 				return BindingMetadata{
@@ -174,7 +166,7 @@ namespace fyuu_rhi::shader {
 	private:
 		/// Bumped whenever the on-disk cache format changes; older entries are
 		/// ignored instead of being parsed with a mismatched schema.
-		static constexpr std::uint32_t CACHE_SCHEMA_VERSION = 4u;
+		static constexpr std::uint32_t CACHE_SCHEMA_VERSION = 5u;
 
 		/// Per-entry-point compiled bytecode, in program order.
 		std::vector<SlangCompiledEntryPoint> m_entry_points;
@@ -423,6 +415,10 @@ namespace fyuu_rhi::shader {
 						{ "flags", std::move(flags) },
 						{ "binding", entry.slot },
 						{ "space", entry.space },
+						{ "resource_binding", entry.resource_slot },
+						{ "resource_space", entry.resource_space },
+						{ "sampler_binding", entry.sampler_slot },
+						{ "sampler_space", entry.sampler_space },
 						{ "count", entry.count },
 						{ "visibility", entry.visibility }
 					}
@@ -474,6 +470,10 @@ namespace fyuu_rhi::shader {
 				entry.flags.Assign(words);
 				entry.slot = item.at("binding").get<std::uint32_t>();
 				entry.space = item.at("space").get<std::uint32_t>();
+				entry.resource_slot = item.at("resource_binding").get<std::uint32_t>();
+				entry.resource_space = item.at("resource_space").get<std::uint32_t>();
+				entry.sampler_slot = item.at("sampler_binding").get<std::uint32_t>();
+				entry.sampler_space = item.at("sampler_space").get<std::uint32_t>();
 				entry.count = item.at("count").get<std::uint32_t>();
 				entry.visibility = item.at("visibility").get<std::uint32_t>();
 				result.bindings.push_back(std::move(entry));
@@ -616,6 +616,60 @@ namespace fyuu_rhi::shader {
 			return flags;
 		}
 
+		static bool HasCategory(
+			slang::VariableLayoutReflection* variable,
+			slang::ParameterCategory category
+		) {
+			for (unsigned index = 0u; index < variable->getCategoryCount(); ++index) {
+				if (variable->getCategoryByIndex(index) == category) {
+					return true;
+				}
+			}
+			return false;
+		}
+
+		static std::uint32_t BindingSlot(
+			slang::VariableLayoutReflection* variable,
+			slang::ParameterCategory category,
+			std::uint32_t fallback
+		) {
+			if (!HasCategory(variable, category)) {
+				return fallback;
+			}
+			return CheckedUint32(
+				variable->getOffset(category),
+				"resource binding"
+			);
+		}
+
+		static std::uint32_t BindingSpace(
+			slang::VariableLayoutReflection* variable,
+			slang::ParameterCategory category,
+			std::uint32_t fallback
+		) {
+			if (!HasCategory(variable, category)) {
+				return fallback;
+			}
+			return CheckedUint32(
+				variable->getBindingSpace(category),
+				"resource binding space"
+			);
+		}
+
+		static slang::ParameterCategory ResourceCategory(ResourceFlags const& flags) {
+			using Bits = ResourceFlagBits;
+			if (flags.Test(Bits::UniformBuffer)) {
+				return slang::ParameterCategory::ConstantBuffer;
+			}
+			if (
+				flags.Test(Bits::StorageBuffer) ||
+				flags.Test(Bits::StorageBinding)
+			) {
+				return slang::ParameterCategory::UnorderedAccess;
+			}
+			return slang::ParameterCategory::ShaderResource;
+		}
+
 		// Reflects a varying (vertex input or fragment output): recursively
 		// descends struct fields and records the semantic name/index + location
 		// needed by backends to build the vertex input layout / render targets.
@@ -679,14 +733,55 @@ namespace fyuu_rhi::shader {
 				if (flags.None()) {
 					continue;
 				}
+				auto slot = CheckedUint32(
+					variable->getBindingIndex(),
+					"resource binding"
+				);
+				auto space = CheckedUint32(
+					variable->getBindingSpace(),
+					"resource binding space"
+				);
+				auto resource_category = ResourceCategory(flags);
+				auto resource_slot = BindingSlot(
+					variable,
+					resource_category,
+					slot
+				);
+				auto resource_space = BindingSpace(
+					variable,
+					resource_category,
+					space
+				);
+				auto sampler_slot = BindingSlot(
+					variable,
+					slang::ParameterCategory::SamplerState,
+					slot
+				);
+				auto sampler_space = BindingSpace(
+					variable,
+					slang::ParameterCategory::SamplerState,
+					space
+				);
+				if (
+					flags.Test(ResourceFlagBits::TextureBinding) &&
+					flags.Test(ResourceFlagBits::SamplerBinding) &&
+					!HasCategory(variable, slang::ParameterCategory::DescriptorTableSlot)
+				) {
+					slot = resource_slot;
+					space = resource_space;
+				}
 				result.bindings.push_back(
 					{
-						variable->getName() ? variable->getName() : "",
-						std::move(flags),
-						variable->getBindingIndex(),
-						variable->getBindingSpace(),
-						BindingCount(variable->getTypeLayout()),
-						visibility
+						.name = variable->getName() ? variable->getName() : "",
+						.flags = std::move(flags),
+						.slot = slot,
+						.space = space,
+						.resource_slot = resource_slot,
+						.resource_space = resource_space,
+						.sampler_slot = sampler_slot,
+						.sampler_space = sampler_space,
+						.count = BindingCount(variable->getTypeLayout()),
+						.visibility = visibility
 					}
 				);
 			}

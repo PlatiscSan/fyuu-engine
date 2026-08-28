@@ -51,6 +51,12 @@ export namespace fyuu_ui {
 		HitTestRole hit_test_role = HitTestRole::Content;
 	};
 
+	/// Marks the application-owned texture surface reserved by SceneView.
+	struct SceneTextureVisual {
+		Rect bounds;
+		Color fallback;
+	};
+
 	/// A vertical two-stop gradient rectangle.
 	struct GradientRectangleVisual {
 		Rect bounds;
@@ -108,6 +114,7 @@ export namespace fyuu_ui {
 	/// Closed set of retained visual primitives emitted by FyuuUI controls.
 	using Visual = std::variant<
 		RectangleVisual,
+		SceneTextureVisual,
 		GradientRectangleVisual,
 		LineVisual,
 		HitTestVisual,
@@ -132,6 +139,11 @@ export namespace fyuu_ui {
 	struct DrawRectangleCommand {
 		Rect bounds;
 		Color fill;
+	};
+
+	struct DrawSceneTextureCommand {
+		Rect bounds;
+		Color fallback;
 	};
 
 	struct DrawGradientRectangleCommand {
@@ -167,6 +179,7 @@ export namespace fyuu_ui {
 		PushClipCommand,
 		PopClipCommand,
 		DrawRectangleCommand,
+		DrawSceneTextureCommand,
 		DrawGradientRectangleCommand,
 		DrawLineCommand,
 		DrawTextCommand

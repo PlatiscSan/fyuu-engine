@@ -3,11 +3,13 @@ module;
 #if !defined(__cpp_lib_modules)
 #include <cstddef>
 #include <limits>
+#include <string>
 
 #include <cstdint>
 #include <atomic>
 
 #include <optional>
+#include <filesystem>
 
 #include <format>
 #endif // !defined(__cpp_lib_modules)
@@ -221,6 +223,32 @@ namespace fyuu_desktop {
 			Release();
 			throw fyuu_engine::Error{ fyuu_engine::Result::PlatformError, message };
 		}
+		int logical_width = 0;
+		int logical_height = 0;
+		if (!SDL_GetWindowSize(m_window, &logical_width, &logical_height)) {
+			auto const message = std::format("SDL window size query failed: {}", SDL_GetError());
+			Release();
+			throw fyuu_engine::Error{ fyuu_engine::Result::PlatformError, message };
+		}
+		Event logical_size_event;
+		logical_size_event.type = EventType::WindowResized;
+		logical_size_event.window_ID = SDL_GetWindowID(m_window);
+		logical_size_event.x = static_cast<float>(logical_width);
+		logical_size_event.y = static_cast<float>(logical_height);
+		m_event_sink->ProcessEvent(logical_size_event);
+		int pixel_width = 0;
+		int pixel_height = 0;
+		if (!SDL_GetWindowSizeInPixels(m_window, &pixel_width, &pixel_height)) {
+			auto const message = std::format("SDL window pixel-size query failed: {}", SDL_GetError());
+			Release();
+			throw fyuu_engine::Error{ fyuu_engine::Result::PlatformError, message };
+		}
+		Event pixel_size_event;
+		pixel_size_event.type = EventType::WindowPixelSizeChanged;
+		pixel_size_event.window_ID = SDL_GetWindowID(m_window);
+		pixel_size_event.x = static_cast<float>(pixel_width);
+		pixel_size_event.y = static_cast<float>(pixel_height);
+		m_event_sink->ProcessEvent(pixel_size_event);
 	}
 
 	Platform::~Platform() noexcept {
@@ -343,6 +371,26 @@ namespace fyuu_desktop {
 
 	void ClipboardText(std::string_view text) {
 		SDL_SetClipboardText(std::string{text}.c_str());
+	}
+
+	std::filesystem::path PreferencePath(
+		std::string_view organization,
+		std::string_view application
+	) {
+		auto const organization_text = std::string{organization};
+		auto const application_text = std::string{application};
+		auto* text = SDL_GetPrefPath(organization_text.c_str(), application_text.c_str());
+		if (text == nullptr)
+			throw fyuu_engine::Error{
+				fyuu_engine::Result::PlatformError,
+				std::format("SDL preference path query failed: {}", SDL_GetError())
+			};
+		auto const utf8 = std::u8string{
+			reinterpret_cast<char8_t const*>(text),
+			reinterpret_cast<char8_t const*>(text + std::char_traits<char>::length(text))
+		};
+		SDL_free(text);
+		return std::filesystem::path{utf8};
 	}
 
 }

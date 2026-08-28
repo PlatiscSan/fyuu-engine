@@ -32,6 +32,7 @@ namespace fyuu_ui::detail {
 			std::visit([&result](auto const& state) {
 				using State = std::remove_cvref_t<decltype(state)>;
 				if constexpr (std::same_as<State, RectangleVisual>) result.emplace_back(DrawRectangleCommand{state.bounds, state.fill});
+				else if constexpr (std::same_as<State, SceneTextureVisual>) result.emplace_back(DrawSceneTextureCommand{state.bounds, state.fallback});
 				else if constexpr (std::same_as<State, GradientRectangleVisual>) result.emplace_back(DrawGradientRectangleCommand{state.bounds, state.top, state.bottom});
 				else if constexpr (std::same_as<State, LineVisual>) result.emplace_back(DrawLineCommand{state.start, state.end, state.color, state.thickness});
 				else if constexpr (std::same_as<State, TextVisual>) result.emplace_back(DrawTextCommand{state.bounds, state.text, state.color, state.font_size, state.caret_offset, state.selection_start, state.selection_end, state.horizontal_offset, state.selection_color});
@@ -46,6 +47,5 @@ namespace fyuu_ui::detail {
 		return result;
 	}
 }
-
 
 

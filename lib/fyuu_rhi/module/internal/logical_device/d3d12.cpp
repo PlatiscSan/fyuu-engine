@@ -232,7 +232,7 @@ namespace {
 
 	std::string RootSignatureCacheKey(SlangPipelineInterface const& pipeline_interface) {
 		boost::hash2::xxhash_64 hash;
-		constexpr std::uint32_t schema = 1;
+		constexpr std::uint32_t schema = 2;
 		hash.update(&schema, sizeof(schema));
 		for (auto const& entry : pipeline_interface.bindings) {
 			auto name_size = entry.name.size();
@@ -242,6 +242,10 @@ namespace {
 			hash.update(flags.data(), sizeof(flags));
 			hash.update(&entry.slot, sizeof(entry.slot));
 			hash.update(&entry.space, sizeof(entry.space));
+			hash.update(&entry.resource_slot, sizeof(entry.resource_slot));
+			hash.update(&entry.resource_space, sizeof(entry.resource_space));
+			hash.update(&entry.sampler_slot, sizeof(entry.sampler_slot));
+			hash.update(&entry.sampler_space, sizeof(entry.sampler_space));
 			hash.update(&entry.count, sizeof(entry.count));
 			hash.update(&entry.visibility, sizeof(entry.visibility));
 		}
@@ -268,20 +272,27 @@ namespace {
 			);
 
 			for (auto const& entry : pipeline_interface.bindings) {
-				// A combined texture+sampler binding (Sampler2D) decomposes into a
-				// Texture2D at t<slot> and a SamplerState at s<slot>. They live in
-				// different descriptor-heap types, so it contributes two root
-				// parameters: the SRV table followed by the sampler table.
+				// A combined texture+sampler binding (Sampler2D) decomposes into two
+				// independently reflected D3D12 register ranges. The numeric t and s
+				// registers are not required to match the RHI's logical binding slot.
 				bool combined =
 					entry.flags.Test(ResourceFlagBits::TextureBinding) &&
 					entry.flags.Test(ResourceFlagBits::SamplerBinding);
-				auto AddRangeAndParameter = [&](D3D12_DESCRIPTOR_RANGE_TYPE type) {
+				auto AddRangeAndParameter = [
+					&ranges,
+					&parameters,
+					&entry
+				](
+					D3D12_DESCRIPTOR_RANGE_TYPE type,
+					std::uint32_t slot,
+					std::uint32_t space
+				) {
 					ranges.push_back(
 						{
 							.RangeType = type,
 							.NumDescriptors = entry.count,
-							.BaseShaderRegister = entry.slot,
-							.RegisterSpace = entry.space,
+							.BaseShaderRegister = slot,
+							.RegisterSpace = space,
 							.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE,
 							.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND
 						}
@@ -296,13 +307,27 @@ namespace {
 							.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL
 						}
 					);
-					};
+				};
 				if (combined) {
-					AddRangeAndParameter(D3D12_DESCRIPTOR_RANGE_TYPE_SRV);
-					AddRangeAndParameter(D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER);
+					AddRangeAndParameter(
+						D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+						entry.resource_slot,
+						entry.resource_space
+					);
+					AddRangeAndParameter(
+						D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER,
+						entry.sampler_slot,
+						entry.sampler_space
+					);
 				}
 				else {
-					AddRangeAndParameter(DescriptorRangeType(entry));
+					auto type = DescriptorRangeType(entry);
+					bool sampler = type == D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
+					AddRangeAndParameter(
+						type,
+						sampler ? entry.sampler_slot : entry.resource_slot,
+						sampler ? entry.sampler_space : entry.resource_space
+					);
 				}
 			}
 			for (auto const& range : pipeline_interface.push_constants) {

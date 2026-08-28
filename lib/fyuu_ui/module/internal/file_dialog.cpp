@@ -67,6 +67,13 @@ namespace fyuu_ui {
 		Show(FileDialogMode::Save, options, std::move(callback));
 	}
 
+	void FileDialogue::ShowSelectDirectory(
+	    FileDialogOptions const& options,
+	    std::function<void(std::filesystem::path const&)> callback
+	) {
+		Show(FileDialogMode::SelectDirectory, options, std::move(callback));
+	}
+
 	void FileDialogue::Show(
 	    FileDialogMode mode,
 	    FileDialogOptions const& options,
@@ -100,7 +107,8 @@ namespace fyuu_ui {
 
 		auto window = m_host->Open(
 		    Window{
-		        options.title.empty() ? (mode == FileDialogMode::Open ? "Open file" : "Save file") :
+		        options.title.empty() ? (mode == FileDialogMode::Open ? "Open file" :
+		            mode == FileDialogMode::Save ? "Save file" : "Select directory") :
 		                                options.title,
 		        options.position,
 		        options.size,
@@ -125,6 +133,9 @@ namespace fyuu_ui {
 		session.button_ids.clear();
 		session.visible_entries.clear();
 		session.selected_path.clear();
+		session.path_id = 0u;
+		session.directory_name_id = 0u;
+		session.file_name_id = 0u;
 
 		std::error_code error;
 		if (session.directory.empty()) {
@@ -181,7 +192,7 @@ namespace fyuu_ui {
 		auto browser_region = content.AddChild(Overlay{true});
 		LayoutProperties browser_layout;
 		browser_layout.margin.bottom =
-		    session.mode == FileDialogMode::Open ? 40.0f : 78.0f;
+		    session.mode == FileDialogMode::Save ? 78.0f : 40.0f;
 		browser_region.SetLayout(browser_layout);
 		// The path occupies the complete header row. Parent navigation belongs to
 		// the directory listing below, alongside every other directory entry.
@@ -206,12 +217,73 @@ namespace fyuu_ui {
 		navigation_layout.height = 28.0f;
 		navigation_layout.vertical_alignment = Alignment::Start;
 		navigation.SetLayout(navigation_layout);
+		if (session.mode != FileDialogMode::Open) {
+			auto toolbar = browser_region.AddChild(Overlay{});
+			LayoutProperties toolbar_layout;
+			toolbar_layout.height = 30.0f;
+			toolbar_layout.margin.top = 34.0f;
+			toolbar_layout.vertical_alignment = Alignment::Start;
+			toolbar.SetLayout(toolbar_layout);
+			if (!session.creating_directory) {
+				auto begin_create = toolbar.AddChild(Button{"New folder", true, false});
+				LayoutProperties begin_create_layout;
+				begin_create_layout.width = 96.0f;
+				begin_create_layout.horizontal_alignment = Alignment::Start;
+				begin_create.SetLayout(begin_create_layout);
+				session.button_ids.emplace_back(begin_create.GetID());
+				session.subscriptions.emplace_back(m_events->Subscribe<ClickEvent>(
+				    begin_create,
+				    [this](ClickEvent& event) {
+					    m_session.pending = PendingAction::BeginCreateDirectory;
+					    event.handled = true;
+				    }
+				));
+			} else {
+				auto directory_name = toolbar.AddChild(TextBox{"", "Folder name"});
+				LayoutProperties directory_name_layout;
+				directory_name_layout.margin.right = 150.0f;
+				directory_name.SetLayout(directory_name_layout);
+				session.directory_name_id = directory_name.GetID();
+				auto create_directory = toolbar.AddChild(Button{"Create", true, true});
+				LayoutProperties create_directory_layout;
+				create_directory_layout.width = 68.0f;
+				create_directory_layout.margin.right = 76.0f;
+				create_directory_layout.horizontal_alignment = Alignment::End;
+				create_directory.SetLayout(create_directory_layout);
+				session.button_ids.emplace_back(create_directory.GetID());
+				session.subscriptions.emplace_back(m_events->Subscribe<ClickEvent>(
+				    create_directory,
+				    [this](ClickEvent& event) {
+					    m_session.pending = PendingAction::CreateDirectory;
+					    event.handled = true;
+				    }
+				));
+				auto cancel_directory = toolbar.AddChild(Button{"Cancel", true, false});
+				LayoutProperties cancel_directory_layout;
+				cancel_directory_layout.width = 68.0f;
+				cancel_directory_layout.horizontal_alignment = Alignment::End;
+				cancel_directory.SetLayout(cancel_directory_layout);
+				session.button_ids.emplace_back(cancel_directory.GetID());
+				session.subscriptions.emplace_back(m_events->Subscribe<ClickEvent>(
+				    cancel_directory,
+				    [this](ClickEvent& event) {
+					    m_session.pending = PendingAction::CancelCreateDirectory;
+					    event.handled = true;
+				    }
+				));
+			}
+		}
 
 		// Only the middle list is clipped. Navigation and pagination remain visible
 		// at the browser region's fixed top and bottom edges during window resize.
 		auto entries_region = browser_region.AddChild(ScrollView{});
 		LayoutProperties entries_layout;
-		entries_layout.margin = {0.0f, 32.0f, 0.0f, 0.0f};
+		entries_layout.margin = {
+		    0.0f,
+		    session.mode != FileDialogMode::Open ? 68.0f : 32.0f,
+		    0.0f,
+		    0.0f
+		};
 		entries_region.SetLayout(entries_layout);
 		auto entry_list = entries_region.AddChild(StackPanel{Orientation::Vertical, 4.0f});
 		auto parent_directory = session.directory.parent_path();
@@ -240,15 +312,20 @@ namespace fyuu_ui {
 			auto extension = Lowercase(PathText(path.extension()));
 			if (!extension.empty() && extension.front() == '.')
 				extension.erase(extension.begin());
-			auto const selectable = directory || session.options.filters.empty() ||
-			    std::ranges::any_of(session.options.filters, [&extension](auto const& filter) {
-				    return filter.extensions.empty() ||
-				        std::ranges::any_of(filter.extensions, [&extension](auto candidate) {
-					        if (!candidate.empty() && candidate.front() == '.')
-						        candidate.erase(candidate.begin());
-					        return Lowercase(std::move(candidate)) == extension;
-				        });
-			    });
+			auto const matches_filter = session.options.filters.empty() || std::ranges::any_of(
+				session.options.filters,
+				[&extension](auto const& filter) {
+					return filter.extensions.empty() || std::ranges::any_of(
+						filter.extensions,
+						[&extension](auto candidate) {
+							if (!candidate.empty() && candidate.front() == '.')
+								candidate.erase(candidate.begin());
+							return Lowercase(std::move(candidate)) == extension;
+						}
+					);
+				}
+			);
+			auto const selectable = directory || matches_filter;
 			auto display_name = PathText(path.filename());
 			if (display_name.empty())
 				display_name = PathText(path.root_name());
@@ -273,7 +350,7 @@ namespace fyuu_ui {
 		}
 		auto footer = content.AddChild(StackPanel{Orientation::Vertical, 6.0f});
 		LayoutProperties footer_layout;
-		footer_layout.height = session.mode == FileDialogMode::Open ? 30.0f : 68.0f;
+		footer_layout.height = session.mode == FileDialogMode::Save ? 68.0f : 30.0f;
 		footer_layout.vertical_alignment = Alignment::End;
 		footer.SetLayout(footer_layout);
 		// Opening selects an existing row, so a second editable representation of
@@ -309,7 +386,8 @@ namespace fyuu_ui {
 		actions_layout.horizontal_alignment = Alignment::End;
 		actions.SetLayout(actions_layout);
 		auto accept = actions.AddChild(
-		    Button{session.mode == FileDialogMode::Open ? "Open" : "Save", true, true}
+			Button{session.mode == FileDialogMode::Open ? "Open" :
+			    session.mode == FileDialogMode::Save ? "Save" : "Select", true, true}
 		);
 		session.button_ids.emplace_back(accept.GetID());
 		session.subscriptions.emplace_back(m_events->Subscribe<ClickEvent>(accept, [this](ClickEvent& event) {
@@ -362,9 +440,65 @@ namespace fyuu_ui {
 					    path == m_session.pending_path;
 				}
 				break;
+			case PendingAction::BeginCreateDirectory:
+				if (m_session.mode == FileDialogMode::Save) {
+					m_session.options.initial_file_name =
+					    m_tree->GetNode(m_session.file_name_id).AsWidget<TextBox>().text;
+				}
+				m_session.creating_directory = true;
+				RebuildContent();
+				break;
+			case PendingAction::CreateDirectory: {
+				if (m_session.directory.empty())
+					break;
+				auto const& text =
+				    m_tree->GetNode(m_session.directory_name_id).AsWidget<TextBox>().text;
+				if (text.empty()) {
+					m_message_box.Show("New folder", "Enter a folder name.");
+					break;
+				}
+				auto const utf8_name = text |
+				    std::views::transform([](char code_unit) {
+					    return static_cast<char8_t>(code_unit);
+				    }) |
+				    std::ranges::to<std::u8string>();
+				std::filesystem::path const name{utf8_name};
+				if (name == "." || name == ".." || name.is_absolute() || name.has_parent_path() ||
+				    name.filename() != name) {
+					m_message_box.Show("New folder", "Enter a single valid folder name.");
+					break;
+				}
+				auto const path = m_session.directory / name;
+				std::error_code error;
+				if (std::filesystem::exists(path, error)) {
+					m_message_box.Show("New folder", "A file or folder with that name already exists.");
+					break;
+				}
+				if (error || !std::filesystem::create_directory(path, error)) {
+					m_message_box.Show("New folder", "The folder could not be created.");
+					break;
+				}
+				auto const created = std::filesystem::weakly_canonical(path, error);
+				if (error) {
+					m_message_box.Show("New folder", "The created folder could not be opened.");
+					break;
+				}
+				m_session.directory = created;
+				m_session.creating_directory = false;
+				RebuildContent();
+				break;
+			}
+			case PendingAction::CancelCreateDirectory:
+				m_session.creating_directory = false;
+				RebuildContent();
+				break;
 			case PendingAction::Accept: {
 				if (m_session.directory.empty())
 					break;
+				if (m_session.mode == FileDialogMode::SelectDirectory) {
+					Complete(m_session.directory);
+					break;
+				}
 				if (m_session.mode == FileDialogMode::Open) {
 					std::error_code error;
 					if (!std::filesystem::is_regular_file(m_session.selected_path, error))
@@ -398,13 +532,14 @@ namespace fyuu_ui {
 
 	void FileDialogue::Complete(std::filesystem::path const& path) {
 		m_message_box.Close();
+		auto result = path;
 		auto callback = std::move(m_session.callback);
 		auto const window_id = m_session.window_id;
 		m_session = {};
 		m_open = false;
 		m_host->Close(window_id);
 		if (callback)
-			callback(path);
+			callback(result);
 	}
 
 	void FileDialogue::Cancel() {
@@ -459,6 +594,7 @@ namespace fyuu_ui {
 
 	bool FileDialogue::OwnsTextBox(std::uint64_t node_id) const noexcept {
 		return m_open && !m_message_box.IsOpen() && (node_id == m_session.path_id ||
+		    (m_session.directory_name_id != 0u && node_id == m_session.directory_name_id) ||
 		    (m_session.file_name_id != 0u && node_id == m_session.file_name_id));
 	}
 

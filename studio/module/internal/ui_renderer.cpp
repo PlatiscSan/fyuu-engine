@@ -8,6 +8,7 @@ module;
 #include <utility>
 #include <vector>
 #include <algorithm>
+#include <unordered_map>
 #include <cmath>
 // C++11
 #include <cstdint>
@@ -26,6 +27,7 @@ module;
 module fyuu_studio:ui_renderer;
 
 import fyuu_engine;
+import fyuu_asset;
 import fyuu_rhi;
 import fyuu_ui;
 import :rhi_context;
@@ -45,6 +47,7 @@ namespace fyuu_studio {
 		float texture_x = 0.0f;
 		float texture_y = 0.0f;
 		std::uint32_t color = 0u;
+		float texture_selector = 0.0f;
 	};
 
 	struct UIDrawCommand {
@@ -63,6 +66,7 @@ namespace fyuu_studio {
 		std::vector<UIDrawCommand> commands;
 		std::uint32_t width = 0u;
 		std::uint32_t height = 0u;
+		std::vector<std::uint8_t> font_coverage;
 	};
 
 	using CommandGraphResources = fyuu_rhi::execution::CommandGraphResources;
@@ -81,24 +85,17 @@ namespace fyuu_studio {
 		static constexpr std::uint32_t Height = CellSize * RowCount * FontCount;
 
 		std::vector<std::uint8_t> coverage;
-		std::array<std::uint32_t, FontCount> pixel_sizes{
-			12u,
-			14u,
-			16u,
-			18u,
-			20u,
-			21u,
-			24u,
-			28u,
-			32u
-		};
+		std::array<std::uint32_t, FontCount> pixel_sizes{};
 		std::array<std::array<float, 96u>, FontCount> advances;
 		std::array<float, FontCount> line_heights;
 	};
 
-	FontAtlas CreateFontAtlas() {
+	FontAtlas CreateFontAtlas(std::span<std::uint32_t const> pixel_sizes) {
+		if (pixel_sizes.size() > FontAtlas::FontCount)
+			throw std::runtime_error("Too many distinct UI font sizes in one frame");
 		FontAtlas result;
 		result.coverage.resize(FontAtlas::Width * FontAtlas::Height);
+		std::ranges::copy(pixel_sizes, result.pixel_sizes.begin());
 		FT_Library library = nullptr;
 		if (FT_Init_FreeType(&library) != 0) {
 			throw std::runtime_error("FreeType initialization failed");
@@ -126,7 +123,7 @@ namespace fyuu_studio {
 			FT_Done_FreeType(library);
 			throw std::runtime_error("FreeType could not load the Studio system font");
 		}
-		for (std::uint32_t font_index = 0u; font_index < FontAtlas::FontCount; ++font_index) {
+		for (std::uint32_t font_index = 0u; font_index < pixel_sizes.size(); ++font_index) {
 			if (FT_Set_Pixel_Sizes(face, 0u, result.pixel_sizes[font_index]) != 0) {
 				FT_Done_Face(face);
 				FT_Done_FreeType(library);
@@ -174,20 +171,34 @@ namespace fyuu_studio {
 		return result;
 	}
 
-	FontAtlas const& GetFontAtlas() {
-		static FontAtlas const Atlas = CreateFontAtlas();
-		return Atlas;
+	FontAtlas const& GetFrameFontAtlas(std::vector<std::uint32_t> const& pixel_sizes) {
+		static std::vector<std::uint32_t> cached_sizes;
+		static std::optional<FontAtlas> atlas;
+		if (!atlas || cached_sizes != pixel_sizes) {
+			cached_sizes = pixel_sizes;
+			atlas.emplace(CreateFontAtlas(cached_sizes));
+		}
+		return *atlas;
 	}
 
-	std::uint32_t SelectFontIndex(FontAtlas const& atlas, float physical_font_size) noexcept {
-		std::uint32_t result = 0u;
-		for (std::uint32_t index = 1u; index < FontAtlas::FontCount; ++index) {
-			if (std::abs(static_cast<float>(atlas.pixel_sizes[index]) - physical_font_size) <
-				std::abs(static_cast<float>(atlas.pixel_sizes[result]) - physical_font_size)) {
-				result = index;
-			}
-		}
-		return result;
+	FontAtlas const& GetFontMetrics(std::uint32_t pixel_size) {
+		static std::unordered_map<std::uint32_t, FontAtlas> atlases;
+		auto const existing = atlases.find(pixel_size);
+		if (existing != atlases.end())
+			return existing->second;
+		std::array const sizes{pixel_size};
+		return atlases.emplace(pixel_size, CreateFontAtlas(sizes)).first->second;
+	}
+
+	std::uint32_t FontPixelSize(float physical_font_size) noexcept {
+		return static_cast<std::uint32_t>(std::max(1.0f, std::round(physical_font_size)));
+	}
+
+	std::uint32_t FindFontIndex(FontAtlas const& atlas, std::uint32_t pixel_size) {
+		auto const found = std::ranges::find(atlas.pixel_sizes, pixel_size);
+		if (found == atlas.pixel_sizes.end())
+			throw std::runtime_error("UI font size is absent from the current atlas");
+		return static_cast<std::uint32_t>(found - atlas.pixel_sizes.begin());
 	}
 
 	fyuu_ui::Size MeasureUIText(
@@ -198,8 +209,9 @@ namespace fyuu_studio {
 	) {
 		scale_x = scale_x > 0.0f ? scale_x : 1.0f;
 		scale_y = scale_y > 0.0f ? scale_y : 1.0f;
-		auto const& atlas = GetFontAtlas();
-		auto const font_index = SelectFontIndex(atlas, font_size * scale_y);
+		auto const physical_size = FontPixelSize(font_size * scale_y);
+		auto const& atlas = GetFontMetrics(physical_size);
+		auto const font_index = FindFontIndex(atlas, physical_size);
 		auto width = 0.0f;
 		for (auto const character : text) {
 			auto const code = static_cast<std::uint8_t>(character);
@@ -246,7 +258,8 @@ namespace fyuu_studio {
 		std::uint32_t logical_width,
 		std::uint32_t logical_height,
 		std::uint32_t pixel_width,
-		std::uint32_t pixel_height
+		std::uint32_t pixel_height,
+		bool scene_texture_available
 	) {
 		UIDrawData result;
 		result.width = pixel_width;
@@ -257,6 +270,15 @@ namespace fyuu_studio {
 		}
 		auto const scale_x = static_cast<float>(pixel_width) / static_cast<float>(logical_width);
 		auto const scale_y = static_cast<float>(pixel_height) / static_cast<float>(logical_height);
+		std::vector<std::uint32_t> font_sizes;
+		for (auto const& command : draw_commands) {
+			if (auto const* text = std::get_if<fyuu_ui::DrawTextCommand>(&command)) {
+				auto const pixel_size = FontPixelSize(text->font_size * scale_y);
+				if (!std::ranges::contains(font_sizes, pixel_size))
+					font_sizes.emplace_back(pixel_size);
+			}
+		}
+		auto const& atlas = GetFrameFontAtlas(font_sizes);
 		std::vector<fyuu_ui::Point> translations{ fyuu_ui::Point{} };
 		std::vector<fyuu_ui::Rect> clips{
 			fyuu_ui::Rect{ {}, { static_cast<float>(logical_width), static_cast<float>(logical_height) } }
@@ -264,7 +286,8 @@ namespace fyuu_studio {
 		auto append_quad = [&result, logical_width, logical_height](
 			fyuu_ui::Rect const& bounds,
 			fyuu_ui::Color const& fill,
-			fyuu_ui::Rect const& texture
+			fyuu_ui::Rect const& texture,
+			float texture_selector = 0.0f
 		) {
 			auto const left = bounds.position.x / static_cast<float>(logical_width) * 2.0f - 1.0f;
 			auto const right = (bounds.position.x + bounds.size.width) /
@@ -274,10 +297,10 @@ namespace fyuu_studio {
 				static_cast<float>(logical_height) * 2.0f;
 			auto const color = PackColor(fill);
 			auto const first_vertex = static_cast<std::uint32_t>(result.vertices.size());
-			result.vertices.emplace_back(UIVertex{ left, top, texture.position.x, texture.position.y, color });
-			result.vertices.emplace_back(UIVertex{ right, top, texture.size.width, texture.position.y, color });
-			result.vertices.emplace_back(UIVertex{ right, bottom, texture.size.width, texture.size.height, color });
-			result.vertices.emplace_back(UIVertex{ left, bottom, texture.position.x, texture.size.height, color });
+			result.vertices.emplace_back(UIVertex{ left, top, texture.position.x, texture.position.y, color, texture_selector });
+			result.vertices.emplace_back(UIVertex{ right, top, texture.size.width, texture.position.y, color, texture_selector });
+			result.vertices.emplace_back(UIVertex{ right, bottom, texture.size.width, texture.size.height, color, texture_selector });
+			result.vertices.emplace_back(UIVertex{ left, bottom, texture.position.x, texture.size.height, color, texture_selector });
 			result.indices.emplace_back(first_vertex);
 			result.indices.emplace_back(first_vertex + 1u);
 			result.indices.emplace_back(first_vertex + 2u);
@@ -287,7 +310,7 @@ namespace fyuu_studio {
 		};
 		for (auto const& command : draw_commands) {
 			std::visit(
-				[&append_quad, &clips, &result, &translations, logical_width, logical_height, scale_x, scale_y](auto const& state) {
+				[&append_quad, &atlas, &clips, &result, &translations, logical_width, logical_height, scale_x, scale_y, scene_texture_available](auto const& state) {
 					using State = std::remove_cvref_t<decltype(state)>;
 					if constexpr (std::same_as<State, fyuu_ui::PushTransformCommand>) {
 						auto const& parent = translations.back();
@@ -343,6 +366,28 @@ namespace fyuu_studio {
 								0
 							}
 						);
+					}
+					else if constexpr (std::same_as<State, fyuu_ui::DrawSceneTextureCommand>) {
+						auto bounds = state.bounds;
+						bounds.position.x += translations.back().x;
+						bounds.position.y += translations.back().y;
+						auto const first_index = static_cast<std::uint32_t>(result.indices.size());
+						append_quad(
+							bounds,
+							scene_texture_available ? fyuu_ui::Color{1.0f, 1.0f, 1.0f, 1.0f} : state.fallback,
+							scene_texture_available ? fyuu_ui::Rect{{}, {1.0f, 1.0f}} : fyuu_ui::Rect{},
+							scene_texture_available ? 1.0f : 0.0f
+						);
+						auto const& clip = clips.back();
+						result.commands.emplace_back(UIDrawCommand{
+							static_cast<std::int32_t>((std::max)(clip.position.x * scale_x, 0.0f)),
+							static_cast<std::int32_t>((std::max)(clip.position.y * scale_y, 0.0f)),
+							static_cast<std::uint32_t>((std::max)(clip.size.width * scale_x, 0.0f)),
+							static_cast<std::uint32_t>((std::max)(clip.size.height * scale_y, 0.0f)),
+							static_cast<std::uint32_t>(result.indices.size()) - first_index,
+							first_index,
+							0
+						});
 					}
 					else if constexpr (std::same_as<State, fyuu_ui::DrawGradientRectangleCommand>) {
 						auto bounds = state.bounds;
@@ -430,9 +475,8 @@ namespace fyuu_studio {
 						});
 					}
 					else if constexpr (std::same_as<State, fyuu_ui::DrawTextCommand>) {
-						auto const& atlas = GetFontAtlas();
-						auto const physical_font_size = state.font_size * scale_y;
-						auto const font_index = SelectFontIndex(atlas, physical_font_size);
+						auto const physical_font_size = FontPixelSize(state.font_size * scale_y);
+						auto const font_index = FindFontIndex(atlas, physical_font_size);
 						auto TextAdvance = [&](std::size_t end) {
 							auto advance = 0.0f;
 							for (std::size_t offset = 0u;
@@ -556,6 +600,7 @@ namespace fyuu_studio {
 				command
 			);
 		}
+		result.font_coverage = atlas.coverage;
 		return result;
 	}
 
@@ -695,7 +740,8 @@ namespace fyuu_studio {
 			}
 			[shader("fragment")]
 			float4 fs_main(VSOut input) : SV_Target0 {
-				return input.color * font_atlas.Sample(input.uv).r;
+				float coverage = font_atlas.Sample(input.uv).r;
+				return float4(input.color.rgb, input.color.a * coverage);
 			}
 		)";
 		std::array modules{
@@ -781,6 +827,8 @@ namespace fyuu_studio {
 		RHIContext* m_context = nullptr;
 		std::array<Frame, 3u> m_frames;
 		std::size_t m_next_frame = 0u;
+		std::vector<std::byte> m_scene_pixels{std::byte{255}, std::byte{255}, std::byte{255}, std::byte{255}};
+		bool m_has_scene_texture = false;
 
 		static fyuu_rhi::ResourceFlags PresentationTextureFlags() {
 			fyuu_rhi::ResourceFlags flags;
@@ -1179,6 +1227,16 @@ namespace fyuu_studio {
 			Drain();
 		}
 
+		void SetSceneTexture(fyuu_asset::Bitmap const& bitmap) {
+			if (!bitmap.Valid() || bitmap.format != fyuu_asset::BitmapFormat::R8 ||
+			    bitmap.width != FontAtlas::SceneExtent || bitmap.height != FontAtlas::SceneExtent) {
+				throw std::invalid_argument{"Scene texture must be a 256x256 R8 bitmap"};
+			}
+			Drain();
+			m_scene_pixels = bitmap.pixels;
+			m_has_scene_texture = true;
+		}
+
 		void Submit(
 			std::vector<fyuu_ui::DrawCommand> const& draw_commands,
 			std::uint32_t logical_width,
@@ -1191,7 +1249,8 @@ namespace fyuu_studio {
 				logical_width,
 				logical_height,
 				pixel_width,
-				pixel_height
+				pixel_height,
+				m_has_scene_texture ? std::span<std::byte const>{m_scene_pixels} : std::span<std::byte const>{}
 			);
 			if (draw_data.width == 0u || draw_data.height == 0u ||
 				draw_data.vertices.empty() || draw_data.indices.empty()) {
@@ -1203,7 +1262,7 @@ namespace fyuu_studio {
 			}
 			auto const vertex_data = std::as_bytes(std::span{ draw_data.vertices });
 			auto const index_data = std::as_bytes(std::span{ draw_data.indices });
-			auto const atlas_data = std::as_bytes(std::span{ GetFontAtlas().coverage });
+			auto const atlas_data = std::as_bytes(std::span{ draw_data.font_coverage });
 			EnsurePresentationTarget(*frame, draw_data.width, draw_data.height);
 			EnsureGeometryCapacity(
 				*frame,

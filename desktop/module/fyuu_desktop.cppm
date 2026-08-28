@@ -3,6 +3,7 @@ module;
 #if !defined(__cpp_lib_modules)
 #include <string>
 #include <string_view>
+#include <filesystem>
 
 #include <cstdint>
 
@@ -127,6 +128,11 @@ export namespace fyuu_desktop {
 	/// Returns and replaces UTF-8 clipboard text through the active desktop backend.
 	[[nodiscard]] std::string ClipboardText();
 	void ClipboardText(std::string_view text);
+	/// Returns a writable per-user directory selected by the desktop platform.
+	[[nodiscard]] std::filesystem::path PreferencePath(
+		std::string_view organization,
+		std::string_view application
+	);
 
 	/// Receives normalized events during Platform::PumpEvents.
 	struct EventSink {

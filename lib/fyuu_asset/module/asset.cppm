@@ -386,6 +386,8 @@ namespace fyuu_asset {
 		}
 
 		[[nodiscard]] decltype(auto) Get(this auto&& self) noexcept {
+			// Parentheses bypass decltype's unparenthesized member-access rule, so
+			// the result preserves self's constness and value category.
 			return (self.m_data);
 		}
 
