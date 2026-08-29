@@ -189,19 +189,19 @@ namespace fyuu_rhi::metal {
 								render_encoder->setVertexBuffer(
 									binding.buffer.get(),
 									binding.buffer_offset,
-									binding.slot
+									binding.resource_slot
 								);
 							}
 							if (binding.texture) {
 								render_encoder->setVertexTexture(
 									binding.texture.get(),
-									binding.slot
+									binding.resource_slot
 								);
 							}
 							if (binding.sampler) {
 								render_encoder->setVertexSamplerState(
 									binding.sampler.get(),
-									binding.slot
+									binding.sampler_slot
 								);
 							}
 						}
@@ -210,19 +210,19 @@ namespace fyuu_rhi::metal {
 								render_encoder->setFragmentBuffer(
 									binding.buffer.get(),
 									binding.buffer_offset,
-									binding.slot
+									binding.resource_slot
 								);
 							}
 							if (binding.texture) {
 								render_encoder->setFragmentTexture(
 									binding.texture.get(),
-									binding.slot
+									binding.resource_slot
 								);
 							}
 							if (binding.sampler) {
 								render_encoder->setFragmentSamplerState(
 									binding.sampler.get(),
-									binding.slot
+									binding.sampler_slot
 								);
 							}
 						}
@@ -232,19 +232,19 @@ namespace fyuu_rhi::metal {
 							compute_encoder->setBuffer(
 								binding.buffer.get(),
 								binding.buffer_offset,
-								binding.slot
+								binding.resource_slot
 							);
 						}
 						if (binding.texture) {
 							compute_encoder->setTexture(
 								binding.texture.get(),
-								binding.slot
+								binding.resource_slot
 							);
 						}
 						if (binding.sampler) {
 							compute_encoder->setSamplerState(
 								binding.sampler.get(),
-								binding.slot
+								binding.sampler_slot
 							);
 						}
 					}

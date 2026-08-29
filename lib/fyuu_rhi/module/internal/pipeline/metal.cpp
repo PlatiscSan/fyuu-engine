@@ -180,7 +180,10 @@ namespace fyuu_rhi {
 						}
 					);
 					metal::PipelineResourceGroup::Binding result{
-						.slot = binding.slot + binding.array_element,
+						.resource_slot =
+							declaration->resource_slot + binding.array_element,
+						.sampler_slot =
+							declaration->sampler_slot + binding.array_element,
 						.visibility = declaration->visibility,
 						.buffer = {},
 						.buffer_offset = 0u,

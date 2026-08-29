@@ -68,6 +68,8 @@ namespace fyuu_rhi::metal {
 
 	struct PipelineBinding {
 		pipeline::BindingMetadata metadata;
+		std::uint32_t resource_slot;
+		std::uint32_t sampler_slot;
 		std::uint32_t visibility;
 	};
 
@@ -87,7 +89,8 @@ namespace fyuu_rhi::metal {
 
 	struct PipelineResourceGroup {
 		struct Binding {
-			std::uint32_t slot;
+			std::uint32_t resource_slot;
+			std::uint32_t sampler_slot;
 			std::uint32_t visibility;
 			NS::SharedPtr<MTL::Buffer> buffer;
 			std::size_t buffer_offset;

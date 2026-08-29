@@ -254,6 +254,8 @@ namespace {
 						binding.space,
 						binding.count
 					},
+					binding.resource_slot,
+					binding.sampler_slot,
 					binding.visibility
 				};
 			}
