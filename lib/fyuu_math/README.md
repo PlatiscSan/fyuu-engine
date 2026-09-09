@@ -94,8 +94,9 @@ array `S[N]`, `std::array<S,N>`, or fixed-extent `std::span<S,E>` is a
 compile-time vector, while a matrix comes only from a two-dimensional form —
 `S[R][C]` or `std::array<std::array<S,C>,R>`. `std::array` owns its storage and
 can be a result type; raw arrays and spans are borrowed views. `AsVector` also
-accepts a *dynamic-extent* `std::span<S>` / `std::span<S const>`, whose length
-is `span.size()` at evaluation — see Runtime-length vectors below.
+accepts a *dynamic-extent* `std::span<S>` / `std::span<S const>` and an lvalue
+`std::vector<S>`, whose length is decided at evaluation — see Runtime-length
+vectors below.
 
 - Lvalues are borrowed; rvalues are owned by the operand.
 - Borrowed data must stay alive until evaluation completes; earlier edits are observed.
@@ -155,30 +156,46 @@ errors, never `std::unexpected`.
 
 ## Runtime-length vectors (dynamic spans)
 
-`AsVector` also takes a dynamic-extent `std::span<S>` / `std::span<S const>`,
-treating each element as a component of a vector whose length is decided at
-runtime. It supports `+`, `-`, unary `-`, `* s`, `s *`, `/ s`, and the
-`| Length` / `| Dot{...}` reductions. There is no matrix or quaternion
-interpretation, and `float` and `double` do not mix.
+`AsVector` also takes a dynamic-extent `std::span<S>` / `std::span<S const>` and
+an *lvalue* `std::vector<S>` (borrowing its contiguous storage), treating each
+element as a component of a vector whose length is decided at runtime. It
+supports `+`, `-`, unary `-`, `* s`, `s *`, `/ s`, and the `| Length` /
+`| Dot{...}` reductions. There is no matrix or quaternion interpretation, and
+`float` and `double` do not mix. Inputs are borrowed views: the underlying data
+must outlive evaluation and must not be reallocated mid-expression.
 
-Results never allocate and are not owned by the library. Materialize into a
-caller-provided span, or into a fixed-size owning target when the runtime length
-matches its compile-time count:
+Results are never views: `expr >> As<Output>` always materializes a fresh owning
+copy. Output targets fall into two classes:
+
+- **Fixed-size owning** — the shape is known at compile time, e.g.
+  `std::array<S, N>`, where `N` is a template argument. A runtime-length
+  expression requires its runtime size to equal `N` exactly, otherwise it
+  returns `MathError::SizeMismatch`; the result is `std::expected<Out, MathError>`.
+  When the input itself is compile-time fixed (non-dynamic), shapes are already
+  consistent at compile time and `As` returns a plain value, not an `expected`.
+- **Dynamic owning** — the size is decided at runtime, e.g. `std::vector<S>`.
+  Any container modeling `resize` plus indexed write works; the library allocates
+  at the runtime length and fills a fresh copy. The result is
+  `std::expected<Out, MathError>`.
 
 ```cpp
-std::array<float, 4> out{};
-auto r = (fm::AsVector(a) + fm::AsVector(b)) >> fm::As<std::array<float, 4>>;
-// runtime length must equal 4, else MathError::SizeMismatch
-auto ok = (fm::AsVector(a) * 2.0f) >> std::span<float>{out};  // std::expected<void, MathError>
+// Dynamic: length decided at runtime -> owning copy
+auto r = (fm::AsVector(a) + fm::AsVector(b)) >> fm::As<std::vector<float>>;   // expected<vector<float>, MathError>
+// Fixed: N known, runtime length must equal N
+auto s = (fm::AsVector(a) * 2.0f) >> fm::As<std::array<float, 4>>;            // expected<array<float,4>, MathError>
+if (s) { /* use (*s)[k] */ }
 ```
 
-Runtime length disagreements — mismatched operand lengths, or an expression
-length that does not match the output — return `MathError::SizeMismatch`, and a
-failed evaluation writes nothing. Division by `0` or `-0` returns
-`DivisionByZero`. Under dynamic spans `| Length` and `| Dot` return
-`std::expected`, failing with `SizeMismatch` when the tree is internally
-inconsistent. Fixed-size type and dimension mismatches remain compile-time
-errors.
+Use `std::vector<S>` when the length is not fixed, and `std::array<S, N>` when it
+is known (the latter needs no runtime allocation).
+
+Errors: runtime length disagreements between operands return
+`MathError::SizeMismatch`; division by `0` or `-0` returns `DivisionByZero`.
+Under dynamic spans `| Length` and `| Dot` return `std::expected`, failing with
+`SizeMismatch` when the tree is internally inconsistent. A fixed-size
+`As<std::array<S, N>>` target also reports `SizeMismatch` when the runtime
+length differs from `N`. Static type and dimension mismatches remain
+compile-time errors.
 
 ## Backend customization
 

@@ -76,7 +76,7 @@ int main() {
 
 ## 适配入口与生命周期
 
-`AsVector`、`AsMatrix`、`AsQuaternion` 按对应 Traits 类别把值包装成表达式操作数。库内建标量容器适配：一维原始数组 `S[N]`、`std::array<S, N>` 与定长 `std::span<S, E>` 自动作为编译期定长向量；矩阵只能由二维形式 `S[R][C]` 或 `std::array<std::array<S, C>, R>` 表示。`std::array` 拥有存储、可作结果类型；裸数组与 span 只是借用视图。此外，`AsVector` 也接受**动态长度**的 `std::span<S>` / `std::span<S const>`，其向量长度在运行期取 `span.size()`，见「运行期长度向量」一节。
+`AsVector`、`AsMatrix`、`AsQuaternion` 按对应 Traits 类别把值包装成表达式操作数。库内建标量容器适配：一维原始数组 `S[N]`、`std::array<S, N>` 与定长 `std::span<S, E>` 自动作为编译期定长向量；矩阵只能由二维形式 `S[R][C]` 或 `std::array<std::array<S, C>, R>` 表示。`std::array` 拥有存储、可作结果类型；裸数组与 span 只是借用视图。此外，`AsVector` 也接受**动态长度**的 `std::span<S>` / `std::span<S const>` 与左值 `std::vector<S>`，向量长度在运行期决定，见「运行期长度向量」一节。
 
 - 左值被借用，右值由操作数持有。
 - 借用数据须存活到求值结束，求值前的修改会被观察到。
@@ -125,18 +125,24 @@ if (!divided) {
 
 ## 运行期长度向量（动态 span）
 
-`AsVector` 也接受动态长度的 `std::span<S>` / `std::span<S const>`，每个元素视为一个向量分量，长度在运行期决定。它支持加减、取负、`* s`、`s *`、`/ s`，以及 `| Length`、`| Dot{...}`；不提供矩阵或四元数语义，也不做 `float` 与 `double` 互转。
+`AsVector` 接受动态长度的 `std::span<S>` / `std::span<S const>` 以及**左值** `std::vector<S>`（借其底层连续缓冲），每个元素视为一个向量分量，长度在运行期决定。它支持加减、取负、`* s`、`s *`、`/ s`，以及 `| Length`、`| Dot{...}`；不提供矩阵或四元数语义，也不做 `float` 与 `double` 互转。输入均为借用视图：底层数据须存活到求值结束，且不要在求值期间使容器重分配。
 
-结果不分配内存，也不由库持有，而是物化到调用方缓冲或定长 owning 目标：
+结果**不会返回视图**：`expr >> As<Output>` 总是物化出全新 owning 副本。按输出类型分两类：
+
+- **定长 owning（形状编译期固定，如 `std::array<S, N>`）**——`N` 是模板参数。动态表达式要求运行期长度恰好等于 `N`，否则返回 `MathError::SizeMismatch`；结果为 `std::expected<Out, MathError>`。若输入本身就是编译期定长（非动态路径），形状在编译期即保证一致，`As` 直接返回普通值、无 `expected`。
+- **动态 owning（运行期长度，如 `std::vector<S>`）**——容器满足 `resize` + 下标写入即可（`RuntimeValueContainer` 语义）；库按运行期长度分配并拷贝出全新副本，结果为 `std::expected<Out, MathError>`。
 
 ```cpp
-std::array<float, 4> out{};
-auto r = (fm::AsVector(a) + fm::AsVector(b)) >> fm::As<std::array<float, 4>>;
-// 运行期长度与 N 不符时返回 SizeMismatch
-auto ok = (fm::AsVector(a) * 2.0f) >> std::span<float>{out};  // std::expected<void, MathError>
+// 动态：长度运行期决定 → owning 副本
+auto r = (fm::AsVector(a) + fm::AsVector(b)) >> fm::As<std::vector<float>>;  // expected<vector<float>, MathError>
+// 定长：N 已知，运行期长度必须 == N
+auto s = (fm::AsVector(a) * 2.0f) >> fm::As<std::array<float, 4>>;           // expected<array<float,4>, MathError>
+if (s) { /* (*s)[k] 可用 */ }
 ```
 
-运行期长度不符——操作数不等长、或表达式长度与输出长度不一致——返回 `MathError::SizeMismatch`，且失败时输出不被改写。`/ 0` 与 `/-0` 返回 `DivisionByZero`。动态下的 `| Length` 与 `| Dot` 返回 `std::expected`：树内部长度不符也会以 `SizeMismatch` 失败。定长运算的类型/维度不符依旧是编译期错误。
+长度不确定用 `std::vector<S>`，长度确定且已知 `N` 用 `std::array<S, N>`（后者无需运行期分配）。
+
+错误汇总：动态操作数不等长 → `MathError::SizeMismatch`；`/ 0` 与 `/-0` → `DivisionByZero`；动态 `| Length` / `| Dot` 返回 `std::expected`，树内部长度不符以 `SizeMismatch` 失败；`As<std::array<S, N>>` 在运行期长度 ≠ N 时同样返回 `SizeMismatch`。静态运算的类型/维度不符依旧是编译期错误。
 
 ## 后端定制
 
