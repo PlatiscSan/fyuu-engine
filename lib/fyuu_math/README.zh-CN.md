@@ -64,7 +64,7 @@ int main() {
 }
 ```
 
-支持的标量为 `float` 与 `double`，维度在编译期确定。
+支持的标量为 `float` 与 `double`。定长运算的形状在编译期确定。
 
 | 类别 | 形状信息 | 分量读取 |
 | --- | --- | --- |
@@ -76,7 +76,7 @@ int main() {
 
 ## 适配入口与生命周期
 
-`AsVector`、`AsMatrix`、`AsQuaternion` 按对应 Traits 类别把值包装成表达式操作数；原始数组与 span 不会自动获得类别，须显式适配。
+`AsVector`、`AsMatrix`、`AsQuaternion` 按对应 Traits 类别把值包装成表达式操作数。库内建标量容器适配：一维原始数组 `S[N]`、`std::array<S, N>` 与定长 `std::span<S, E>` 自动作为编译期定长向量；矩阵只能由二维形式 `S[R][C]` 或 `std::array<std::array<S, C>, R>` 表示。`std::array` 拥有存储、可作结果类型；裸数组与 span 只是借用视图。此外，`AsVector` 也接受**动态长度**的 `std::span<S>` / `std::span<S const>`，其向量长度在运行期取 `span.size()`，见「运行期长度向量」一节。
 
 - 左值被借用，右值由操作数持有。
 - 借用数据须存活到求值结束，求值前的修改会被观察到。
@@ -122,6 +122,21 @@ if (!divided) {
 ```
 
 正负零除数都会在调用后端前返回 `DivisionByZero`；非零除法遵循普通浮点语义（含 NaN 与无穷）。`Tolerance<S>{absolute, relative}` 控制检查类算法，两字段须有限非负。类型与维度不符是编译期错误，不产生 `std::unexpected`。
+
+## 运行期长度向量（动态 span）
+
+`AsVector` 也接受动态长度的 `std::span<S>` / `std::span<S const>`，每个元素视为一个向量分量，长度在运行期决定。它支持加减、取负、`* s`、`s *`、`/ s`，以及 `| Length`、`| Dot{...}`；不提供矩阵或四元数语义，也不做 `float` 与 `double` 互转。
+
+结果不分配内存，也不由库持有，而是物化到调用方缓冲或定长 owning 目标：
+
+```cpp
+std::array<float, 4> out{};
+auto r = (fm::AsVector(a) + fm::AsVector(b)) >> fm::As<std::array<float, 4>>;
+// 运行期长度与 N 不符时返回 SizeMismatch
+auto ok = (fm::AsVector(a) * 2.0f) >> std::span<float>{out};  // std::expected<void, MathError>
+```
+
+运行期长度不符——操作数不等长、或表达式长度与输出长度不一致——返回 `MathError::SizeMismatch`，且失败时输出不被改写。`/ 0` 与 `/-0` 返回 `DivisionByZero`。动态下的 `| Length` 与 `| Dot` 返回 `std::expected`：树内部长度不符也会以 `SizeMismatch` 失败。定长运算的类型/维度不符依旧是编译期错误。
 
 ## 后端定制
 

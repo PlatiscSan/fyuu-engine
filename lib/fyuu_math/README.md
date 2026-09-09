@@ -68,8 +68,8 @@ int main() {
 }
 ```
 
-Supported scalars are `float` and `double`; dimensions are fixed at compile
-time.
+Supported scalars are `float` and `double`; fixed-size shapes are fixed at
+compile time.
 
 | Category | Required shape metadata | Component read |
 | --- | --- | --- |
@@ -89,8 +89,13 @@ fallback results are written through `Write`.
 ## Adaptation and lifetime
 
 `AsVector`, `AsMatrix`, and `AsQuaternion` wrap a value as an operand of its
-Traits category. Raw arrays and spans gain no category automatically; adapt them
-explicitly.
+Traits category. Scalar containers adapt out of the box: a one-dimensional raw
+array `S[N]`, `std::array<S,N>`, or fixed-extent `std::span<S,E>` is a
+compile-time vector, while a matrix comes only from a two-dimensional form —
+`S[R][C]` or `std::array<std::array<S,C>,R>`. `std::array` owns its storage and
+can be a result type; raw arrays and spans are borrowed views. `AsVector` also
+accepts a *dynamic-extent* `std::span<S>` / `std::span<S const>`, whose length
+is `span.size()` at evaluation — see Runtime-length vectors below.
 
 - Lvalues are borrowed; rvalues are owned by the operand.
 - Borrowed data must stay alive until evaluation completes; earlier edits are observed.
@@ -147,6 +152,33 @@ backend runs; nonzero division follows ordinary floating-point semantics.
 `Tolerance<S>{absolute, relative}` drives the checked algorithms; both fields
 must be finite and nonnegative. Type or dimension mismatches are compile-time
 errors, never `std::unexpected`.
+
+## Runtime-length vectors (dynamic spans)
+
+`AsVector` also takes a dynamic-extent `std::span<S>` / `std::span<S const>`,
+treating each element as a component of a vector whose length is decided at
+runtime. It supports `+`, `-`, unary `-`, `* s`, `s *`, `/ s`, and the
+`| Length` / `| Dot{...}` reductions. There is no matrix or quaternion
+interpretation, and `float` and `double` do not mix.
+
+Results never allocate and are not owned by the library. Materialize into a
+caller-provided span, or into a fixed-size owning target when the runtime length
+matches its compile-time count:
+
+```cpp
+std::array<float, 4> out{};
+auto r = (fm::AsVector(a) + fm::AsVector(b)) >> fm::As<std::array<float, 4>>;
+// runtime length must equal 4, else MathError::SizeMismatch
+auto ok = (fm::AsVector(a) * 2.0f) >> std::span<float>{out};  // std::expected<void, MathError>
+```
+
+Runtime length disagreements — mismatched operand lengths, or an expression
+length that does not match the output — return `MathError::SizeMismatch`, and a
+failed evaluation writes nothing. Division by `0` or `-0` returns
+`DivisionByZero`. Under dynamic spans `| Length` and `| Dot` return
+`std::expected`, failing with `SizeMismatch` when the tree is internally
+inconsistent. Fixed-size type and dimension mismatches remain compile-time
+errors.
 
 ## Backend customization
 
