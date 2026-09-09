@@ -6,14 +6,15 @@ module;
 #if !defined(__cpp_lib_modules)
 #include <cstddef>
 #include <utility>
+#include <vector>
 #include <algorithm>
 #include <cmath>
 #include <limits>
 #include <cstdint>
 #include <type_traits>
 #include <array>
-#include <span>
 #include <concepts>
+#include <span>
 #include <expected>
 #endif // !defined(__cpp_lib_modules)
 
@@ -1142,6 +1143,26 @@ export namespace fyuu_math {
 				out[i] = e.source.component(i) / e.divisor;
 			return {};
 		}
+
+		template <class T>
+		inline constexpr bool IsStdVector = false;
+		template <class S, class A>
+		inline constexpr bool IsStdVector<std::vector<S, A>> = true;
+
+		// Owning, dynamically sized output container for Runtime* results (std::vector<S>
+		// and anything else modeling resize + indexed write). Element scalar must be a
+		// MathScalar. Fixed-size containers like std::array have no resize, so they never
+		// satisfy this and stay on the compile-time VectorValue materialization path.
+		template <class T>
+		concept RuntimeValueContainer = requires {
+			typename std::remove_cvref_t<T>::value_type;
+		} && MathScalar<typename std::remove_cvref_t<T>::value_type> && requires(
+		    std::remove_cvref_t<T>& out,
+		    typename std::remove_cvref_t<T>::value_type value
+		) {
+			{ out.resize(std::size_t{}) } -> std::same_as<void>;
+			out[std::size_t{}] = value;
+		};
 	} // namespace detail
 
 	template <MathScalar S>
@@ -1151,6 +1172,17 @@ export namespace fyuu_math {
 	template <MathScalar S>
 	[[nodiscard]] constexpr auto AsVector(std::span<S const> value) noexcept {
 		return detail::RuntimeLeaf<S>{value};
+	}
+	// Lvalue std::vector convenience: borrows the vector's contiguous storage as a
+	// runtime-length vector. The scalar is taken from value_type so template
+	// deduction works; rvalues are rejected so the borrowed view never dangles.
+	template <class V>
+	    requires detail::IsStdVector<std::remove_cvref_t<V>> &&
+	             MathScalar<typename std::remove_cvref_t<V>::value_type> &&
+	             std::is_lvalue_reference_v<V>
+	[[nodiscard]] constexpr auto AsVector(V&& value) noexcept {
+		using S = typename std::remove_cvref_t<V>::value_type;
+		return detail::RuntimeLeaf<S>{std::span<S const>(value)};
 	}
 
 	template <detail::RuntimeVector A, detail::RuntimeVector B>
@@ -1253,19 +1285,6 @@ export namespace fyuu_math {
 		return result;
 	}
 
-	template <detail::RuntimeVector E, class S, std::size_t Ext>
-	    requires std::same_as<typename E::Scalar, S>
-	[[nodiscard]] constexpr std::expected<void, MathError>
-	operator>>(E const& e, std::span<S, Ext> out) noexcept {
-		return detail::WriteRuntime(e, out);
-	}
-	template <detail::RuntimeVector E, class S, std::size_t Ext>
-	    requires std::same_as<typename E::Scalar, S>
-	[[nodiscard]] constexpr std::expected<void, MathError>
-	operator>>(detail::RuntimeDivide<E, S> const& e, std::span<S, Ext> out) noexcept {
-		return detail::WriteDivide(e, out);
-	}
-
 	// Bridge a runtime-length vector into a fixed-size owning vector. The runtime
 	// length must equal the target's compile-time count, else SizeMismatch.
 	template <detail::RuntimeVector E, VectorValue Out>
@@ -1290,6 +1309,38 @@ export namespace fyuu_math {
 		auto out = Traits<Out>::Create();
 		for (std::size_t i = 0; i < e.source.size(); ++i)
 			detail::Write(out, i, e.source.component(i) / e.divisor);
+		return out;
+	}
+
+	// Bridge a runtime-length vector into an owning, dynamically sized container
+	// (std::vector<S> by default). The result is a fresh copy, never a view. These
+	// allocate, so they are not noexcept.
+	template <detail::RuntimeVector E, detail::RuntimeValueContainer Out>
+	    requires std::same_as<typename E::Scalar, typename Out::value_type>
+	[[nodiscard]] constexpr std::expected<Out, MathError>
+	operator>>(E const& e, ResultType<Out>) {
+		using S = typename E::Scalar;
+		if (!e.consistent())
+			return std::unexpected(MathError::SizeMismatch);
+		Out out;
+		out.resize(e.size());
+		// Fresh storage never aliases an input, so SIMD fast paths stay valid.
+		if (!detail::WriteRuntime(e, std::span<S>{out.data(), out.size()}))
+			return std::unexpected(MathError::SizeMismatch);
+		return out;
+	}
+	template <detail::RuntimeVector E, MathScalar S, detail::RuntimeValueContainer Out>
+	    requires std::same_as<S, typename Out::value_type>
+	[[nodiscard]] constexpr std::expected<Out, MathError>
+	operator>>(detail::RuntimeDivide<E, S> const& e, ResultType<Out>) {
+		if (e.divisor == S(0))
+			return std::unexpected(MathError::DivisionByZero);
+		if (!e.source.consistent())
+			return std::unexpected(MathError::SizeMismatch);
+		Out out;
+		out.resize(e.source.size());
+		if (!detail::WriteDivide(e, std::span<S>{out.data(), out.size()}))
+			return std::unexpected(MathError::SizeMismatch);
 		return out;
 	}
 
