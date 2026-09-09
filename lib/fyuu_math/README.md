@@ -2,29 +2,23 @@
 
 [简体中文](README.zh-CN.md)
 
-FyuuMath is FyuuEngine’s independent C++23 math interface library. It adapts
+FyuuMath is FyuuEngine's standalone C++23 math interface library. It adapts
 application types through Concepts and `MathTraits`, evaluates operator
-expressions, and supports backend customization through ADL-discovered
-`tag_invoke`. It supplies no public vector, matrix, quaternion, or storage class.
+expressions, and lets backends hook in through ADL-found `tag_invoke`. It
+defines no public vector, matrix, quaternion, or storage types of its own.
 
 ## Build integration
 
-Use CMake 4.2.3 or newer and a toolchain with C++23 named-module support.
-When the target is available in your build:
+Requires CMake 4.2.3 or newer and a toolchain with C++23 named-module support:
 
 ```cmake
 target_link_libraries(MyApplication PRIVATE Fyuu::Math)
 set_target_properties(MyApplication PROPERTIES CXX_EXTENSIONS OFF)
 ```
 
-Import the public module in C++ sources:
-
 ```cpp
 import fyuu_math;
 ```
-
-The target propagates the C++23 requirement and matching RTTI settings.
-Applications should use public interfaces rather than implementation namespaces.
 
 | Option | Default | Purpose |
 | --- | --- | --- |
@@ -33,14 +27,12 @@ Applications should use public interfaces rather than implementation namespaces.
 | `FYUU_MATH_WITH_EIGEN` | `OFF` | Build `Fyuu::MathEigen`; import `fyuu_math_eigen` |
 | `BUILD_TESTING` | CTest default: `ON` | Build and register the contract tests |
 
-GLM and Eigen headers must already be available to CMake when their adapters are
-enabled. Link the corresponding adapter target in consumers. Adapters do not
-require engine interfaces to expose backend types.
+GLM and Eigen adapters require their headers to be findable by CMake.
 
 ## Adapt an application type
 
-Define a `MathTraits<T>` specialization before adapting the type. This complete
-example uses an application-owned type, not a library storage class:
+Specialize `MathTraits<T>` before first use. The example below adapts an
+application-owned `Position`:
 
 ```cpp
 #include <cstddef>
@@ -76,7 +68,8 @@ int main() {
 }
 ```
 
-Current scalar support is `float` and `double`, with fixed dimensions.
+Supported scalars are `float` and `double`; dimensions are fixed at compile
+time.
 
 | Category | Required shape metadata | Component read |
 | --- | --- | --- |
@@ -84,39 +77,33 @@ Current scalar support is `float` and `double`, with fixed dimensions.
 | Matrix | `rows`, `columns` | `Read(value, row, column)` |
 | Quaternion | Four logical components | `Read(value, QuaternionComponent)` |
 
-`Read` returns exactly `Scalar`. An owning output additionally declares
-`is_owning = true`, implements `Create()` returning exactly the output type,
-and implements `Write` with the same logical coordinates as `Read` plus a scalar.
-`Create` establishes a valid writable object with independent storage; it need
-not initialize components that the operation will overwrite. No default
-constructor is required. No container type is imposed by the Traits protocol.
-
-Optional `Data(value)` returns `Scalar const*` with `noexcept`, pointing to a real
-contiguous sequence in logical order. Do not treat separate struct members as an
-array. Omit `Data` for strided or differently ordered representations; `Read`
-provides their logical components. `Write` is required for fallback outputs.
-A mutable `Data(value)` overload may return `Scalar*` with the same logical
-layout guarantee. Component SIMD kernels can then write directly to the output.
+`Read` returns `Scalar`. Owning outputs also set `is_owning = true`, implement
+`Create()` to return their own type, and provide `Write` over the same logical
+coordinates as `Read`. `Create` only has to build a valid, writable, independently
+stored object: it need not initialize components an operation overwrites, and no
+default constructor is required. `Data(value)` is optional and returns a
+`Scalar const*` (`noexcept`) to the contiguous storage in logical order. Strided
+or reordered layouts may omit it — `Read` supplies their logical components and
+fallback results are written through `Write`.
 
 ## Adaptation and lifetime
 
-`AsVector(value)`, `AsMatrix(value)`, and `AsQuaternion(value)` select the matching
-Traits category and create an expression operand. They accept adapted types;
-raw arrays and spans do not acquire a mathematical category automatically.
+`AsVector`, `AsMatrix`, and `AsQuaternion` wrap a value as an operand of its
+Traits category. Raw arrays and spans gain no category automatically; adapt them
+explicitly.
 
-- Lvalues are borrowed without copying or reading their components at capture.
-- Rvalues are owned by the operand, subject to the type’s move/copy semantics.
-- Borrowed data must remain valid until evaluation; changes are observed at evaluation.
-- Owning a view or an Eigen expression does not extend its referenced data’s lifetime.
+- Lvalues are borrowed; rvalues are owned by the operand.
+- Borrowed data must stay alive until evaluation completes; earlier edits are observed.
+- Owning a view or Eigen expression does not extend the life of its underlying data.
 
-Use `expression >> As<Output>` while inputs are valid to obtain an independent
-result. Reusing an owning expression can copy its stored values when composing
-new expression nodes. Expression types are not an ABI or serialization format.
+While inputs are valid, `expression >> As<Output>` materializes an independent
+result. Reusing an owning expression to compose new nodes may copy the values it
+holds.
 
 ## Operations
 
-In the table, `a`, `b`, `v`, `m`, and `q` are operands returned by the adaptation
-functions or compatible expressions; `s` has the same scalar type.
+Here `a`, `b`, `v`, `m`, and `q` are operands from the adaptation entry points
+or compatible expressions; `s` shares their scalar type.
 
 | Expression | Meaning |
 | --- | --- |
@@ -134,18 +121,17 @@ functions or compatible expressions; `s` has the same scalar type.
 | `m \| Inverse{tolerance}` | Checked 3×3 or 4×4 inverse |
 | `Identity >> As<Output>` | Materialize a square identity matrix |
 
-Qualify operation names with `fyuu_math::`, or use a namespace alias.
-Parenthesize pipelines: `((a * b) | Transpose) >> As<Output>`.
+Qualify operation names with `fyuu_math::` or a namespace alias, and parenthesize
+pipelines: `((a * b) | Transpose) >> As<Output>`.
 
-`As<Output>` selects an owning result type. Shapes and scalar types must be
-compatible. It supports changing backend representation, but currently does not
-permit changing `float` to `double` or vice versa. Plain backend objects retain
-their native operators until explicitly adapted.
+`As<Output>` selects an owning result type whose shape and scalar type are
+compatible. It can change the backend representation, but not convert between
+`float` and `double`.
 
 ## Error handling
 
-Division, normalization, and inverse expressions materialize as
-`std::expected<Output, MathError>`. Check the result before adapting its value:
+Division, normalization, and inverse return `std::expected<Output, MathError>`.
+Check before using the value:
 
 ```cpp
 auto divided = (fm::AsVector(a) / 2.0f) >> fm::As<Position>;
@@ -156,21 +142,16 @@ if (!divided) {
 }
 ```
 
-Both positive and negative zero divisors return
-`std::unexpected(MathError::DivisionByZero)` before evaluating the source or
-calling its backend. Nonzero division preserves ordinary floating-point
-behavior, including NaN and infinity; it is not a general finiteness check.
-
-`Tolerance<S>{absolute, relative}` controls checked algorithms. Both fields must
-be finite and nonnegative. Normalization can reject degenerate or nonfinite
-inputs; inverse can report singular matrices. Transform and projection helpers
-also report invalid geometry or conventions. Type and dimension errors are
-compile-time errors, not `std::unexpected` results.
+Any zero divisor — positive or negative — yields `DivisionByZero` before the
+backend runs; nonzero division follows ordinary floating-point semantics.
+`Tolerance<S>{absolute, relative}` drives the checked algorithms; both fields
+must be finite and nonnegative. Type or dimension mismatches are compile-time
+errors, never `std::unexpected`.
 
 ## Backend customization
 
-Operation dispatch finds `tag_invoke` through ADL. Place an overload in an
-operand type’s associated namespace. Ordinary operations use this signature:
+Operations reach `tag_invoke` through ADL; define an overload in an operand
+type's associated namespace:
 
 ```cpp
 Output tag_invoke(fyuu_math::AddTag,
@@ -178,53 +159,33 @@ Output tag_invoke(fyuu_math::AddTag,
                  InputA const&, InputB const&);
 ```
 
-The result must be exactly the requested output type. Ambiguous or incorrectly
-typed hooks fail compilation. Without a hook, the library uses its Traits-based
-fallback. ADL is the lookup mechanism for `tag_invoke`, not a separate fallback
-search for functions named after each operation. Normalization and inverse
-hooks use checked results and include a tolerance argument.
+The return type must match the target type or compilation fails. Without a hook,
+operations fall back to the Traits-based default. Normalization and inverse
+hooks return checked results and take a tolerance argument.
 
 ## Transforms and projections
 
-Transforms use column vectors. Matrix multiplication `A * B` applies B first.
-Logical coordinates are independent of physical row-major or column-major storage.
-Quaternions use logical XYZW components and Hamilton multiplication.
+Column-vector convention: `A * B` applies `B` first, independent of physical
+row-major or column-major storage. Quaternions use logical XYZW components and
+Hamilton multiplication.
 
-The public helpers are `TryComposeTransform`, `TryViewFromPose`,
-`TryTransformPoint`, `TryTransformDirection`, `TryProjectPoint`, and
-`TryTransformNormal`. They take Traits-adapted backend values directly and return
-checked results. Points receive translation; directions do not. Normals use the
-inverse transpose of the linear transform.
+`TryComposeTransform`, `TryViewFromPose`, `TryTransformPoint`,
+`TryTransformDirection`, `TryProjectPoint`, and `TryTransformNormal` take
+Traits-adapted values directly and return checked results. Points translate,
+directions do not, and normals transform by the inverse transpose of the linear
+part.
 
-`TryPerspective` and `TryOrthographic` take descriptors with an explicit
-`ProjectionConvention`: handedness, depth range, and forward or reversed depth.
-Select these conventions to match the renderer; do not infer them from storage layout.
+`TryPerspective` and `TryOrthographic` take a descriptor with an explicit
+`ProjectionConvention` — handedness, depth range, forward or reversed depth.
+Match it to the renderer; do not infer it from storage order.
 
 ## SIMD and verification
 
-SIMD is enabled by default. Internal kernels include x86 SSE2 and ARM64 NEON
-paths; dispatch also depends on the operation, dimensions, and compiler.
-Noncontiguous inputs can be gathered through Traits. `SIMDCompatible<T>` describes
-logical contiguous input eligibility, not proof that a particular call uses SIMD.
-Register types and architecture headers do not form part of the public interface.
+SIMD is on by default, with x86 SSE2 and ARM64 NEON kernels; actual dispatch
+depends on the operation, dimensions, and compiler. `SIMDCompatible<T>` marks
+logically contiguous input as SIMD-eligible, not as a guarantee that a given
+call uses SIMD.
 
-From the repository root, run:
-
-```powershell
-./lib/fyuu_math/test/compare.ps1
-```
-
-The script builds the same tests in separate Release configurations with SIMD
-`ON` and `OFF`, then runs CTest. It defaults to `clang++`; use `-Compiler` to select
-a compatible compiler for its Ninja configuration. Alternatively, configure the
-library with `BUILD_TESTING=ON`, build, and run `ctest --test-dir <build> -V`.
-
-Tests cover ownership, constexpr evaluation, zero-division errors, float/double
-vector operations, lane tails, NaN/infinity/signed zero, matrix multiplication,
-matrix-vector multiplication, identity inverse, and quaternion operations.
-Runtime checks remain active in Release. Tests consume public interfaces only.
-
-The timing sample measures 64-component float addition. It does not characterize
-all operations, and disabling library SIMD does not disable compiler automatic
-vectorization. Current local validation used Clang on Windows x86-64; these runs
-do not validate execution on ARM64 hardware.
+From the repository root, run `./lib/fyuu_math/test/compare.ps1` to build and
+run the same tests with SIMD `ON` and `OFF` (clang++ by default, selectable with
+`-Compiler`). Alternatively configure with `BUILD_TESTING=ON` and run `ctest`.
