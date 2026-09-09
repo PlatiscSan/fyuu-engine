@@ -9,8 +9,10 @@ module;
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <cstdint>
 #include <type_traits>
 #include <array>
+#include <span>
 #include <concepts>
 #include <expected>
 #endif // !defined(__cpp_lib_modules)
@@ -715,8 +717,10 @@ export namespace fyuu_math {
 		      (kind<B> == Category::Quaternion || (kind<B> == Category::Vector && rows<B> == 3))));
 	} // namespace detail
 
-	template <detail::Expression E>
-	    requires(detail::kind<E> == Category::Vector)
+	// The operand is intentionally unconstrained: vector-ness and shape checks live
+	// on the operator| overloads, so the same Dot holder serves compile-time
+	// (Expression) operands and runtime-sized (RuntimeVector) span operands.
+	template <class E>
 	struct Dot {
 		E right;
 	};
@@ -944,6 +948,349 @@ export namespace fyuu_math {
 	    detail::adl::Nothrow<IdentityTag, Out, detail::IdentityFallback<Out>>()
 	) {
 		return detail::adl::Dispatch<IdentityTag, Out>(detail::IdentityFallback<Out>{});
+	}
+
+	// Runtime-sized (dynamic-extent std::span) vectors. Static expressions carry a
+	// compile-time Shape, so these nodes deliberately expose none: they form a
+	// parallel world selected by concept constraints. They borrow the caller's span
+	// view (never copy or allocate components) and are evaluated by writing into a
+	// caller-provided output span. Runtime length disagreements surface as
+	// MathError::SizeMismatch; fixed-size dimension mismatches stay compile-time.
+	namespace detail {
+		template <class E>
+		concept RuntimeVector = requires(E const& e, std::size_t i) {
+			typename std::remove_cvref_t<E>::Scalar;
+			requires MathScalar<typename std::remove_cvref_t<E>::Scalar>;
+			{ e.size() } -> std::same_as<std::size_t>;
+			{ e.consistent() } -> std::same_as<bool>;
+			{ e.component(i) } -> std::same_as<typename std::remove_cvref_t<E>::Scalar>;
+		};
+
+		template <MathScalar S>
+		struct RuntimeLeaf {
+			using Scalar = S;
+			std::span<S const> storage;
+			constexpr std::size_t size() const noexcept { return storage.size(); }
+			constexpr bool consistent() const noexcept { return true; }
+			constexpr S component(std::size_t i) const noexcept { return storage[i]; }
+			constexpr S const* data() const noexcept { return storage.data(); }
+		};
+
+		template <class Tag, RuntimeVector A, RuntimeVector B>
+		struct RuntimeBinary {
+			using Scalar = typename A::Scalar;
+			A left;
+			B right;
+			constexpr std::size_t size() const noexcept { return left.size(); }
+			constexpr bool consistent() const noexcept {
+				return left.consistent() && right.consistent() && left.size() == right.size();
+			}
+			constexpr Scalar component(std::size_t i) const noexcept {
+				if constexpr (std::same_as<Tag, AddTag>)
+					return left.component(i) + right.component(i);
+				else
+					return left.component(i) - right.component(i);
+			}
+		};
+
+		template <RuntimeVector E>
+		struct RuntimeNegate {
+			using Scalar = typename E::Scalar;
+			E source;
+			constexpr std::size_t size() const noexcept { return source.size(); }
+			constexpr bool consistent() const noexcept { return source.consistent(); }
+			constexpr Scalar component(std::size_t i) const noexcept {
+				return -source.component(i);
+			}
+		};
+
+		template <RuntimeVector E, MathScalar S>
+		struct RuntimeScale {
+			using Scalar = S;
+			E source;
+			S scalar;
+			constexpr std::size_t size() const noexcept { return source.size(); }
+			constexpr bool consistent() const noexcept { return source.consistent(); }
+			constexpr Scalar component(std::size_t i) const noexcept {
+				return source.component(i) * scalar;
+			}
+		};
+
+		// Terminal scalar division: like the static DivisionExpression it deliberately
+		// has no component(), so it cannot be composed or reduced further. A zero
+		// divisor is reported only when the result is materialized.
+		template <RuntimeVector E, MathScalar S>
+		struct RuntimeDivide {
+			using Scalar = S;
+			E source;
+			S divisor;
+			constexpr std::size_t size() const noexcept { return source.size(); }
+			constexpr bool consistent() const noexcept { return source.consistent(); }
+		};
+
+		// Shape/leaf metadata used to select the SIMD fast paths below.
+		template <class E>
+		inline constexpr bool IsRuntimeLeafV = false;
+		template <MathScalar S>
+		inline constexpr bool IsRuntimeLeafV<RuntimeLeaf<S>> = true;
+		template <class E>
+		inline constexpr bool IsRuntimeBinaryAdd = false;
+		template <MathScalar S>
+		inline constexpr bool IsRuntimeBinaryAdd<RuntimeBinary<AddTag, RuntimeLeaf<S>, RuntimeLeaf<S>>> = true;
+		template <class E>
+		inline constexpr bool IsRuntimeBinarySub = false;
+		template <MathScalar S>
+		inline constexpr bool IsRuntimeBinarySub<RuntimeBinary<SubtractTag, RuntimeLeaf<S>, RuntimeLeaf<S>>> = true;
+		template <class E>
+		inline constexpr bool IsRuntimeLeafScale = false;
+		template <MathScalar S>
+		inline constexpr bool IsRuntimeLeafScale<RuntimeScale<RuntimeLeaf<S>, S>> = true;
+		template <class E>
+		inline constexpr bool IsRuntimeLeafNegate = false;
+		template <MathScalar S>
+		inline constexpr bool IsRuntimeLeafNegate<RuntimeNegate<RuntimeLeaf<S>>> = true;
+
+		// SIMD kernels load whole blocks before storing, so a fast path is valid only
+		// when the output range equals an operand range exactly (in-place, safe because
+		// each block loads before it stores) or does not overlap it. Pointer-to-integer
+		// casts keep the comparison defined for unrelated buffers.
+		template <class S>
+		constexpr bool SafeWrite(S const* a, S const* out, std::size_t size) noexcept {
+			if (size == 0) return true;
+			auto begin_a = reinterpret_cast<std::uintptr_t>(a);
+			auto begin_o = reinterpret_cast<std::uintptr_t>(out);
+			if (begin_a == begin_o) return true;
+			auto bytes = size * sizeof(S);
+			return begin_a + bytes <= begin_o || begin_o + bytes <= begin_a;
+		}
+
+		template <RuntimeVector E, class S, std::size_t Ext>
+			requires std::same_as<typename E::Scalar, S>
+		constexpr std::expected<void, MathError> WriteRuntime(E const& e, std::span<S, Ext> out
+		) noexcept {
+			// Validate before touching the output so an inconsistent tree never indexes
+			// out of bounds or partially writes the buffer.
+			if (!e.consistent() || e.size() != out.size())
+				return std::unexpected(MathError::SizeMismatch);
+			std::size_t const n = out.size();
+			if constexpr (simd::available) {
+				if (n != 0 && !std::is_constant_evaluated()) {
+					using Op = simd::Operation;
+					if constexpr (IsRuntimeBinaryAdd<E>) {
+						if (SafeWrite(e.left.data(), out.data(), n) &&
+						    SafeWrite(e.right.data(), out.data(), n)) {
+							simd::Components<Op::Add>(e.left.data(), e.right.data(), out.data(), n);
+							return {};
+						}
+					} else if constexpr (IsRuntimeBinarySub<E>) {
+						if (SafeWrite(e.left.data(), out.data(), n) &&
+						    SafeWrite(e.right.data(), out.data(), n)) {
+							simd::Components<Op::Subtract>(e.left.data(), e.right.data(), out.data(), n);
+							return {};
+						}
+					} else if constexpr (IsRuntimeLeafScale<E>) {
+						if (SafeWrite(e.source.data(), out.data(), n)) {
+							simd::ScalarComponents<Op::Scale>(e.source.data(), e.scalar, out.data(), n);
+							return {};
+						}
+					} else if constexpr (IsRuntimeLeafNegate<E>) {
+						// Scaling by -1 matches unary minus, including the sign of zero.
+						if (SafeWrite(e.source.data(), out.data(), n)) {
+							simd::ScalarComponents<Op::Scale>(e.source.data(), S(-1), out.data(), n);
+							return {};
+						}
+					}
+				}
+			}
+			// Composite or partially-aliased remainder: one per-component pass. These
+			// trees are per-index linear, so inlining makes the loop auto-vectorize; the
+			// perf harness measured it near the memory-bandwidth bound, so no flattening
+			// into extra SIMD passes (which would double memory traffic) is worthwhile.
+			for (std::size_t i = 0; i < n; ++i)
+				out[i] = e.component(i);
+			return {};
+		}
+
+		template <RuntimeVector E, class S, std::size_t Ext>
+			requires std::same_as<typename E::Scalar, S>
+		constexpr std::expected<void, MathError> WriteDivide(
+		    RuntimeDivide<E, S> const& e,
+		    std::span<S, Ext> out
+		) noexcept {
+			// Divisor check first, mirroring static DivisionExpression; == also catches -0.0.
+			if (e.divisor == S(0))
+				return std::unexpected(MathError::DivisionByZero);
+			if (!e.source.consistent() || e.source.size() != out.size())
+				return std::unexpected(MathError::SizeMismatch);
+			std::size_t const n = out.size();
+			if constexpr (simd::available) {
+				if (n != 0 && !std::is_constant_evaluated()) {
+					if constexpr (IsRuntimeLeafV<E>) {
+						if (SafeWrite(e.source.data(), out.data(), n)) {
+							simd::ScalarComponents<simd::Operation::Divide>(
+							    e.source.data(),
+							    e.divisor,
+							    out.data(),
+							    n
+							);
+							return {};
+						}
+					}
+				}
+			}
+			for (std::size_t i = 0; i < n; ++i)
+				out[i] = e.source.component(i) / e.divisor;
+			return {};
+		}
+	} // namespace detail
+
+	template <MathScalar S>
+	[[nodiscard]] constexpr auto AsVector(std::span<S> value) noexcept {
+		return detail::RuntimeLeaf<S>{std::span<S const>(value)};
+	}
+	template <MathScalar S>
+	[[nodiscard]] constexpr auto AsVector(std::span<S const> value) noexcept {
+		return detail::RuntimeLeaf<S>{value};
+	}
+
+	template <detail::RuntimeVector A, detail::RuntimeVector B>
+	    requires std::same_as<typename A::Scalar, typename B::Scalar>
+	[[nodiscard]] constexpr auto operator+(A a, B b) noexcept(
+	    std::is_nothrow_move_constructible_v<A> && std::is_nothrow_move_constructible_v<B>
+	) {
+		return detail::RuntimeBinary<AddTag, A, B>{std::move(a), std::move(b)};
+	}
+	template <detail::RuntimeVector A, detail::RuntimeVector B>
+	    requires std::same_as<typename A::Scalar, typename B::Scalar>
+	[[nodiscard]] constexpr auto operator-(A a, B b) noexcept(
+	    std::is_nothrow_move_constructible_v<A> && std::is_nothrow_move_constructible_v<B>
+	) {
+		return detail::RuntimeBinary<SubtractTag, A, B>{std::move(a), std::move(b)};
+	}
+	template <detail::RuntimeVector E>
+	[[nodiscard]] constexpr auto operator-(E e) noexcept(std::is_nothrow_move_constructible_v<E>) {
+		return detail::RuntimeNegate<E>{std::move(e)};
+	}
+	template <detail::RuntimeVector E, MathScalar S>
+	    requires std::same_as<typename E::Scalar, S>
+	[[nodiscard]] constexpr auto operator*(E e, S scalar) noexcept(
+	    std::is_nothrow_move_constructible_v<E>
+	) {
+		return detail::RuntimeScale<E, S>{std::move(e), scalar};
+	}
+	template <MathScalar S, detail::RuntimeVector E>
+	    requires std::same_as<typename E::Scalar, S>
+	[[nodiscard]] constexpr auto operator*(S scalar, E e) noexcept(
+	    std::is_nothrow_move_constructible_v<E>
+	) {
+		return detail::RuntimeScale<E, S>{std::move(e), scalar};
+	}
+	template <detail::RuntimeVector E, MathScalar S>
+	    requires std::same_as<typename E::Scalar, S>
+	[[nodiscard]] constexpr auto operator/(E e, S divisor) noexcept(
+	    std::is_nothrow_move_constructible_v<E>
+	) {
+		return detail::RuntimeDivide<E, S>{std::move(e), divisor};
+	}
+
+	template <detail::RuntimeVector E>
+	[[nodiscard]] constexpr std::expected<typename E::Scalar, MathError>
+	operator|(E const& e, LengthTag) noexcept {
+		using S = typename E::Scalar;
+		if (!e.consistent())
+			return std::unexpected(MathError::SizeMismatch);
+		// Euclidean norm. For float, accumulate squared components in double: no float
+		// value can overflow double, so a single vectorizable pass suffices. For double,
+		// x*x can overflow, so scale by max|x| first (two vectorizable passes).
+		std::size_t const n = e.size();
+		if constexpr (std::same_as<S, float>) {
+			double acc = 0;
+			for (std::size_t i = 0; i < n; ++i) {
+				double const x = static_cast<double>(e.component(i));
+				acc += x * x;
+			}
+			return static_cast<S>(std::sqrt(acc));
+		} else {
+			S maxabs = 0;
+			for (std::size_t i = 0; i < n; ++i) {
+				S const x = e.component(i);
+				S const ax = x < S(0) ? -x : x;
+				if (ax > maxabs) maxabs = ax;
+			}
+			if (!std::isfinite(maxabs)) { // inf/nan: fall back to hypot semantics
+				S result = 0;
+				for (std::size_t i = 0; i < n; ++i)
+					result = std::hypot(result, e.component(i));
+				return result;
+			}
+			if (maxabs == S(0))
+				return S(0);
+			S const inv = S(1) / maxabs;
+			S acc = 0;
+			for (std::size_t i = 0; i < n; ++i) {
+				S const x = e.component(i) * inv;
+				acc += x * x;
+			}
+			return std::sqrt(acc) * maxabs;
+		}
+	}
+	template <detail::RuntimeVector A, detail::RuntimeVector B>
+	    requires std::same_as<typename A::Scalar, typename B::Scalar>
+	[[nodiscard]] constexpr std::expected<typename A::Scalar, MathError>
+	operator|(A const& a, Dot<B> const& operation) noexcept {
+		using S = typename A::Scalar;
+		if (!a.consistent() || !operation.right.consistent() ||
+		    a.size() != operation.right.size())
+			return std::unexpected(MathError::SizeMismatch);
+		std::size_t const n = a.size();
+		if constexpr (simd::available && detail::IsRuntimeLeafV<A> && detail::IsRuntimeLeafV<B>) {
+			if (n != 0 && !std::is_constant_evaluated())
+				return simd::Dot(a.data(), operation.right.data(), n);
+		}
+		S result = 0;
+		for (std::size_t i = 0; i < n; ++i)
+			result += a.component(i) * operation.right.component(i);
+		return result;
+	}
+
+	template <detail::RuntimeVector E, class S, std::size_t Ext>
+	    requires std::same_as<typename E::Scalar, S>
+	[[nodiscard]] constexpr std::expected<void, MathError>
+	operator>>(E const& e, std::span<S, Ext> out) noexcept {
+		return detail::WriteRuntime(e, out);
+	}
+	template <detail::RuntimeVector E, class S, std::size_t Ext>
+	    requires std::same_as<typename E::Scalar, S>
+	[[nodiscard]] constexpr std::expected<void, MathError>
+	operator>>(detail::RuntimeDivide<E, S> const& e, std::span<S, Ext> out) noexcept {
+		return detail::WriteDivide(e, out);
+	}
+
+	// Bridge a runtime-length vector into a fixed-size owning vector. The runtime
+	// length must equal the target's compile-time count, else SizeMismatch.
+	template <detail::RuntimeVector E, VectorValue Out>
+	    requires std::same_as<typename E::Scalar, Scalar<Out>>
+	[[nodiscard]] constexpr std::expected<Out, MathError>
+	operator>>(E const& e, ResultType<Out>) noexcept {
+		if (!e.consistent() || e.size() != detail::count<Out>)
+			return std::unexpected(MathError::SizeMismatch);
+		auto out = Traits<Out>::Create();
+		for (std::size_t i = 0; i < e.size(); ++i)
+			detail::Write(out, i, e.component(i));
+		return out;
+	}
+	template <detail::RuntimeVector E, MathScalar S, VectorValue Out>
+	    requires std::same_as<S, Scalar<Out>>
+	[[nodiscard]] constexpr std::expected<Out, MathError>
+	operator>>(detail::RuntimeDivide<E, S> const& e, ResultType<Out>) noexcept {
+		if (e.divisor == S(0))
+			return std::unexpected(MathError::DivisionByZero);
+		if (!e.source.consistent() || e.source.size() != detail::count<Out>)
+			return std::unexpected(MathError::SizeMismatch);
+		auto out = Traits<Out>::Create();
+		for (std::size_t i = 0; i < e.source.size(); ++i)
+			detail::Write(out, i, e.source.component(i) / e.divisor);
+		return out;
 	}
 
 	// Expression types live in detail; make the constrained operators visible to their ADL.

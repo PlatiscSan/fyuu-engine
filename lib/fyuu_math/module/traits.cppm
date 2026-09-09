@@ -26,7 +26,10 @@ export namespace fyuu_math {
 		Singular,
 		NonUnitQuaternion,
 		InvalidProjection,
-		NonAffine
+		NonAffine,
+		// Runtime-sized dynamic-span vectors only; fixed-size shape mismatches
+		// remain compile-time errors and never produce this value.
+		SizeMismatch
 	};
 
 	// Read/Write access logical components without exposing physical memory order to algorithms.

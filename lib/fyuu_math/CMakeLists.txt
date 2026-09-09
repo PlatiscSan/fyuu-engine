@@ -40,6 +40,12 @@ if(BUILD_TESTING)
     add_executable(fyuu_math_builtin_adapters test/builtin_adapters.cpp)
     target_link_libraries(fyuu_math_builtin_adapters PRIVATE FyuuMath)
     add_test(NAME fyuu_math.builtin_adapters COMMAND fyuu_math_builtin_adapters)
+    add_executable(fyuu_math_dynamic_span test/dynamic_span.cpp)
+    target_link_libraries(fyuu_math_dynamic_span PRIVATE FyuuMath)
+    add_test(NAME fyuu_math.dynamic_span COMMAND fyuu_math_dynamic_span)
+    # Manual performance harness (build-only, not part of ctest).
+    add_executable(fyuu_math_perf_dynamic test/perf_dynamic.cpp)
+    target_link_libraries(fyuu_math_perf_dynamic PRIVATE FyuuMath)
 endif()
 
 option(FYUU_MATH_WITH_GLM "Build the optional GLM adapter" OFF)
