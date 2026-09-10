@@ -20,6 +20,7 @@ export namespace fyuu_math {
 	enum class QuaternionLayout { XYZW, WXYZ };
 	enum class MathError {
 		DivisionByZero,
+		OverlappingStorage,
 		NonFinite,
 		InvalidTolerance,
 		Degenerate,
@@ -182,3 +183,4 @@ export namespace fyuu_math {
 		}
 	};
 } // namespace fyuu_math
+

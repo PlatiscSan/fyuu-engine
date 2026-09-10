@@ -76,7 +76,7 @@ int main() {
 
 ## 适配入口与生命周期
 
-`AsVector`、`AsMatrix`、`AsQuaternion` 按对应 Traits 类别把值包装成表达式操作数。库内建标量容器适配：一维原始数组 `S[N]`、`std::array<S, N>` 与定长 `std::span<S, E>` 自动作为编译期定长向量；矩阵只能由二维形式 `S[R][C]` 或 `std::array<std::array<S, C>, R>` 表示。`std::array` 拥有存储、可作结果类型；裸数组与 span 只是借用视图。此外，`AsVector` 也接受**动态长度**的 `std::span<S>` / `std::span<S const>` 与左值 `std::vector<S>`，向量长度在运行期决定，见「运行期长度向量」一节。
+`AsVector`、`AsMatrix`、`AsQuaternion` 按对应 Traits 类别把值包装成表达式操作数。库内建标量容器适配：一维原始数组 `S[N]`、`std::array<S, N>` 与定长 `std::span<S, E>` 自动作为编译期定长向量；矩阵只能由二维形式 `S[R][C]` 或 `std::array<std::array<S, C>, R>` 表示。`std::array` 拥有存储、可作结果类型；裸数组与 span 只是借用视图。此外，`AsVector` 也接受**动态长度**的 `std::span<S>` / `std::span<S const>` 与左值 `std::vector<S>`，向量长度在运行期决定，见「运行期长度向量」一节。矩阵与四元数还可用布局重载按显式物理序解读连续缓冲：`AsMatrix<MatrixLayout::ColumnMajor>(二维数组)`、`AsQuaternion<QuaternionLayout::WXYZ>(wxyz)`（接受裸 `S[R][C]` / 嵌套 `std::array` 与 `S[4]` / `std::array<S, 4>` / 定长 `std::span<S, 4>`；右值 `std::array` 被拒绝，避免悬垂）。布局只改变物理存储序，不改变逻辑坐标与运算结果；仅当物理序与逻辑序一致（RowMajor / XYZW）时才提供 `Data`（SIMD 可直接读取），其余布局按分量 `Read`。
 
 - 左值被借用，右值由操作数持有。
 - 借用数据须存活到求值结束，求值前的修改会被观察到。

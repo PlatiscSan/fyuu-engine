@@ -25,6 +25,24 @@ export namespace fyuu_math {
 			requires(D::RowsAtCompileTime > 0 && D::ColsAtCompileTime > 0);
 		} && std::derived_from<D, Eigen::MatrixBase<D>>;
 	} // namespace eigen_detail
+	// Materialize a lazy Eigen expression once, not once per component read.
+	// Conversion still uses the destination's logical coordinates and ownership.
+	template <MathValue Out, eigen_detail::FixedDense D>
+	    requires SameShape<Out,D> && (!std::same_as<D,typename D::PlainObject>) &&
+	             (!requires(D const& value) { value.data(); })
+	Out tag_invoke(ConvertTag, ResultType<Out>, D const& expression) {
+		typename D::PlainObject evaluated = expression.eval();
+		auto out = Traits<Out>::Create();
+		if constexpr (VectorLike<Out>) {
+			for(std::size_t i=0;i<Traits<Out>::extent;++i)
+				Traits<Out>::Write(out,i,static_cast<Scalar<Out>>(evaluated.coeff(static_cast<Eigen::Index>(i))));
+		} else {
+			for(std::size_t r=0;r<Traits<Out>::rows;++r)
+				for(std::size_t c=0;c<Traits<Out>::columns;++c)
+					Traits<Out>::Write(out,r,c,static_cast<Scalar<Out>>(evaluated.coeff(static_cast<Eigen::Index>(r),static_cast<Eigen::Index>(c))));
+		}
+		return out;
+	}
 	template <eigen_detail::FixedDense D> struct MathTraits<D> {
 		using Scalar = typename D::Scalar;
 		static constexpr bool vector = D::RowsAtCompileTime == 1 || D::ColsAtCompileTime == 1;
@@ -34,7 +52,9 @@ export namespace fyuu_math {
 		static constexpr std::size_t extent = rows * columns;
 		static constexpr bool is_owning = std::same_as<D, typename D::PlainObject>;
 		static Scalar Read(D const& value, std::size_t r, std::size_t c) {
-			if constexpr (is_owning)
+			// Maps and directly addressable blocks already support coefficient reads,
+			// including arbitrary strides. Do not evaluate an entire view per component.
+			if constexpr (is_owning || requires(D const& v) { v.data(); })
 				return value.coeff(static_cast<Eigen::Index>(r), static_cast<Eigen::Index>(c));
 			else {
 				// Products do not all expose coeff(). Evaluate before reading; never retain references.

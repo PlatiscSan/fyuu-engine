@@ -44,8 +44,8 @@ namespace fyuu_math::simd {
 	inline constexpr bool prefer_inline_reductions = false;
 #endif
 	enum class Operation { Add, Subtract, Scale, Divide };
-	template <Operation Op, class S>
-	void ScalarComponents(S const* a, S scalar, S* result, std::size_t size) noexcept;
+	void ScalarComponents(Operation op, float const* a, float scalar, float* result, std::size_t size) noexcept;
+	void ScalarComponents(Operation op, double const* a, double scalar, double* result, std::size_t size) noexcept;
 	std::array<float, 9> Multiply3(float const* a, float const* b) noexcept;
 	std::array<double, 9> Multiply3(double const* a, double const* b) noexcept;
 	std::array<double, 16> Multiply4(double const* a, double const* b) noexcept;
@@ -55,15 +55,19 @@ namespace fyuu_math::simd {
 	std::array<double, 4> MatrixVector4(double const* a, double const* b) noexcept;
 	float Dot3(float const* a, float const* b) noexcept;
 	double Dot3(double const* a, double const* b) noexcept;
-	template <Operation Op>
-	void Components3(float const* a, float const* b, float* result) noexcept;
-	template <Operation Op>
-	void Components3(double const* a, double const* b, double* result) noexcept;
+	void Components3(Operation op, float const* a, float const* b, float* result) noexcept;
+	void Components3(Operation op, double const* a, double const* b, double* result) noexcept;
 	// Only scalar arrays cross the kernel boundary. Intrinsics are private to simd.cpp.
 	std::array<float, 16> Multiply4(float const* a, float const* b) noexcept;
 	void Multiply4(float const* a, float const* b, float* result) noexcept;
-	template <Operation Op>
-	void Components(float const* a, float const* b, float* result, std::size_t size) noexcept;
+	void Batch4(
+	    float const* a,
+	    float const* b,
+	    float* out,
+	    std::size_t count,
+	    bool shared
+	) noexcept;
+	void Components(Operation op, float const* a, float const* b, float* result, std::size_t size) noexcept;
 	void Multiply(
 	    float const* a,
 	    float const* b,
@@ -75,8 +79,7 @@ namespace fyuu_math::simd {
 	float Dot(float const* a, float const* b, std::size_t size) noexcept;
 	void Cross(float const* a, float const* b, float* result) noexcept;
 
-	template <Operation Op>
-	void Components(double const* a, double const* b, double* result, std::size_t size) noexcept;
+	void Components(Operation op, double const* a, double const* b, double* result, std::size_t size) noexcept;
 	void Multiply(
 	    double const* a,
 	    double const* b,
@@ -282,11 +285,11 @@ export namespace fyuu_math {
 				if (!std::is_constant_evaluated()) {
 					auto left = SIMDInput<A>{a};
 					auto right = SIMDInput<B>{b};
-					if constexpr (std::same_as<Scalar<Out>,float> && requires(Out& v) {
-						{ Traits<Out>::Data(v) } noexcept -> std::same_as<float*>;
-					}) {
+					if constexpr (std::same_as<Scalar<Out>, float> && requires(Out& v) {
+						              { Traits<Out>::Data(v) } noexcept -> std::same_as<float*>;
+					              }) {
 						auto out = Traits<Out>::Create();
-						simd::Multiply4(left.data,right.data,Traits<Out>::Data(out));
+						simd::Multiply4(left.data, right.data, Traits<Out>::Data(out));
 						return out;
 					}
 					return detail::Build<Out>(simd::Multiply4(left.data, right.data));
@@ -318,15 +321,13 @@ export namespace fyuu_math {
 					return detail::Build<Out>(values);
 				}
 			}
-			return detail::Build<Out>(
-			    std::array<Scalar<Out>, count<Out>>{
-			        MatrixProductElement<I / Columns<Out>(), I % Columns<Out>()>(
-			            a,
-			            b,
-			            std::make_index_sequence<Columns<A>()>{}
-			        )...
-			    }
-			);
+			return detail::Build<Out>(std::array<Scalar<Out>, count<Out>>{
+			    MatrixProductElement<I / Columns<Out>(), I % Columns<Out>()>(
+			        a,
+			        b,
+			        std::make_index_sequence<Columns<A>()>{}
+			    )...
+			});
 		}
 
 		template <MathLike A, MathLike B, std::size_t... I>
@@ -356,32 +357,55 @@ export namespace fyuu_math {
 		    noexcept(detail::Build<Out>(std::declval<std::array<Scalar<Out>, count<Out>> const&>()))
 		) {
 			using S = Scalar<Out>;
-			if constexpr (std::same_as<Tag, AddTag> || std::same_as<Tag, SubtractTag> ||
-			              std::same_as<Tag, ScaleTag> || std::same_as<Tag, DivideTag>) {
+			if constexpr (
+			    std::same_as<Tag, AddTag> || std::same_as<Tag, SubtractTag> ||
+			    std::same_as<Tag, ScaleTag> || std::same_as<Tag, DivideTag>
+			) {
 				auto out = Traits<Out>::Create();
 				if constexpr (simd::available && requires(Out& v) {
-					{ Traits<Out>::Data(v) } noexcept -> std::same_as<S*>;
-				}) {
+					              { Traits<Out>::Data(v) } noexcept -> std::same_as<S*>;
+				              }) {
 					if (!std::is_constant_evaluated()) {
 						constexpr auto op = [] {
-							if constexpr (std::same_as<Tag, AddTag>) return simd::Operation::Add;
-							else if constexpr (std::same_as<Tag, SubtractTag>) return simd::Operation::Subtract;
-							else if constexpr (std::same_as<Tag, ScaleTag>) return simd::Operation::Scale;
-							else return simd::Operation::Divide;
+							if constexpr (std::same_as<Tag, AddTag>)
+								return simd::Operation::Add;
+							else if constexpr (std::same_as<Tag, SubtractTag>)
+								return simd::Operation::Subtract;
+							else if constexpr (std::same_as<Tag, ScaleTag>)
+								return simd::Operation::Scale;
+							else
+								return simd::Operation::Divide;
 						}();
 						auto left = SIMDInput<A>{a};
 						if constexpr (MathLike<B>) {
 							auto right = SIMDInput<B>{b};
-							simd::Components<op>(left.data,right.data,Traits<Out>::Data(out),count<Out>);
-						} else simd::ScalarComponents<op>(left.data,b,Traits<Out>::Data(out),count<Out>);
+							simd::Components(
+							    op,
+							    left.data,
+							    right.data,
+							    Traits<Out>::Data(out),
+							    count<Out>
+							);
+						} else
+							simd::ScalarComponents(
+							    op,
+							    left.data,
+							    b,
+							    Traits<Out>::Data(out),
+							    count<Out>
+							);
 						return out;
 					}
 				}
-				for(std::size_t i=0;i<count<Out>;++i) {
-					if constexpr (std::same_as<Tag, AddTag>) Write(out,i,Read(a,i)+Read(b,i));
-					else if constexpr (std::same_as<Tag, SubtractTag>) Write(out,i,Read(a,i)-Read(b,i));
-					else if constexpr (std::same_as<Tag, ScaleTag>) Write(out,i,Read(a,i)*b);
-					else Write(out,i,Read(a,i)/b);
+				for (std::size_t i = 0; i < count<Out>; ++i) {
+					if constexpr (std::same_as<Tag, AddTag>)
+						Write(out, i, Read(a, i) + Read(b, i));
+					else if constexpr (std::same_as<Tag, SubtractTag>)
+						Write(out, i, Read(a, i) - Read(b, i));
+					else if constexpr (std::same_as<Tag, ScaleTag>)
+						Write(out, i, Read(a, i) * b);
+					else
+						Write(out, i, Read(a, i) / b);
 				}
 				return out;
 			}
@@ -657,6 +681,7 @@ export namespace fyuu_math {
 
 		template <class Tag, class ShapeT, class A, class B> struct BinaryExpression {
 			using Shape = ShapeT;
+			using Operation = Tag;
 			A left;
 			B right;
 			template <MathValue Out>
@@ -670,6 +695,80 @@ export namespace fyuu_math {
 			        Evaluated<A>,
 			        Evaluated<B>>()
 			) {
+				// Fuse only plain contiguous leaves without either backend hook.
+				if constexpr (std::same_as<Tag, ScaleTag> && requires {
+					              typename A::Operation;
+					              left.left.value;
+					              left.right.value;
+				              }) {
+					using L = std::remove_cvref_t<decltype(left.left.value)>;
+					using R = std::remove_cvref_t<decltype(left.right.value)>;
+					using S = Scalar<Out>;
+					if constexpr (
+					    std::same_as<typename A::Operation, AddTag> && LogicalContiguous<L> &&
+					    LogicalContiguous<R> &&
+					    std::same_as<adl::Result<AddTag, typename A::Shape, L, R>, adl::Missing> &&
+					    std::same_as<
+					        adl::Result<Tag, Out, Evaluated<A>, Evaluated<B>>,
+					        adl::Missing> &&
+					    requires(Out& v) {
+						    { Traits<Out>::Data(v) } noexcept -> std::same_as<S*>;
+					    }
+					) {
+						if (!std::is_constant_evaluated() && simd::available) {
+#if defined(__clang__)
+#pragma clang fp contract(off)
+#endif
+							auto out = Traits<Out>::Create();
+							auto a = Traits<L>::Data(left.left.value),
+							     b = Traits<R>::Data(left.right.value);
+							auto destination = Traits<Out>::Data(out);
+							for (std::size_t i = 0; i < count<Out>; ++i) {
+								S sum = a[i] + b[i];
+								destination[i] = sum * right;
+							}
+							return out;
+						}
+					}
+				}
+				// Preserve separate multiplication and addition, including their rounding.
+				if constexpr (std::same_as<Tag, AddTag> && requires {
+					              typename B::Operation;
+					              left.value;
+					              right.left.value;
+				              }) {
+					using L = std::remove_cvref_t<decltype(left.value)>;
+					using R = std::remove_cvref_t<decltype(right.left.value)>;
+					using S = Scalar<Out>;
+					if constexpr (
+					    std::same_as<typename B::Operation, ScaleTag> && LogicalContiguous<L> &&
+					    LogicalContiguous<R> &&
+					    std::
+					        same_as<adl::Result<ScaleTag, typename B::Shape, R, S>, adl::Missing> &&
+					    std::same_as<
+					        adl::Result<Tag, Out, Evaluated<A>, Evaluated<B>>,
+					        adl::Missing> &&
+					    requires(Out& v) {
+						    { Traits<Out>::Data(v) } noexcept -> std::same_as<S*>;
+					    }
+					) {
+						if (!std::is_constant_evaluated() && simd::available) {
+#if defined(__clang__)
+#pragma clang fp contract(off)
+#endif
+
+							auto out = Traits<Out>::Create();
+							auto a = Traits<L>::Data(left.value);
+							auto b = Traits<R>::Data(right.left.value);
+							auto destination = Traits<Out>::Data(out);
+							for (std::size_t i = 0; i < count<Out>; ++i) {
+								S product = b[i] * right.right;
+								destination[i] = a[i] + product;
+							}
+							return out;
+						}
+					}
+				}
 				auto const& a = EvaluateOperand(left);
 				auto const& b = EvaluateOperand(right);
 				return adl::Dispatch<Tag, Out>(
@@ -721,8 +820,7 @@ export namespace fyuu_math {
 	// The operand is intentionally unconstrained: vector-ness and shape checks live
 	// on the operator| overloads, so the same Dot holder serves compile-time
 	// (Expression) operands and runtime-sized (RuntimeVector) span operands.
-	template <class E>
-	struct Dot {
+	template <class E> struct Dot {
 		E right;
 	};
 
@@ -745,7 +843,65 @@ export namespace fyuu_math {
 			else
 				return Leaf<U>{std::forward<T>(value)};
 		}
+
+		// Borrowed, read-only views whose physical order is selected by a layout
+		// enumerator. Only Index() changes with the layout, so logical coordinates and
+		// every algorithm result stay layout-independent.
+		template <MathScalar S, std::size_t R, std::size_t C, MatrixLayout Layout>
+		struct MatrixView {
+			S const* data;
+		};
+		template <MathScalar S, QuaternionLayout Layout>
+		struct QuaternionView {
+			S const* data;
+		};
 	} // namespace detail
+
+	// Column-major storage linearizes as c*R + r, so its logical shape is the
+	// transpose of the physical array dimensions. Only row-major/XYZW map physical
+	// order onto logical order; other layouts expose no Data and are read
+	// componentwise, which keeps LogicalContiguous honest.
+	template <MathScalar S, std::size_t R, std::size_t C, MatrixLayout Layout>
+	struct MathTraits<detail::MatrixView<S, R, C, Layout>> {
+		using Scalar = S;
+		using T = detail::MatrixView<S, R, C, Layout>;
+		static constexpr Category category = Category::Matrix;
+		static constexpr bool is_owning = false;
+		static constexpr std::size_t rows = Layout == MatrixLayout::RowMajor ? R : C;
+		static constexpr std::size_t columns = Layout == MatrixLayout::RowMajor ? C : R;
+		static constexpr std::size_t Index(std::size_t r, std::size_t c) noexcept {
+			return Layout == MatrixLayout::RowMajor ? r * C + c : c * R + r;
+		}
+		static constexpr S const* Data(T const& value) noexcept
+			requires(Layout == MatrixLayout::RowMajor) {
+			return value.data;
+		}
+		static constexpr S Read(T const& value, std::size_t r, std::size_t c) noexcept {
+			return value.data[Index(r, c)];
+		}
+	};
+
+	template <MathScalar S, QuaternionLayout Layout>
+	struct MathTraits<detail::QuaternionView<S, Layout>> {
+		using Scalar = S;
+		using T = detail::QuaternionView<S, Layout>;
+		static constexpr Category category = Category::Quaternion;
+		static constexpr bool is_owning = false;
+		static constexpr std::size_t Index(QuaternionComponent c) noexcept {
+			auto const i = static_cast<std::size_t>(c);
+			if constexpr (Layout == QuaternionLayout::XYZW)
+				return i;
+			else
+				return i == 3 ? 0 : i + 1; // physical order W, X, Y, Z
+		}
+		static constexpr S const* Data(T const& value) noexcept
+			requires(Layout == QuaternionLayout::XYZW) {
+			return value.data;
+		}
+		static constexpr S Read(T const& value, QuaternionComponent c) noexcept {
+			return value.data[Index(c)];
+		}
+	};
 
 	template <VectorLike T>
 	[[nodiscard]] constexpr auto AsVector(T&& value) noexcept(detail::NothrowCapture<T>()) {
@@ -759,6 +915,46 @@ export namespace fyuu_math {
 	[[nodiscard]] constexpr auto AsQuaternion(T&& value) noexcept(detail::NothrowCapture<T>()) {
 		return detail::Capture(std::forward<T>(value));
 	}
+
+	// Explicit-layout adaptation of borrowed storage. The layout is the leading
+	// template argument, e.g. AsMatrix<MatrixLayout::ColumnMajor>(buffer) or
+	// AsQuaternion<QuaternionLayout::WXYZ>(wxyz). These views are read-only and
+	// borrow the caller's data; rvalue std::array is rejected so they cannot dangle.
+	template <MatrixLayout Layout, MathScalar S, std::size_t R, std::size_t C>
+	[[nodiscard]] constexpr auto AsMatrix(S const (&value)[R][C]) noexcept {
+		return detail::Leaf<detail::MatrixView<S, R, C, Layout>>{
+		    detail::MatrixView<S, R, C, Layout>{&value[0][0]}
+		};
+	}
+	template <MatrixLayout Layout, MathScalar S, std::size_t R, std::size_t C>
+	[[nodiscard]] constexpr auto AsMatrix(std::array<std::array<S, C>, R> const& value) noexcept {
+		return detail::Leaf<detail::MatrixView<S, R, C, Layout>>{
+		    detail::MatrixView<S, R, C, Layout>{value[0].data()}
+		};
+	}
+	template <MatrixLayout Layout, MathScalar S, std::size_t R, std::size_t C>
+	void AsMatrix(std::array<std::array<S, C>, R>&&) = delete;
+
+	template <QuaternionLayout Layout, MathScalar S>
+	[[nodiscard]] constexpr auto AsQuaternion(S const (&value)[4]) noexcept {
+		return detail::Leaf<detail::QuaternionView<S, Layout>>{
+		    detail::QuaternionView<S, Layout>{value}
+		};
+	}
+	template <QuaternionLayout Layout, MathScalar S>
+	[[nodiscard]] constexpr auto AsQuaternion(std::array<S, 4> const& value) noexcept {
+		return detail::Leaf<detail::QuaternionView<S, Layout>>{
+		    detail::QuaternionView<S, Layout>{value.data()}
+		};
+	}
+	template <QuaternionLayout Layout, MathScalar S>
+	[[nodiscard]] constexpr auto AsQuaternion(std::span<S const, 4> value) noexcept {
+		return detail::Leaf<detail::QuaternionView<S, Layout>>{
+		    detail::QuaternionView<S, Layout>{value.data()}
+		};
+	}
+	template <QuaternionLayout Layout, MathScalar S>
+	void AsQuaternion(std::array<S, 4>&&) = delete;
 
 	template <detail::Expression E, MathValue Out>
 	    requires Compatible<Out, typename E::Shape>
@@ -818,16 +1014,25 @@ export namespace fyuu_math {
 	[[nodiscard]] constexpr std::expected<Out, MathError>
 	operator>>(detail::DivisionExpression<E, S> const& expression, ResultType<Out>) noexcept(
 	    noexcept(detail::EvaluateOperand(expression.source)) &&
-	    detail::adl::Nothrow<DivideTag, Out,
-	        detail::BinaryFallback<DivideTag, Out, detail::Evaluated<E>, S>, detail::Evaluated<E>, S>()
+	    detail::adl::Nothrow<
+	        DivideTag,
+	        Out,
+	        detail::BinaryFallback<DivideTag, Out, detail::Evaluated<E>, S>,
+	        detail::Evaluated<E>,
+	        S>()
 	) {
 		// Validate before evaluating the source or entering a backend customization.
 		if (expression.divisor == S(0))
 			return std::unexpected(MathError::DivisionByZero);
 		auto const& value = detail::EvaluateOperand(expression.source);
 		return detail::adl::Dispatch<DivideTag, Out>(
-		    detail::BinaryFallback<DivideTag, Out, detail::Evaluated<E>, S>{value, expression.divisor},
-		    value, expression.divisor);
+		    detail::BinaryFallback<DivideTag, Out, detail::Evaluated<E>, S>{
+		        value,
+		        expression.divisor
+		    },
+		    value,
+		    expression.divisor
+		);
 	}
 	template <detail::Expression A, detail::Expression B>
 	    requires detail::Multipliable<A, B>
@@ -967,22 +1172,30 @@ export namespace fyuu_math {
 			{ e.component(i) } -> std::same_as<typename std::remove_cvref_t<E>::Scalar>;
 		};
 
-		template <MathScalar S>
-		struct RuntimeLeaf {
+		template <MathScalar S> struct RuntimeLeaf {
 			using Scalar = S;
 			std::span<S const> storage;
-			constexpr std::size_t size() const noexcept { return storage.size(); }
-			constexpr bool consistent() const noexcept { return true; }
-			constexpr S component(std::size_t i) const noexcept { return storage[i]; }
-			constexpr S const* data() const noexcept { return storage.data(); }
+			constexpr std::size_t size() const noexcept {
+				return storage.size();
+			}
+			constexpr bool consistent() const noexcept {
+				return true;
+			}
+			constexpr S component(std::size_t i) const noexcept {
+				return storage[i];
+			}
+			constexpr S const* data() const noexcept {
+				return storage.data();
+			}
 		};
 
-		template <class Tag, RuntimeVector A, RuntimeVector B>
-		struct RuntimeBinary {
+		template <class Tag, RuntimeVector A, RuntimeVector B> struct RuntimeBinary {
 			using Scalar = typename A::Scalar;
 			A left;
 			B right;
-			constexpr std::size_t size() const noexcept { return left.size(); }
+			constexpr std::size_t size() const noexcept {
+				return left.size();
+			}
 			constexpr bool consistent() const noexcept {
 				return left.consistent() && right.consistent() && left.size() == right.size();
 			}
@@ -994,24 +1207,30 @@ export namespace fyuu_math {
 			}
 		};
 
-		template <RuntimeVector E>
-		struct RuntimeNegate {
+		template <RuntimeVector E> struct RuntimeNegate {
 			using Scalar = typename E::Scalar;
 			E source;
-			constexpr std::size_t size() const noexcept { return source.size(); }
-			constexpr bool consistent() const noexcept { return source.consistent(); }
+			constexpr std::size_t size() const noexcept {
+				return source.size();
+			}
+			constexpr bool consistent() const noexcept {
+				return source.consistent();
+			}
 			constexpr Scalar component(std::size_t i) const noexcept {
 				return -source.component(i);
 			}
 		};
 
-		template <RuntimeVector E, MathScalar S>
-		struct RuntimeScale {
+		template <RuntimeVector E, MathScalar S> struct RuntimeScale {
 			using Scalar = S;
 			E source;
 			S scalar;
-			constexpr std::size_t size() const noexcept { return source.size(); }
-			constexpr bool consistent() const noexcept { return source.consistent(); }
+			constexpr std::size_t size() const noexcept {
+				return source.size();
+			}
+			constexpr bool consistent() const noexcept {
+				return source.consistent();
+			}
 			constexpr Scalar component(std::size_t i) const noexcept {
 				return source.component(i) * scalar;
 			}
@@ -1020,34 +1239,33 @@ export namespace fyuu_math {
 		// Terminal scalar division: like the static DivisionExpression it deliberately
 		// has no component(), so it cannot be composed or reduced further. A zero
 		// divisor is reported only when the result is materialized.
-		template <RuntimeVector E, MathScalar S>
-		struct RuntimeDivide {
+		template <RuntimeVector E, MathScalar S> struct RuntimeDivide {
 			using Scalar = S;
 			E source;
 			S divisor;
-			constexpr std::size_t size() const noexcept { return source.size(); }
-			constexpr bool consistent() const noexcept { return source.consistent(); }
+			constexpr std::size_t size() const noexcept {
+				return source.size();
+			}
+			constexpr bool consistent() const noexcept {
+				return source.consistent();
+			}
 		};
 
 		// Shape/leaf metadata used to select the SIMD fast paths below.
-		template <class E>
-		inline constexpr bool IsRuntimeLeafV = false;
+		template <class E> inline constexpr bool IsRuntimeLeafV = false;
+		template <MathScalar S> inline constexpr bool IsRuntimeLeafV<RuntimeLeaf<S>> = true;
+		template <class E> inline constexpr bool IsRuntimeBinaryAdd = false;
 		template <MathScalar S>
-		inline constexpr bool IsRuntimeLeafV<RuntimeLeaf<S>> = true;
-		template <class E>
-		inline constexpr bool IsRuntimeBinaryAdd = false;
+		inline constexpr bool
+		    IsRuntimeBinaryAdd<RuntimeBinary<AddTag, RuntimeLeaf<S>, RuntimeLeaf<S>>> = true;
+		template <class E> inline constexpr bool IsRuntimeBinarySub = false;
 		template <MathScalar S>
-		inline constexpr bool IsRuntimeBinaryAdd<RuntimeBinary<AddTag, RuntimeLeaf<S>, RuntimeLeaf<S>>> = true;
-		template <class E>
-		inline constexpr bool IsRuntimeBinarySub = false;
-		template <MathScalar S>
-		inline constexpr bool IsRuntimeBinarySub<RuntimeBinary<SubtractTag, RuntimeLeaf<S>, RuntimeLeaf<S>>> = true;
-		template <class E>
-		inline constexpr bool IsRuntimeLeafScale = false;
+		inline constexpr bool
+		    IsRuntimeBinarySub<RuntimeBinary<SubtractTag, RuntimeLeaf<S>, RuntimeLeaf<S>>> = true;
+		template <class E> inline constexpr bool IsRuntimeLeafScale = false;
 		template <MathScalar S>
 		inline constexpr bool IsRuntimeLeafScale<RuntimeScale<RuntimeLeaf<S>, S>> = true;
-		template <class E>
-		inline constexpr bool IsRuntimeLeafNegate = false;
+		template <class E> inline constexpr bool IsRuntimeLeafNegate = false;
 		template <MathScalar S>
 		inline constexpr bool IsRuntimeLeafNegate<RuntimeNegate<RuntimeLeaf<S>>> = true;
 
@@ -1057,17 +1275,21 @@ export namespace fyuu_math {
 		// casts keep the comparison defined for unrelated buffers.
 		template <class S>
 		constexpr bool SafeWrite(S const* a, S const* out, std::size_t size) noexcept {
-			if (size == 0) return true;
+			if (size == 0)
+				return true;
 			auto begin_a = reinterpret_cast<std::uintptr_t>(a);
 			auto begin_o = reinterpret_cast<std::uintptr_t>(out);
-			if (begin_a == begin_o) return true;
+			if (begin_a == begin_o)
+				return true;
 			auto bytes = size * sizeof(S);
 			return begin_a + bytes <= begin_o || begin_o + bytes <= begin_a;
 		}
 
 		template <RuntimeVector E, class S, std::size_t Ext>
-			requires std::same_as<typename E::Scalar, S>
-		constexpr std::expected<void, MathError> WriteRuntime(E const& e, std::span<S, Ext> out
+		    requires std::same_as<typename E::Scalar, S>
+		constexpr std::expected<void, MathError> WriteRuntime(
+		    E const& e,
+		    std::span<S, Ext> out
 		) noexcept {
 			// Validate before touching the output so an inconsistent tree never indexes
 			// out of bounds or partially writes the buffer.
@@ -1080,24 +1302,42 @@ export namespace fyuu_math {
 					if constexpr (IsRuntimeBinaryAdd<E>) {
 						if (SafeWrite(e.left.data(), out.data(), n) &&
 						    SafeWrite(e.right.data(), out.data(), n)) {
-							simd::Components<Op::Add>(e.left.data(), e.right.data(), out.data(), n);
+							simd::Components(Op::Add, e.left.data(), e.right.data(), out.data(), n);
 							return {};
 						}
 					} else if constexpr (IsRuntimeBinarySub<E>) {
 						if (SafeWrite(e.left.data(), out.data(), n) &&
 						    SafeWrite(e.right.data(), out.data(), n)) {
-							simd::Components<Op::Subtract>(e.left.data(), e.right.data(), out.data(), n);
+							simd::Components(
+							    Op::Subtract,
+							    e.left.data(),
+							    e.right.data(),
+							    out.data(),
+							    n
+							);
 							return {};
 						}
 					} else if constexpr (IsRuntimeLeafScale<E>) {
 						if (SafeWrite(e.source.data(), out.data(), n)) {
-							simd::ScalarComponents<Op::Scale>(e.source.data(), e.scalar, out.data(), n);
+							simd::ScalarComponents(
+							    Op::Scale,
+							    e.source.data(),
+							    e.scalar,
+							    out.data(),
+							    n
+							);
 							return {};
 						}
 					} else if constexpr (IsRuntimeLeafNegate<E>) {
 						// Scaling by -1 matches unary minus, including the sign of zero.
 						if (SafeWrite(e.source.data(), out.data(), n)) {
-							simd::ScalarComponents<Op::Scale>(e.source.data(), S(-1), out.data(), n);
+							simd::ScalarComponents(
+							    Op::Scale,
+							    e.source.data(),
+							    S(-1),
+							    out.data(),
+							    n
+							);
 							return {};
 						}
 					}
@@ -1113,7 +1353,7 @@ export namespace fyuu_math {
 		}
 
 		template <RuntimeVector E, class S, std::size_t Ext>
-			requires std::same_as<typename E::Scalar, S>
+		    requires std::same_as<typename E::Scalar, S>
 		constexpr std::expected<void, MathError> WriteDivide(
 		    RuntimeDivide<E, S> const& e,
 		    std::span<S, Ext> out
@@ -1128,7 +1368,8 @@ export namespace fyuu_math {
 				if (n != 0 && !std::is_constant_evaluated()) {
 					if constexpr (IsRuntimeLeafV<E>) {
 						if (SafeWrite(e.source.data(), out.data(), n)) {
-							simd::ScalarComponents<simd::Operation::Divide>(
+							simd::ScalarComponents(
+							    simd::Operation::Divide,
 							    e.source.data(),
 							    e.divisor,
 							    out.data(),
@@ -1144,29 +1385,24 @@ export namespace fyuu_math {
 			return {};
 		}
 
-		template <class T>
-		inline constexpr bool IsStdVector = false;
-		template <class S, class A>
-		inline constexpr bool IsStdVector<std::vector<S, A>> = true;
+		template <class T> inline constexpr bool IsStdVector = false;
+		template <class S, class A> inline constexpr bool IsStdVector<std::vector<S, A>> = true;
 
 		// Owning, dynamically sized output container for Runtime* results (std::vector<S>
 		// and anything else modeling resize + indexed write). Element scalar must be a
 		// MathScalar. Fixed-size containers like std::array have no resize, so they never
 		// satisfy this and stay on the compile-time VectorValue materialization path.
 		template <class T>
-		concept RuntimeValueContainer = requires {
-			typename std::remove_cvref_t<T>::value_type;
-		} && MathScalar<typename std::remove_cvref_t<T>::value_type> && requires(
-		    std::remove_cvref_t<T>& out,
-		    typename std::remove_cvref_t<T>::value_type value
-		) {
-			{ out.resize(std::size_t{}) } -> std::same_as<void>;
-			out[std::size_t{}] = value;
-		};
+		concept RuntimeValueContainer = requires { typename std::remove_cvref_t<T>::value_type; } &&
+		    MathScalar<typename std::remove_cvref_t<T>::value_type> &&
+		    requires(std::remove_cvref_t<T>& out,
+		             typename std::remove_cvref_t<T>::value_type value) {
+			    { out.resize(std::size_t{}) } -> std::same_as<void>;
+			    out[std::size_t{}] = value;
+		    };
 	} // namespace detail
 
-	template <MathScalar S>
-	[[nodiscard]] constexpr auto AsVector(std::span<S> value) noexcept {
+	template <MathScalar S> [[nodiscard]] constexpr auto AsVector(std::span<S> value) noexcept {
 		return detail::RuntimeLeaf<S>{std::span<S const>(value)};
 	}
 	template <MathScalar S>
@@ -1178,8 +1414,7 @@ export namespace fyuu_math {
 	// deduction works; rvalues are rejected so the borrowed view never dangles.
 	template <class V>
 	    requires detail::IsStdVector<std::remove_cvref_t<V>> &&
-	             MathScalar<typename std::remove_cvref_t<V>::value_type> &&
-	             std::is_lvalue_reference_v<V>
+	    MathScalar<typename std::remove_cvref_t<V>::value_type> && std::is_lvalue_reference_v<V>
 	[[nodiscard]] constexpr auto AsVector(V&& value) noexcept {
 		using S = typename std::remove_cvref_t<V>::value_type;
 		return detail::RuntimeLeaf<S>{std::span<S const>(value)};
@@ -1226,8 +1461,10 @@ export namespace fyuu_math {
 	}
 
 	template <detail::RuntimeVector E>
-	[[nodiscard]] constexpr std::expected<typename E::Scalar, MathError>
-	operator|(E const& e, LengthTag) noexcept {
+	[[nodiscard]] constexpr std::expected<typename E::Scalar, MathError> operator|(
+	    E const& e,
+	    LengthTag
+	) noexcept {
 		using S = typename E::Scalar;
 		if (!e.consistent())
 			return std::unexpected(MathError::SizeMismatch);
@@ -1247,7 +1484,8 @@ export namespace fyuu_math {
 			for (std::size_t i = 0; i < n; ++i) {
 				S const x = e.component(i);
 				S const ax = x < S(0) ? -x : x;
-				if (ax > maxabs) maxabs = ax;
+				if (ax > maxabs)
+					maxabs = ax;
 			}
 			if (!std::isfinite(maxabs)) { // inf/nan: fall back to hypot semantics
 				S result = 0;
@@ -1268,11 +1506,12 @@ export namespace fyuu_math {
 	}
 	template <detail::RuntimeVector A, detail::RuntimeVector B>
 	    requires std::same_as<typename A::Scalar, typename B::Scalar>
-	[[nodiscard]] constexpr std::expected<typename A::Scalar, MathError>
-	operator|(A const& a, Dot<B> const& operation) noexcept {
+	[[nodiscard]] constexpr std::expected<typename A::Scalar, MathError> operator|(
+	    A const& a,
+	    Dot<B> const& operation
+	) noexcept {
 		using S = typename A::Scalar;
-		if (!a.consistent() || !operation.right.consistent() ||
-		    a.size() != operation.right.size())
+		if (!a.consistent() || !operation.right.consistent() || a.size() != operation.right.size())
 			return std::unexpected(MathError::SizeMismatch);
 		std::size_t const n = a.size();
 		if constexpr (simd::available && detail::IsRuntimeLeafV<A> && detail::IsRuntimeLeafV<B>) {
@@ -1289,8 +1528,10 @@ export namespace fyuu_math {
 	// length must equal the target's compile-time count, else SizeMismatch.
 	template <detail::RuntimeVector E, VectorValue Out>
 	    requires std::same_as<typename E::Scalar, Scalar<Out>>
-	[[nodiscard]] constexpr std::expected<Out, MathError>
-	operator>>(E const& e, ResultType<Out>) noexcept {
+	[[nodiscard]] constexpr std::expected<Out, MathError> operator>>(
+	    E const& e,
+	    ResultType<Out>
+	) noexcept {
 		if (!e.consistent() || e.size() != detail::count<Out>)
 			return std::unexpected(MathError::SizeMismatch);
 		auto out = Traits<Out>::Create();
@@ -1300,8 +1541,10 @@ export namespace fyuu_math {
 	}
 	template <detail::RuntimeVector E, MathScalar S, VectorValue Out>
 	    requires std::same_as<S, Scalar<Out>>
-	[[nodiscard]] constexpr std::expected<Out, MathError>
-	operator>>(detail::RuntimeDivide<E, S> const& e, ResultType<Out>) noexcept {
+	[[nodiscard]] constexpr std::expected<Out, MathError> operator>>(
+	    detail::RuntimeDivide<E, S> const& e,
+	    ResultType<Out>
+	) noexcept {
 		if (e.divisor == S(0))
 			return std::unexpected(MathError::DivisionByZero);
 		if (!e.source.consistent() || e.source.size() != detail::count<Out>)
@@ -1317,8 +1560,7 @@ export namespace fyuu_math {
 	// allocate, so they are not noexcept.
 	template <detail::RuntimeVector E, detail::RuntimeValueContainer Out>
 	    requires std::same_as<typename E::Scalar, typename Out::value_type>
-	[[nodiscard]] constexpr std::expected<Out, MathError>
-	operator>>(E const& e, ResultType<Out>) {
+	[[nodiscard]] constexpr std::expected<Out, MathError> operator>>(E const& e, ResultType<Out>) {
 		using S = typename E::Scalar;
 		if (!e.consistent())
 			return std::unexpected(MathError::SizeMismatch);
@@ -1331,8 +1573,10 @@ export namespace fyuu_math {
 	}
 	template <detail::RuntimeVector E, MathScalar S, detail::RuntimeValueContainer Out>
 	    requires std::same_as<S, typename Out::value_type>
-	[[nodiscard]] constexpr std::expected<Out, MathError>
-	operator>>(detail::RuntimeDivide<E, S> const& e, ResultType<Out>) {
+	[[nodiscard]] constexpr std::expected<Out, MathError> operator>>(
+	    detail::RuntimeDivide<E, S> const& e,
+	    ResultType<Out>
+	) {
 		if (e.divisor == S(0))
 			return std::unexpected(MathError::DivisionByZero);
 		if (!e.source.consistent())
@@ -1351,6 +1595,111 @@ export namespace fyuu_math {
 		using fyuu_math::operator*;
 		using fyuu_math::operator/;
 		using fyuu_math::operator|;
+		using fyuu_math::operator>>;
+	} // namespace detail
+} // namespace fyuu_math
+
+export namespace fyuu_math {
+	namespace detail {
+		template <RuntimeVector E, class S>
+		bool SafeTree(E const& e, S const* out, std::size_t n) noexcept {
+			if constexpr (IsRuntimeLeafV<E>)
+				return SafeWrite(e.data(), out, n);
+			else if constexpr (requires {
+				                   e.left;
+				                   e.right;
+			                   })
+				return SafeTree(e.left, out, n) && SafeTree(e.right, out, n);
+			else if constexpr (requires { e.source; })
+				return SafeTree(e.source, out, n);
+			else
+				return false;
+		}
+	} // namespace detail
+	template <detail::RuntimeVector E, MathScalar S, std::size_t Ext>
+	    requires std::same_as<typename E::Scalar, S>
+	[[nodiscard]] std::expected<void, MathError> operator>>(
+	    E const& e,
+	    std::span<S, Ext> out
+	) noexcept {
+		if (!e.consistent() || e.size() != out.size())
+			return std::unexpected(MathError::SizeMismatch);
+		if (!detail::SafeTree(e, out.data(), out.size()))
+			return std::unexpected(MathError::OverlappingStorage);
+		return detail::WriteRuntime(e, out);
+	}
+	template <detail::RuntimeVector E, MathScalar S, std::size_t Ext>
+	[[nodiscard]] std::expected<void, MathError> operator>>(
+	    detail::RuntimeDivide<E, S> const& e,
+	    std::span<S, Ext> out
+	) noexcept {
+		if (e.divisor == S(0))
+			return std::unexpected(MathError::DivisionByZero);
+		if (!e.source.consistent() || e.source.size() != out.size())
+			return std::unexpected(MathError::SizeMismatch);
+		if (!detail::SafeTree(e.source, out.data(), out.size()))
+			return std::unexpected(MathError::OverlappingStorage);
+		return detail::WriteDivide(e, out);
+	}
+	namespace detail {
+		using fyuu_math::operator>>;
+	}
+} // namespace fyuu_math
+
+export namespace fyuu_math {
+	namespace detail {
+		struct MatrixBatch4 {
+			std::span<float const> values;
+		};
+		struct BatchProduct4 {
+			MatrixBatch4 left, right;
+		};
+	} // namespace detail
+	// Packed row-major float matrices. Each consecutive 16 components is one matrix.
+	template <std::size_t R, std::size_t C, class S, std::size_t E>
+	    requires(R == 4 && C == 4 && std::same_as<std::remove_const_t<S>, float>)
+	[[nodiscard]] auto AsMatrixBatch(std::span<S, E> values) noexcept {
+		return detail::MatrixBatch4{std::span<float const>{values}};
+	}
+	[[nodiscard]] inline auto operator*(detail::MatrixBatch4 a, detail::MatrixBatch4 b) noexcept {
+		return detail::BatchProduct4{a, b};
+	}
+	template <std::size_t E>
+	[[nodiscard]] std::expected<void, MathError> operator>>(
+	    detail::BatchProduct4 batch,
+	    std::span<float, E> out
+	) noexcept {
+		auto a = batch.left.values, b = batch.right.values;
+		if (a.size() % 16 || b.size() % 16 || out.size() != a.size() ||
+		    (b.size() != 16 && b.size() != a.size()))
+			return std::unexpected(MathError::SizeMismatch);
+		if (out.empty())
+			return {};
+		auto overlap = [&](auto input) {
+			auto start = reinterpret_cast<std::uintptr_t>(input.data()),
+			     target = reinterpret_cast<std::uintptr_t>(out.data());
+			return start <= target ? target - start < input.size_bytes() :
+			                         start - target < out.size_bytes();
+		};
+		if (overlap(a) || overlap(b))
+			return std::unexpected(MathError::OverlappingStorage);
+		if constexpr (simd::available)
+			simd::Batch4(a.data(), b.data(), out.data(), a.size() / 16, b.size() == 16);
+		else {
+			for (std::size_t i = 0; i < a.size() / 16; ++i)
+				for (std::size_t r = 0; r < 4; ++r)
+					for (std::size_t c = 0; c < 4; ++c) {
+						auto base = b.size() == 16 ? 0 : i * 16;
+						float value = a[i * 16 + r * 4] * b[base + c];
+						for (std::size_t k = 1; k < 4; ++k)
+							value += a[i * 16 + r * 4 + k] * b[base + k * 4 + c];
+						out[i * 16 + r * 4 + c] = value;
+					}
+		}
+		return {};
+	}
+	namespace detail {
+		using fyuu_math::operator*;
 		using fyuu_math::operator>>;
 	} // namespace detail
 } // namespace fyuu_math

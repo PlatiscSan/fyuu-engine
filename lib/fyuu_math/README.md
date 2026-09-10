@@ -96,7 +96,14 @@ compile-time vector, while a matrix comes only from a two-dimensional form —
 can be a result type; raw arrays and spans are borrowed views. `AsVector` also
 accepts a *dynamic-extent* `std::span<S>` / `std::span<S const>` and an lvalue
 `std::vector<S>`, whose length is decided at evaluation — see Runtime-length
-vectors below.
+vectors below. Matrices and quaternions can additionally be read through an
+explicit physical layout: `AsMatrix<MatrixLayout::ColumnMajor>(array)` and
+`AsQuaternion<QuaternionLayout::WXYZ>(wxyz)` (accepting `S[R][C]` / nested
+`std::array`, and `S[4]` / `std::array<S,4>` / fixed `std::span<S,4>`; rvalue
+`std::array` is rejected so the view cannot dangle). The layout only changes the
+physical storage order, never logical coordinates or results; `Data` (and SIMD
+direct reads) is exposed only where physical order matches logical order
+(RowMajor / XYZW), otherwise components are read one by one.
 
 - Lvalues are borrowed; rvalues are owned by the operand.
 - Borrowed data must stay alive until evaluation completes; earlier edits are observed.

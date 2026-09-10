@@ -39,7 +39,11 @@ namespace fyuu_math::simd {
 	// Source-level addition order matches the scalar recurrence, without horizontal
 	// reductions or approximate reciprocals. Compiler FP contraction settings may
 	// still change rounding. All arrays use logical row order.
-	void Multiply4(float const* a, float const* b, float* result) noexcept {
+	FYUU_MATH_FORCE_INLINE void Multiply4Impl(
+	    float const* a,
+	    float const* b,
+	    float* result
+	) noexcept {
 
 #if defined(FYUU_MATH_SSE2)
 		auto b0 = _mm_loadu_ps(b);
@@ -76,12 +80,29 @@ namespace fyuu_math::simd {
 			result[i] += a[r * 4 + 3] * b[12 + c];
 		}
 #endif
-
 	}
 
+	void Multiply4(float const* a, float const* b, float* result) noexcept {
+		Multiply4Impl(a, b, result);
+	}
+	void Batch4(
+	    float const* __restrict a,
+	    float const* __restrict b,
+	    float* __restrict out,
+	    std::size_t count,
+	    bool shared
+	) noexcept {
+		if (shared) {
+			for (std::size_t i = 0; i < count; ++i)
+				Multiply4Impl(a + i * 16, b, out + i * 16);
+		} else {
+			for (std::size_t i = 0; i < count; ++i)
+				Multiply4Impl(a + i * 16, b + i * 16, out + i * 16);
+		}
+	}
 	std::array<float, 16> Multiply4(float const* a, float const* b) noexcept {
-		std::array<float,16> result;
-		Multiply4(a,b,result.data());
+		std::array<float, 16> result;
+		Multiply4(a, b, result.data());
 		return result;
 	}
 	// These register helpers are private implementation details, not backend-facing types.
@@ -361,7 +382,7 @@ namespace fyuu_math::simd {
 	// Broadcast once instead of constructing and reading a full scalar-filled array.
 	// Keep division as division to preserve its rounding and special-value behavior.
 	template <Operation Op, class S>
-	void ScalarComponents(S const* a, S scalar, S* result, std::size_t size) noexcept {
+	void ScalarComponentsImpl(S const* a, S scalar, S* result, std::size_t size) noexcept {
 		static_assert(Op == Operation::Scale || Op == Operation::Divide);
 		using V = Lanes<S>;
 		auto factor = V::Splat(scalar);
@@ -374,14 +395,47 @@ namespace fyuu_math::simd {
 				V::Store(result + i, V::Divide(value, factor));
 		}
 		for (std::size_t i = full; i < size; ++i) {
-			if constexpr (Op == Operation::Scale) result[i] = a[i] * scalar;
-			else result[i] = a[i] / scalar;
+			if constexpr (Op == Operation::Scale)
+				result[i] = a[i] * scalar;
+			else
+				result[i] = a[i] / scalar;
 		}
 	}
-	template void ScalarComponents<Operation::Scale>(float const*, float, float*, std::size_t) noexcept;
-	template void ScalarComponents<Operation::Divide>(float const*, float, float*, std::size_t) noexcept;
-	template void ScalarComponents<Operation::Scale>(double const*, double, double*, std::size_t) noexcept;
-	template void ScalarComponents<Operation::Divide>(double const*, double, double*, std::size_t) noexcept;
+	// Operation travels as a runtime stack argument: the public kernels are not
+	// templates, so no declared-here/defined-elsewhere template instantiation is
+	// required. The switch resolves once per call, outside the vector loops.
+	void ScalarComponents(
+	    Operation op,
+	    float const* a,
+	    float scalar,
+	    float* result,
+	    std::size_t size
+	) noexcept {
+		switch (op) {
+			case Operation::Scale:
+				return ScalarComponentsImpl<Operation::Scale>(a, scalar, result, size);
+			case Operation::Divide:
+				return ScalarComponentsImpl<Operation::Divide>(a, scalar, result, size);
+			default:
+				return;
+		}
+	}
+	void ScalarComponents(
+	    Operation op,
+	    double const* a,
+	    double scalar,
+	    double* result,
+	    std::size_t size
+	) noexcept {
+		switch (op) {
+			case Operation::Scale:
+				return ScalarComponentsImpl<Operation::Scale>(a, scalar, result, size);
+			case Operation::Divide:
+				return ScalarComponentsImpl<Operation::Divide>(a, scalar, result, size);
+			default:
+				return;
+		}
+	}
 	template <class S, std::size_t FixedSize = 0>
 	FYUU_MATH_FORCE_INLINE S DotImpl(S const* a, S const* b, std::size_t input_size) noexcept {
 		const std::size_t size = FixedSize ? FixedSize : input_size;
@@ -467,6 +521,18 @@ namespace fyuu_math::simd {
 			auto r = block / blocks;
 			auto c = (block % blocks) * V::width;
 			auto count = std::min(V::width, columns - c);
+			// Full registers need no bounded loads or neutral padding. Branch once
+			// per output block instead of checking every inner-product component.
+			if (sizeof(S) == sizeof(float) && count == V::width) {
+				auto x = V::Multiply(V::Splat(a[r * inner]), V::Load(b + c));
+				for (std::size_t k = 1; k < inner; ++k)
+					x = V::Add(
+					    x,
+					    V::Multiply(V::Splat(a[r * inner + k]), V::Load(b + k * columns + c))
+					);
+				V::Store(result + r * columns + c, x);
+				continue;
+			}
 			auto x = V::Multiply(BroadcastPartial(a[r * inner], count), LoadPartial(b + c, count));
 			for (std::size_t k = 1; k < inner; ++k) {
 				x = V::Add(
@@ -481,9 +547,25 @@ namespace fyuu_math::simd {
 		}
 	}
 
-	template <Operation Op>
-	void Components(float const* a, float const* b, float* result, std::size_t size) noexcept {
-		ComponentsImpl<Op>(a, b, result, size);
+	void Components(
+	    Operation op,
+	    float const* a,
+	    float const* b,
+	    float* result,
+	    std::size_t size
+	) noexcept {
+		switch (op) {
+			case Operation::Add:
+				return ComponentsImpl<Operation::Add>(a, b, result, size);
+			case Operation::Subtract:
+				return ComponentsImpl<Operation::Subtract>(a, b, result, size);
+			case Operation::Scale:
+				return ComponentsImpl<Operation::Scale>(a, b, result, size);
+			case Operation::Divide:
+				return ComponentsImpl<Operation::Divide>(a, b, result, size);
+			default:
+				return;
+		}
 	}
 	void Multiply(
 	    float const* a,
@@ -515,9 +597,25 @@ namespace fyuu_math::simd {
 		CrossImpl(a, b, result);
 	}
 
-	template <Operation Op>
-	void Components(double const* a, double const* b, double* result, std::size_t size) noexcept {
-		ComponentsImpl<Op>(a, b, result, size);
+	void Components(
+	    Operation op,
+	    double const* a,
+	    double const* b,
+	    double* result,
+	    std::size_t size
+	) noexcept {
+		switch (op) {
+			case Operation::Add:
+				return ComponentsImpl<Operation::Add>(a, b, result, size);
+			case Operation::Subtract:
+				return ComponentsImpl<Operation::Subtract>(a, b, result, size);
+			case Operation::Scale:
+				return ComponentsImpl<Operation::Scale>(a, b, result, size);
+			case Operation::Divide:
+				return ComponentsImpl<Operation::Divide>(a, b, result, size);
+			default:
+				return;
+		}
 	}
 	void Multiply(
 	    double const* a,
@@ -625,9 +723,19 @@ namespace fyuu_math::simd {
 	float Dot3(float const* a, float const* b) noexcept {
 		return DotImpl<float, 3>(a, b, 3);
 	}
-	template <Operation Op>
-	void Components3(float const* a, float const* b, float* result) noexcept {
-		ComponentsImpl<Op, float, 3>(a, b, result, 3);
+	void Components3(Operation op, float const* a, float const* b, float* result) noexcept {
+		switch (op) {
+			case Operation::Add:
+				return ComponentsImpl<Operation::Add, float, 3>(a, b, result, 3);
+			case Operation::Subtract:
+				return ComponentsImpl<Operation::Subtract, float, 3>(a, b, result, 3);
+			case Operation::Scale:
+				return ComponentsImpl<Operation::Scale, float, 3>(a, b, result, 3);
+			case Operation::Divide:
+				return ComponentsImpl<Operation::Divide, float, 3>(a, b, result, 3);
+			default:
+				return;
+		}
 	}
 	std::array<double, 9> Multiply3(double const* a, double const* b) noexcept {
 		return SquareProduct<double, 3>(a, b);
@@ -647,67 +755,20 @@ namespace fyuu_math::simd {
 	double Dot3(double const* a, double const* b) noexcept {
 		return DotImpl<double, 3>(a, b, 3);
 	}
-	template <Operation Op>
-	void Components3(double const* a, double const* b, double* result) noexcept {
-		ComponentsImpl<Op, double, 3>(a, b, result, 3);
+	void Components3(Operation op, double const* a, double const* b, double* result) noexcept {
+		switch (op) {
+			case Operation::Add:
+				return ComponentsImpl<Operation::Add, double, 3>(a, b, result, 3);
+			case Operation::Subtract:
+				return ComponentsImpl<Operation::Subtract, double, 3>(a, b, result, 3);
+			case Operation::Scale:
+				return ComponentsImpl<Operation::Scale, double, 3>(a, b, result, 3);
+			case Operation::Divide:
+				return ComponentsImpl<Operation::Divide, double, 3>(a, b, result, 3);
+			default:
+				return;
+		}
 	}
-	// Instantiate the finite private operation set; callers never dispatch an opcode.
-	template void Components<Operation::Add>(
-	    float const*,
-	    float const*,
-	    float*,
-	    std::size_t
-	) noexcept;
-	template void Components3<Operation::Add>(float const*, float const*, float*) noexcept;
-	template void Components<Operation::Subtract>(
-	    float const*,
-	    float const*,
-	    float*,
-	    std::size_t
-	) noexcept;
-	template void Components3<Operation::Subtract>(float const*, float const*, float*) noexcept;
-	template void Components<Operation::Scale>(
-	    float const*,
-	    float const*,
-	    float*,
-	    std::size_t
-	) noexcept;
-	template void Components3<Operation::Scale>(float const*, float const*, float*) noexcept;
-	template void Components<Operation::Divide>(
-	    float const*,
-	    float const*,
-	    float*,
-	    std::size_t
-	) noexcept;
-	template void Components3<Operation::Divide>(float const*, float const*, float*) noexcept;
-	template void Components<Operation::Add>(
-	    double const*,
-	    double const*,
-	    double*,
-	    std::size_t
-	) noexcept;
-	template void Components3<Operation::Add>(double const*, double const*, double*) noexcept;
-	template void Components<Operation::Subtract>(
-	    double const*,
-	    double const*,
-	    double*,
-	    std::size_t
-	) noexcept;
-	template void Components3<Operation::Subtract>(double const*, double const*, double*) noexcept;
-	template void Components<Operation::Scale>(
-	    double const*,
-	    double const*,
-	    double*,
-	    std::size_t
-	) noexcept;
-	template void Components3<Operation::Scale>(double const*, double const*, double*) noexcept;
-	template void Components<Operation::Divide>(
-	    double const*,
-	    double const*,
-	    double*,
-	    std::size_t
-	) noexcept;
-	template void Components3<Operation::Divide>(double const*, double const*, double*) noexcept;
 } // namespace fyuu_math::simd
 #undef FYUU_MATH_SSE2
 #undef FYUU_MATH_NEON

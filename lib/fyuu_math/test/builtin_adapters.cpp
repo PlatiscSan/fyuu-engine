@@ -1,4 +1,5 @@
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <span>
 import fyuu_math;
@@ -76,5 +77,43 @@ int main() {
 	    (fm::AsVector(zero) | fm::Normalize{fm::Tolerance<float>{1e-6f, 1e-5f}}) >> fm::As<std::array<float, 3>>;
 	if (degenerate || degenerate.error() != fm::MathError::Degenerate) return 1;
 
+	// ---- Explicit layout adaptation ----
+	// Column-major physical storage; the logical shape is the transpose of the
+	// physical dimensions, so the same data reads as the same logical matrix.
+	float a_rm[2][2]{{1.0f, 2.0f}, {3.0f, 4.0f}};
+	float a_cm[2][2]{{1.0f, 3.0f}, {2.0f, 4.0f}}; // physical columns of that matrix
+	float x2[2]{5.0f, 6.0f};
+	auto prod_rm = (fm::AsMatrix(a_rm) * fm::AsVector(x2)) >> fm::As<std::array<float, 2>>;
+	auto prod_cm = (fm::AsMatrix<fm::MatrixLayout::ColumnMajor>(a_cm) * fm::AsVector(x2)) >>
+	    fm::As<std::array<float, 2>>;
+	if (prod_rm[0] != 17 || prod_rm[1] != 39) return 1;
+	if (prod_cm[0] != prod_rm[0] || prod_cm[1] != prod_rm[1]) return 1;
+
+	// WXYZ physical order (w, x, y, z) holding the same logical quaternion as the
+	// XYZW form: a +90° rotation about Z must send +X to +Y in both layouts.
+	std::array<float, 4> q_xyzw{0.0f, 0.0f, 0.70710678f, 0.70710678f};
+	float q_wxyz[4]{0.70710678f, 0.0f, 0.0f, 0.70710678f};
+	float v3[3]{1.0f, 0.0f, 0.0f};
+	auto rot_xyzw = (fm::AsQuaternion<fm::QuaternionLayout::XYZW>(q_xyzw) * fm::AsVector(v3)) >>
+	    fm::As<std::array<float, 3>>;
+	auto rot_wxyz = (fm::AsQuaternion<fm::QuaternionLayout::WXYZ>(q_wxyz) * fm::AsVector(v3)) >>
+	    fm::As<std::array<float, 3>>;
+	if (std::abs(rot_xyzw[0]) > 1e-5f || std::abs(rot_xyzw[1] - 1.0f) > 1e-5f) return 1;
+	if (rot_wxyz[0] != rot_xyzw[0] || rot_wxyz[1] != rot_xyzw[1] || rot_wxyz[2] != rot_xyzw[2])
+		return 1;
+
 	return 0;
 }
+
+// Data (and SIMD eligibility) is exposed only where physical order equals logical
+// order; other layouts stay correct through componentwise Read.
+static_assert(fm::LogicalContiguous<
+              fm::detail::MatrixView<float, 2, 2, fm::MatrixLayout::RowMajor>>);
+static_assert(!fm::LogicalContiguous<
+              fm::detail::MatrixView<float, 2, 2, fm::MatrixLayout::ColumnMajor>>);
+static_assert(fm::LogicalContiguous<
+              fm::detail::QuaternionView<float, fm::QuaternionLayout::XYZW>>);
+static_assert(!fm::LogicalContiguous<
+              fm::detail::QuaternionView<float, fm::QuaternionLayout::WXYZ>>);
+static_assert(fm::MatrixOf<fm::detail::MatrixView<float, 2, 2, fm::MatrixLayout::ColumnMajor>, 2, 2>);
+static_assert(fm::MatrixOf<fm::detail::MatrixView<float, 2, 3, fm::MatrixLayout::ColumnMajor>, 3, 2>);

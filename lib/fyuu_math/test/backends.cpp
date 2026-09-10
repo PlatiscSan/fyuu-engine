@@ -13,6 +13,8 @@ int main() {
 	if (converted.x != 5 || converted.y != 7 || converted.z != 9)
 		return 1;
 	auto matrix = fm::Identity >> fm::As<glm::mat3>;
+	auto expression = fm::AsVector(b+b) >> fm::As<glm::vec3>;
+	if(expression.x!=8 || expression.y!=10 || expression.z!=12) return 1;
 	auto product = (fm::AsMatrix(matrix) * fm::AsVector(b)) >> fm::As<Eigen::Vector3f>;
 	return product.isApprox(b) ? 0 : 1;
 }

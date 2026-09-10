@@ -84,6 +84,9 @@ void TestMatrixQuaternion() {
 		Check(mv.values[r],expected);
 	}
 	auto identity=fm::Identity>>fm::As<Matrix>;
+	auto transpose=(fm::AsMatrix(a)|fm::Transpose)>>fm::As<Matrix>;
+	for(std::size_t r=0;r<4;++r)
+		for(std::size_t c=0;c<4;++c) Check(transpose.values[r*4+c],a.values[c*4+r]);
 	auto inverse=(fm::AsMatrix(identity)|fm::Inverse{fm::Tolerance<float>{1e-6f,1e-5f}})>>fm::As<Matrix>;
 	if(!inverse) throw std::runtime_error("identity inverse failed");
 	for(std::size_t i=0;i<16;++i) Check(inverse->values[i],identity.values[i]);
@@ -98,6 +101,11 @@ template<class S> void SpecialValues() {
 	using V=Vector<S,7>;
 	V input{{-S(0),S(0),std::numeric_limits<S>::infinity(),-std::numeric_limits<S>::infinity(),std::numeric_limits<S>::quiet_NaN(),S(7),-S(7)}};
 	auto divided=(fm::AsVector(input)/S(3))>>fm::As<V>;
+	auto negative=(-fm::AsVector(input))>>fm::As<V>;
+	if(std::signbit(negative.values[0]) || !std::signbit(negative.values[1]) ||
+	   !std::isinf(negative.values[2]) || !std::signbit(negative.values[2]) ||
+	   !std::isinf(negative.values[3]) || std::signbit(negative.values[3]) ||
+	   !std::isnan(negative.values[4])) throw std::runtime_error("negation special value mismatch");
 	auto scaled=(fm::AsVector(input)*S(3))>>fm::As<V>;
 	for(auto const& result : {divided.value(),scaled}) {
 		if(!std::signbit(result.values[0]) || std::signbit(result.values[1]) ||
@@ -118,12 +126,16 @@ template <class S, std::size_t N> void Run() {
 		b.values[i] = S(i % 5 + 1);
 	}
 	auto sum = (fm::AsVector(a) + fm::AsVector(b)) >> fm::As<Vector<S, N>>;
+	auto combined = (fm::AsVector(a) + fm::AsVector(b)*S(3)) >> fm::As<Vector<S,N>>;
+	auto negative = (-fm::AsVector(a)) >> fm::As<Vector<S,N>>;
 	auto sub = (fm::AsVector(a) - fm::AsVector(b)) >> fm::As<Vector<S, N>>;
 	auto scale = (fm::AsVector(a) * S(2)) >> fm::As<Vector<S, N>>;
 	auto div = (fm::AsVector(a) / S(2)) >> fm::As<Vector<S, N>>;
 	S dot = 0;
 	for (std::size_t i = 0; i < N; ++i) {
 		Check(sum.values[i], a.values[i] + b.values[i]);
+		Check(combined.values[i], a.values[i] + b.values[i]*S(3));
+		Check(negative.values[i], -a.values[i]);
 		Check(sub.values[i], a.values[i] - b.values[i]);
 		Check(scale.values[i], a.values[i] * 2);
 		Check(div.value().values[i], a.values[i] / 2);
