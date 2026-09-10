@@ -36,7 +36,9 @@ template<class S,std::size_t N> void Run(char const* name) {
  }
  b={}; for(std::size_t r=0;r<N;++r) b.values[r*N+(r+1)%N]=1;
  auto initial=a;
- constexpr int iterations=20000*N;
+ // Keep total work roughly constant across N. The cycle matrix returns to the
+ // initial value after N multiplications, so iterations must be a multiple of N.
+ constexpr int iterations=((8000000/(N*N*N))/N+1)*N;
  for(int round=0;round<8;++round) {
   auto start=std::chrono::steady_clock::now();
   for(int i=0;i<iterations;++i) a=Product(a,b);
@@ -46,4 +48,13 @@ template<class S,std::size_t N> void Run(char const* name) {
   if(round) std::cout<<name<<','<<ns<<','<<checksum<<'\n';
  }
 }
-int main() { Run<float,8>("f32x8"); Run<double,8>("f64x8"); Run<float,7>("f32x7"); Run<double,7>("f64x7"); }
+int main() {
+ Run<float,2>("f32x2"); Run<double,2>("f64x2");
+ Run<float,3>("f32x3"); Run<float,4>("f32x4");
+ Run<float,5>("f32x5"); Run<float,6>("f32x6");
+ Run<float,7>("f32x7"); Run<double,7>("f64x7");
+ Run<float,8>("f32x8"); Run<double,8>("f64x8");
+ Run<float,12>("f32x12"); Run<double,12>("f64x12");
+ Run<float,16>("f32x16"); Run<double,16>("f64x16");
+ Run<float,32>("f32x32"); Run<double,32>("f64x32");
+}

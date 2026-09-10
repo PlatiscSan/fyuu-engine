@@ -177,10 +177,44 @@ void BenchmarkMatrix() {
 	Check(a.values[0],1); Check(a.values[15],16);
 	std::cout<<"matrix4 product: "<<double(ns)/2000000<<" ns/op; checksum "<<a.values[15]<<'\n';
 }
+#if defined(_MSC_VER)
+#define NOINLINE __declspec(noinline)
+#else
+#define NOINLINE __attribute__((noinline))
+#endif
+NOINLINE Vector<float,64> Negate(Vector<float,64> const& a) { return (-fm::AsVector(a))>>fm::As<Vector<float,64>>; }
+NOINLINE Matrix Transpose(Matrix const& a) { return (fm::AsMatrix(a)|fm::Transpose)>>fm::As<Matrix>; }
+NOINLINE Quaternion Conjugate(Quaternion const& a) { return (fm::AsQuaternion(a)|fm::Conjugate)>>fm::As<Quaternion>; }
+NOINLINE Vector<float,64> ScaleAdd(Vector<float,64> const& a) { return (fm::AsVector(a)+fm::AsVector(a)*-2.0f)>>fm::As<Vector<float,64>>; }
+NOINLINE Vector<float,64> SumScale(Vector<float,64> const& a) { return ((fm::AsVector(a)+fm::AsVector(a))*-0.5f)>>fm::As<Vector<float,64>>; }
+// Times an operation and asserts it is an involution of the initial value
+// (negate/transpose/conjugate applied twice return the input).
+template<class T, class F> void Measure(char const* name,T initial,F operation) {
+	T value=initial;
+	for(int i=0;i<10000;++i) value=operation(value);
+	constexpr int iterations=2000000;
+	for(int round=0;round<9;++round) {
+		auto start=std::chrono::steady_clock::now();
+		for(int i=0;i<iterations;++i) value=operation(value);
+		auto elapsed=std::chrono::duration<double,std::nano>(std::chrono::steady_clock::now()-start).count();
+		double checksum=0;
+		for(std::size_t i=0;i<value.values.size();++i) { Check(value.values[i],initial.values[i]); checksum+=value.values[i]; }
+		std::cout<<name<<','<<elapsed/iterations<<','<<checksum<<'\n';
+	}
+}
 int main() {
 	try {
 		TestMatrixQuaternion();
 		BenchmarkMatrix();
+		Vector<float, 64> uvec{};
+		for (std::size_t i = 0; i < 64; ++i) uvec.values[i] = float(i + 1);
+		Matrix umat{};
+		for (std::size_t i = 0; i < 16; ++i) umat.values[i] = float(i + 1);
+		Measure("sum_scale64", uvec, SumScale);
+		Measure("scale_add64", uvec, ScaleAdd);
+		Measure("negate64", uvec, Negate);
+		Measure("transpose4", umat, Transpose);
+		Measure("conjugate", Quaternion{{1, 2, 3, 4}}, Conjugate);
 		SpecialValues<float>(); SpecialValues<double>();
 		Run<float,1>(); Run<float,2>(); Run<float,5>(); Run<float,17>(); Run<float,65>();
 		Run<double,1>(); Run<double,2>(); Run<double,5>(); Run<double,17>(); Run<double,65>();

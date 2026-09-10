@@ -2,9 +2,15 @@ module;
 #ifndef FYUU_MATH_ENABLE_SIMD
 #define FYUU_MATH_ENABLE_SIMD 1
 #endif
+#include <version>
+#if !defined(__cpp_lib_modules)
 #include <cstddef>
 #include <algorithm>
 #include <array>
+#endif // !defined(__cpp_lib_modules)
+// The standard <simd> backend needs no intrinsic headers; only pull them when the
+// library has no std::simd to offer.
+#if !defined(__cpp_lib_simd)
 #if FYUU_MATH_ENABLE_SIMD && (defined(__SSE2__) || defined(_M_X64))
 #include <immintrin.h>
 #define FYUU_MATH_SSE2
@@ -17,9 +23,17 @@ module;
 #endif
 #define FYUU_MATH_NEON
 #endif
+#else
+#if FYUU_MATH_ENABLE_SIMD
+#include <simd>
+#endif // FYUU_MATH_ENABLE_SIMD
+#endif // !defined(__cpp_lib_simd)
 // Internal module partition: intrinsic types never enter the public interface.
 // Reference: https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html
 module fyuu_math;
+#if defined(__cpp_lib_modules)
+import std;
+#endif // defined(__cpp_lib_modules)
 import :operations;
 #if defined(_MSC_VER)
 #define FYUU_MATH_FORCE_INLINE __forceinline
@@ -33,6 +47,9 @@ import :operations;
 #else
 #define FYUU_MATH_LTO_INLINE
 #endif
+// With FYUU_MATH_ENABLE_SIMD=OFF the whole kernel body is skipped: callers already
+// gate on simd::available, so the namespace stays empty and nothing is emitted.
+#if FYUU_MATH_ENABLE_SIMD
 namespace fyuu_math::simd {
 	// Each lane computes one output column:
 	// C[r,:] = A[r,0]*B[0,:] + ... + A[r,3]*B[3,:].
@@ -85,29 +102,16 @@ namespace fyuu_math::simd {
 	void Multiply4(float const* a, float const* b, float* result) noexcept {
 		Multiply4Impl(a, b, result);
 	}
-	void Batch4(
-	    float const* __restrict a,
-	    float const* __restrict b,
-	    float* __restrict out,
-	    std::size_t count,
-	    bool shared
-	) noexcept {
-		if (shared) {
-			for (std::size_t i = 0; i < count; ++i)
-				Multiply4Impl(a + i * 16, b, out + i * 16);
-		} else {
-			for (std::size_t i = 0; i < count; ++i)
-				Multiply4Impl(a + i * 16, b + i * 16, out + i * 16);
-		}
-	}
 	std::array<float, 16> Multiply4(float const* a, float const* b) noexcept {
 		std::array<float, 16> result;
 		Multiply4(a, b, result.data());
 		return result;
 	}
-	// These register helpers are private implementation details, not backend-facing types.
-	// SSE2 holds four float lanes or two double lanes; AArch64 NEON uses the same widths.
-	// https://arm-software.github.io/acle/neon_intrinsics/advsimd.html
+	// Backend selection. With __cpp_lib_simd the standard library supplies the lanes
+	// and no intrinsic headers are involved; otherwise these register helpers are
+	// private implementation details built on SSE2/NEON (four float lanes, two double
+	// lanes) with a scalar fallback. https://arm-software.github.io/acle/neon_intrinsics/advsimd.html
+#if !defined(__cpp_lib_simd)
 	template <class S> struct Lanes;
 	template <> struct Lanes<float> {
 #if defined(FYUU_MATH_SSE2)
@@ -259,6 +263,38 @@ namespace fyuu_math::simd {
 		}
 #endif
 	};
+
+#else
+	// Portable backend: the standard <simd> supplies the lanes at its native width,
+	// so the intrinsic paths above are neither included nor compiled. Everything else
+	// in this file goes through Lanes<S>, keeping the kernels backend-agnostic. Not
+	// exercised by the current toolchain (its library has no <simd> yet).
+	template <class S> struct Lanes {
+		using Register = std::simd<S>;
+		static constexpr std::size_t width = Register::size();
+		static Register Load(S const* p) noexcept {
+			return Register::copy_from(p, std::simd_flag_default);
+		}
+		static void Store(S* p, Register x) noexcept {
+			x.copy_to(p, std::simd_flag_default);
+		}
+		static Register Splat(S x) noexcept {
+			return Register(x);
+		}
+		static Register Add(Register a, Register b) noexcept {
+			return a + b;
+		}
+		static Register Subtract(Register a, Register b) noexcept {
+			return a - b;
+		}
+		static Register Multiply(Register a, Register b) noexcept {
+			return a * b;
+		}
+		static Register Divide(Register a, Register b) noexcept {
+			return a / b;
+		}
+	};
+#endif // !defined(__cpp_lib_simd)
 
 	// Partial loads never touch a neighbor object. Inactive divisor lanes are one,
 	// while all other inactive lanes are zero, avoiding spurious 0/0 or infinity*0.
@@ -723,20 +759,6 @@ namespace fyuu_math::simd {
 	float Dot3(float const* a, float const* b) noexcept {
 		return DotImpl<float, 3>(a, b, 3);
 	}
-	void Components3(Operation op, float const* a, float const* b, float* result) noexcept {
-		switch (op) {
-			case Operation::Add:
-				return ComponentsImpl<Operation::Add, float, 3>(a, b, result, 3);
-			case Operation::Subtract:
-				return ComponentsImpl<Operation::Subtract, float, 3>(a, b, result, 3);
-			case Operation::Scale:
-				return ComponentsImpl<Operation::Scale, float, 3>(a, b, result, 3);
-			case Operation::Divide:
-				return ComponentsImpl<Operation::Divide, float, 3>(a, b, result, 3);
-			default:
-				return;
-		}
-	}
 	std::array<double, 9> Multiply3(double const* a, double const* b) noexcept {
 		return SquareProduct<double, 3>(a, b);
 	}
@@ -755,21 +777,8 @@ namespace fyuu_math::simd {
 	double Dot3(double const* a, double const* b) noexcept {
 		return DotImpl<double, 3>(a, b, 3);
 	}
-	void Components3(Operation op, double const* a, double const* b, double* result) noexcept {
-		switch (op) {
-			case Operation::Add:
-				return ComponentsImpl<Operation::Add, double, 3>(a, b, result, 3);
-			case Operation::Subtract:
-				return ComponentsImpl<Operation::Subtract, double, 3>(a, b, result, 3);
-			case Operation::Scale:
-				return ComponentsImpl<Operation::Scale, double, 3>(a, b, result, 3);
-			case Operation::Divide:
-				return ComponentsImpl<Operation::Divide, double, 3>(a, b, result, 3);
-			default:
-				return;
-		}
-	}
 } // namespace fyuu_math::simd
+#endif // FYUU_MATH_ENABLE_SIMD
 #undef FYUU_MATH_SSE2
 #undef FYUU_MATH_NEON
 #undef FYUU_MATH_FORCE_INLINE
