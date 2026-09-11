@@ -7,6 +7,7 @@ module;
 #include <cstddef>
 #include <algorithm>
 #include <array>
+#include <span>
 #endif // !defined(__cpp_lib_modules)
 // The standard <simd> backend needs no intrinsic headers; only pull them when the
 // library has no std::simd to offer.
@@ -265,21 +266,18 @@ namespace fyuu_math::simd {
 	};
 
 #else
-	// Portable backend: the standard <simd> supplies the lanes at its native width,
-	// so the intrinsic paths above are neither included nor compiled. Everything else
-	// in this file goes through Lanes<S>, keeping the kernels backend-agnostic. Not
-	// exercised by the current toolchain (its library has no <simd> yet).
+	// C++26 <simd> backend
 	template <class S> struct Lanes {
-		using Register = std::simd<S>;
+		using Register = std::simd::vec<S>;
 		static constexpr std::size_t width = Register::size();
 		static Register Load(S const* p) noexcept {
-			return Register::copy_from(p, std::simd_flag_default);
+			return std::simd::unchecked_load<Register>(std::span<S const>{p, width});
 		}
 		static void Store(S* p, Register x) noexcept {
-			x.copy_to(p, std::simd_flag_default);
+			std::simd::unchecked_store(x, std::span<S>{p, width});
 		}
 		static Register Splat(S x) noexcept {
-			return Register(x);
+			return Register(x); // broadcast constructor
 		}
 		static Register Add(Register a, Register b) noexcept {
 			return a + b;
@@ -296,6 +294,34 @@ namespace fyuu_math::simd {
 	};
 #endif // !defined(__cpp_lib_simd)
 
+#if defined(__cpp_lib_simd)
+	// std::simd provides partial_load/partial_store for exactly this case.
+	template <class S>
+	FYUU_MATH_FORCE_INLINE auto LoadPartial(
+	    S const* p,
+	    std::size_t count,
+	    [[maybe_unused]] S padding = S(0)
+	) noexcept {
+		using V = Lanes<S>;
+		if (count == V::width) {
+			return V::Load(p);
+		}
+		return std::simd::partial_load<typename V::Register>(p, static_cast<std::ptrdiff_t>(count));
+	}
+	template <class S>
+	FYUU_MATH_FORCE_INLINE void StorePartial(
+	    S* p,
+	    typename Lanes<S>::Register x,
+	    std::size_t count
+	) noexcept {
+		using V = Lanes<S>;
+		if (count == V::width) {
+			V::Store(p, x);
+			return;
+		}
+		std::simd::partial_store(x, p, static_cast<std::ptrdiff_t>(count));
+	}
+#else
 	// Partial loads never touch a neighbor object. Inactive divisor lanes are one,
 	// while all other inactive lanes are zero, avoiding spurious 0/0 or infinity*0.
 	template <class S>
@@ -348,6 +374,7 @@ namespace fyuu_math::simd {
 			p[i] = lanes[i];
 		}
 	}
+#endif // !defined(__cpp_lib_simd)
 	template <class S>
 	FYUU_MATH_FORCE_INLINE auto BroadcastPartial(S value, std::size_t count) noexcept {
 		using V = Lanes<S>;
