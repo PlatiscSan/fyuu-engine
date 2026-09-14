@@ -221,15 +221,27 @@ namespace fyuu_rhi::opengl {
 		void operator()(GLuint impl) const noexcept;
 	};
 
+	struct SyncDeleter {
+		void operator()(GLsync sync) const noexcept;
+	};
+
+	using ManagedSync = boost::scope::unique_resource<GLsync, SyncDeleter>;
+
 	struct Resource {
 		boost::scope::unique_resource<GLuint, ResourceDeleter> impl;
+		ManagedSync creation_sync;
 		GLenum target;
 		GLenum format;
 		ResourceType type;
 
-		explicit Resource(GLuint buffer) noexcept;
+		Resource(GLuint buffer, GLsync creation_sync) noexcept;
 
-		Resource(GLuint texture, GLenum target_, GLenum format_) noexcept;
+		Resource(
+			GLuint texture,
+			GLsync creation_sync,
+			GLenum target,
+			GLenum format
+		) noexcept;
 
 		Resource(Resource&&) noexcept = default;
 		Resource& operator=(Resource&&) noexcept = default;
@@ -315,6 +327,7 @@ namespace fyuu_rhi::opengl {
 	struct Submission {
 		struct ResourceSnapshot {
 			GLuint impl;
+			GLsync creation_sync;
 			GLenum target;
 			GLenum format;
 			std::size_t size;

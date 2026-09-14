@@ -64,6 +64,30 @@ import :opengl_instance_egl;
 #endif // defined(_WIN32)
 
 namespace {
+	GLsync FinishResourceCreation(std::string_view operation) {
+		auto error = glGetError();
+		if (error != GL_NO_ERROR) {
+			throw std::runtime_error(
+				std::format(
+					"{} failed with OpenGL error 0x{:X}",
+					operation,
+					error
+				)
+			);
+		}
+		auto sync = glFenceSync(
+			GL_SYNC_GPU_COMMANDS_COMPLETE,
+			0u
+		);
+		if (!sync) {
+			throw std::runtime_error(
+				std::format("{} failed to create its visibility fence", operation)
+			);
+		}
+		glFlush();
+		return sync;
+	}
+
 
 	using Bits = fyuu_rhi::ResourceFlagBits;
 
@@ -581,6 +605,8 @@ namespace fyuu_rhi {
 		opengl::LogicalDevice* logical_device;
 
 		Resource operator()(std::size_t size_in_bytes, ResourceFlags const& flags) const {
+			while (glGetError() != GL_NO_ERROR) {
+			}
 			GLuint buffer = 0u;
 			auto storage_flags = BufferStorageFlags(flags);
 			if (GLAD_GL_ARB_direct_state_access) {
@@ -607,8 +633,19 @@ namespace fyuu_rhi {
 				}
 				glBindBuffer(GL_COPY_WRITE_BUFFER, 0u);
 			}
-			glFlush();
-			return MakeResource(opengl::Resource(buffer), size_in_bytes, flags);
+			GLsync creation_sync = nullptr;
+			try {
+				creation_sync = FinishResourceCreation("OpenGL buffer creation");
+			}
+			catch (...) {
+				glDeleteBuffers(1u, &buffer);
+				throw;
+			}
+			return MakeResource(
+				opengl::Resource(buffer, creation_sync),
+				size_in_bytes,
+				flags
+			);
 		}
 	};
 
@@ -623,6 +660,8 @@ namespace fyuu_rhi {
 			std::size_t mip_levels,
 			ResourceFlags const& flags
 		) const {
+			while (glGetError() != GL_NO_ERROR) {
+			}
 
 			auto sample_count = SampleCount(flags);
 			if (sample_count > 1 && mip_levels != 1u) {
@@ -662,9 +701,21 @@ namespace fyuu_rhi {
 				glDeleteTextures(1, &texture);
 				throw;
 			}
-			glFlush();
+			GLsync creation_sync = nullptr;
+			try {
+				creation_sync = FinishResourceCreation("OpenGL texture creation");
+			}
+			catch (...) {
+				glDeleteTextures(1u, &texture);
+				throw;
+			}
 			return MakeResource(
-				opengl::Resource(texture, target, format),
+				opengl::Resource(
+					texture,
+					creation_sync,
+					target,
+					format
+				),
 				ResourceTextureExtent{
 					.width = static_cast<std::uint32_t>(width),
 					.height = static_cast<std::uint32_t>(height),

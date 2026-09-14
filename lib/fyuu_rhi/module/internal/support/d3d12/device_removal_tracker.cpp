@@ -145,24 +145,6 @@ namespace {
 		LogPageFault(dred.Get());
 	}
 
-	Microsoft::WRL::ComPtr<ID3D12Fence> CreateRemovalFence(Microsoft::WRL::ComPtr<ID3D12Device> const& device, wil::unique_event const& event) {
-		Microsoft::WRL::ComPtr<ID3D12Fence> result;
-		fyuu_rhi::d3d12::ThrowIfFailed(
-			device->CreateFence(
-				0u,
-				D3D12_FENCE_FLAG_NONE,
-				IID_PPV_ARGS(&result)
-			)
-		);
-		fyuu_rhi::d3d12::ThrowIfFailed(
-			result->SetEventOnCompletion(
-				(std::numeric_limits<std::uint64_t>::max)(),
-				event.get()
-			)
-		);
-		return result;
-	}
-
 	HANDLE RegisterRemovalWait(Microsoft::WRL::ComPtr<ID3D12Device> const& device, wil::unique_event const& event) noexcept {
 		HANDLE result = nullptr;
 		if (!RegisterWaitForSingleObject(&result, event.get(), DeviceRemoved, device.Get(), INFINITE, WT_EXECUTEONLYONCE)) {
@@ -171,10 +153,10 @@ namespace {
 		return result;
 	}
 
-	Microsoft::WRL::ComPtr<ID3D12InfoQueue1> CreateInfoQueue(Microsoft::WRL::ComPtr<ID3D12Device> const& device) noexcept {
+	Microsoft::WRL::ComPtr<ID3D12InfoQueue1> AsInfoQueue(Microsoft::WRL::ComPtr<ID3D12Device> const& device, bool log = true) noexcept {
 		Microsoft::WRL::ComPtr<ID3D12InfoQueue1> result;
 #if !defined(NDEBUG)
-		if (FAILED(device.As(&result))) {
+		if (FAILED(device.As(&result)) && log) {
 			fyuu_rhi::log::Warning("D3D12 debug-message logging is unavailable");
 		}
 #endif // !defined(NDEBUG)
@@ -214,52 +196,53 @@ namespace fyuu_rhi::d3d12 {
 
 	class DeviceRemovalTracker {
 	private:
+		Microsoft::WRL::ComPtr<ID3D12Device> m_device;
 		wil::unique_event m_event;
-		Microsoft::WRL::ComPtr<ID3D12Fence> m_fence;
 		HANDLE m_wait;
-		Microsoft::WRL::ComPtr<ID3D12InfoQueue1> m_info_queue;
 		DWORD m_callback_cookie;
 
 	public:
 		explicit DeviceRemovalTracker(Microsoft::WRL::ComPtr<ID3D12Device> const& device)
-			: m_event(wil::EventOptions::None),
-			m_fence(CreateRemovalFence(device, m_event)),
+			: m_device(device),
+			m_event(wil::EventOptions::None),
 			m_wait(RegisterRemovalWait(device, m_event)),
-			m_info_queue(CreateInfoQueue(device)),
-			m_callback_cookie(RegisterMessageCallback(m_info_queue)) {
+			m_callback_cookie(RegisterMessageCallback(AsInfoQueue(m_device))) {
 		}
 
 		DeviceRemovalTracker(DeviceRemovalTracker const&) = delete;
 		DeviceRemovalTracker& operator=(DeviceRemovalTracker const&) = delete;
 
 		DeviceRemovalTracker(DeviceRemovalTracker&& other) noexcept
-			: m_event(std::move(other.m_event)),
-			m_fence(std::move(other.m_fence)),
+			: m_device(std::move(other.m_device)),
+			m_event(std::move(other.m_event)),
 			m_wait(std::exchange(other.m_wait, nullptr)),
-			m_info_queue(std::move(other.m_info_queue)),
 			m_callback_cookie(std::exchange(other.m_callback_cookie, 0u)) {
 
 		}
 
 		DeviceRemovalTracker& operator=(DeviceRemovalTracker&& other) noexcept {
 			if (this != &other) {
+				m_device = std::move(other.m_device);
 				m_event = std::move(other.m_event);
-				m_fence = std::move(other.m_fence);
 				m_wait = std::exchange(other.m_wait, nullptr);
-				m_info_queue = std::move(other.m_info_queue);
 				m_callback_cookie = std::exchange(other.m_callback_cookie, 0u);
 			}
 			return *this;
 		}
 
 		~DeviceRemovalTracker() noexcept {
-			if (m_info_queue && m_callback_cookie != 0u) {
-				(void)m_info_queue->UnregisterMessageCallback(m_callback_cookie);
+			if (m_callback_cookie != 0u) {
+				AsInfoQueue(m_device, false)->UnregisterMessageCallback(m_callback_cookie);
 			}
 			if (m_wait) {
 				(void)UnregisterWaitEx(m_wait, INVALID_HANDLE_VALUE);
 			}
 		}
+
+		Microsoft::WRL::ComPtr<ID3D12Device> GetDevice() const noexcept {
+			return m_device;
+		}
+
 	};
 
 } // namespace fyuu_rhi::d3d12

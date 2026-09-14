@@ -178,8 +178,12 @@ namespace fyuu_rhi {
 				vk_inst_ver = vk::enumerateInstanceVersion(vk::detail::defaultDispatchLoaderDynamic);
 			}
 
-			auto supported_extensions = 
-				vk::enumerateInstanceExtensionProperties(nullptr, vk::detail::defaultDispatchLoaderDynamic) |
+			auto extension_properties = vk::enumerateInstanceExtensionProperties(
+				nullptr,
+				vk::detail::defaultDispatchLoaderDynamic
+			);
+			auto supported_extensions =
+				extension_properties |
 				std::views::transform(
 					[](vk::ExtensionProperties const& prop) -> std::string_view {
 						return prop.extensionName;
@@ -192,8 +196,11 @@ namespace fyuu_rhi {
 			bool debug_utils_enabled = false;
 			bool validation_layer_enabled = false;
 #if !defined(NDEBUG)
+			auto layer_properties = vk::enumerateInstanceLayerProperties(
+				vk::detail::defaultDispatchLoaderDynamic
+			);
 			auto supported_layers =
-				vk::enumerateInstanceLayerProperties(vk::detail::defaultDispatchLoaderDynamic) |
+				layer_properties |
 				std::views::transform(
 					[](vk::LayerProperties const& property) -> std::string_view {
 						return property.layerName;

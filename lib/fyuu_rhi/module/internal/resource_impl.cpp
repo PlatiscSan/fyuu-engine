@@ -27,39 +27,39 @@ import :webgpu_resource;
 
 namespace fyuu_rhi {
 
-	View Resource::CreateBufferView(std::size_t offset, std::size_t range, ResourceFlags const& flags) {
-		if (!m_impl) {
-			throw std::runtime_error("Cannot create a view from an empty resource");
-		}
-		return std::visit(
-			[&]<class NativeResource>(NativeResource& native) {
-				return fyuu_rhi::CreateBufferView<NativeResource>{ &native }(offset, range, flags);
-			},
-			m_impl->native
-		);
-	}
-
-	View Resource::CreateTextureView(
-		std::size_t base_mip_lvl,
-		std::size_t mip_lvl_cnt,
-		std::size_t base_arr_layer,
-		std::size_t arr_layer_cnt,
-		ResourceFlags const& flags
+	View Resource::CreateBufferView(
+	    std::size_t offset,
+	    std::size_t range,
+	    ResourceFlags const& flags
 	) {
 		if (!m_impl) {
 			throw std::runtime_error("Cannot create a view from an empty resource");
 		}
 		return std::visit(
-			[&]<class NativeResource>(NativeResource& native) {
-				return fyuu_rhi::CreateTextureView<NativeResource>{ &native }(
-					base_mip_lvl,
-					mip_lvl_cnt,
-					base_arr_layer,
-					arr_layer_cnt,
-					flags
-				);
-			},
-			m_impl->native
+		    [&]<class NativeResource>(NativeResource& native) {
+			    return fyuu_rhi::CreateBufferView<NativeResource>{&native}(offset, range, flags);
+		    },
+		    m_impl->native
+		);
+	}
+
+	View Resource::CreateTextureView(
+	    std::size_t base_mip_lvl,
+	    std::size_t mip_lvl_cnt,
+	    std::size_t base_arr_layer,
+	    std::size_t arr_layer_cnt,
+	    ResourceFlags const& flags
+	) {
+		if (!m_impl) {
+			throw std::runtime_error("Cannot create a view from an empty resource");
+		}
+		return std::visit(
+		    [&]<class NativeResource>(NativeResource& native) {
+			    return fyuu_rhi::CreateTextureView<NativeResource>{
+			        &native
+			    }(base_mip_lvl, mip_lvl_cnt, base_arr_layer, arr_layer_cnt, flags);
+		    },
+		    m_impl->native
 		);
 	}
 

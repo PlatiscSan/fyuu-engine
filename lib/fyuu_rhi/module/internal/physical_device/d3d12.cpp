@@ -108,6 +108,10 @@ namespace fyuu_rhi {
 			Microsoft::WRL::ComPtr<ID3D12Device> device;
 			d3d12::ThrowIfFailed(D3D12CreateDevice(physical_device->adapter.Get(), D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&device)));
 
+			// Retains the adapter on the device so the logical device can recover it
+			// later (e.g. pipeline creation queries the driver version from it).
+			d3d12::ThrowIfFailed(device->SetPrivateDataInterface(__uuidof(IDXGIAdapter1), physical_device->adapter.Get()));
+
 			d3d12::DeviceRemovalTracker rm_tracker(device);
 
 			Microsoft::WRL::ComPtr<D3D12MA::Allocator> memory_allocator;
@@ -145,13 +149,8 @@ namespace fyuu_rhi {
 			auto multidraw_indexed = CreateCommandSignature(device.Get(), D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED);
 			auto dispatch_indirect = CreateCommandSignature(device.Get(), D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH);
 
-			// Retains the adapter on the device so the logical device can recover it
-			// later (e.g. pipeline creation queries the driver version from it).
-			d3d12::ThrowIfFailed(device->SetPrivateDataInterface(__uuidof(IDXGIAdapter1), physical_device->adapter.Get()));
-
 			return MakeLogicalDevice(
 				d3d12::LogicalDevice{
-					std::move(device),
 					std::move(rm_tracker),
 					std::move(memory_allocator),
 					std::move(resource_descriptors),

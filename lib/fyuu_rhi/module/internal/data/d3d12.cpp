@@ -44,7 +44,6 @@ namespace fyuu_rhi::d3d12 {
 	};
 
 	struct LogicalDevice {
-		Microsoft::WRL::ComPtr<ID3D12Device> impl;
 		DeviceRemovalTracker rm_tracker;
 		Microsoft::WRL::ComPtr<D3D12MA::Allocator> memory_allocator;
 		DescriptorAllocator resource_descriptors;

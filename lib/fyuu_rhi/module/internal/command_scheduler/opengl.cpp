@@ -1751,10 +1751,22 @@ namespace fyuu_rhi::opengl {
 			}
 
 			try {
-				// Host-side object creation (buffers, shaders, textures) is not
-				// error-checked in release builds; drain any error it left on the
-				// shared context so replay errors are attributed to replay commands.
-				while (glGetError() != GL_NO_ERROR) {}
+				// Error state is context-local. Drain only stale scheduler-context
+				// errors before replay so later checks identify the offending command.
+				while (glGetError() != GL_NO_ERROR) {
+				}
+				// Object namespaces are shared between contexts, but command ordering
+				// is not. Wait for storage allocation recorded by the creator context
+				// before querying or using any newly created resource.
+				for (auto const& resource : current.resources) {
+					if (resource.creation_sync) {
+						glWaitSync(
+							resource.creation_sync,
+							0u,
+							GL_TIMEOUT_IGNORED
+						);
+					}
+				}
 				Replayer replayer{ current, this, instance, handles };
 				for (auto const& batch : current.plan.batches) {
 					for (auto const& node : batch.nodes) {
@@ -1974,6 +1986,7 @@ namespace fyuu_rhi::execution {
 				submission.resources.emplace_back(
 					opengl::Submission::ResourceSnapshot{
 						.impl = native->impl.get(),
+						.creation_sync = native->creation_sync.get(),
 						.target = native->target,
 						.format = native->format,
 						.size = extent ? 0u : std::get<std::size_t>(

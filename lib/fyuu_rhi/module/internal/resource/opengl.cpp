@@ -23,15 +23,22 @@ import :view_factory;
 
 namespace fyuu_rhi::opengl {
 
-	Resource::Resource(GLuint buffer) noexcept
+	Resource::Resource(GLuint buffer, GLsync creation_sync_) noexcept
 		: impl(buffer, ResourceDeleter{ ResourceType::Buffer }),
+		creation_sync(creation_sync_, SyncDeleter{}),
 		target(0u),
 		format(0u),
 		type(ResourceType::Buffer) {
 	}
 
-	Resource::Resource(GLuint texture, GLenum target_, GLenum format_) noexcept
+	Resource::Resource(
+		GLuint texture,
+		GLsync creation_sync_,
+		GLenum target_,
+		GLenum format_
+	) noexcept
 		: impl(texture, ResourceDeleter{ ResourceType::Texture }),
+		creation_sync(creation_sync_, SyncDeleter{}),
 		target(target_),
 		format(format_),
 		type(ResourceType::Texture) {
@@ -46,6 +53,12 @@ namespace fyuu_rhi::opengl {
 		}
 		else {
 			glDeleteTextures(1, &impl);
+		}
+	}
+
+	void SyncDeleter::operator()(GLsync sync) const noexcept {
+		if (sync) {
+			glDeleteSync(sync);
 		}
 	}
 

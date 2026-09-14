@@ -202,8 +202,13 @@ namespace fyuu_rhi {
 			// throws until they land.
 			vulkan::QueueAllocator queue_alloc(QueryQueueInfo(physical_device));
 
+			auto extension_properties =
+				physical_device->impl->enumerateDeviceExtensionProperties(
+					nullptr,
+					*physical_device->dispatcher
+				);
 			auto supported_extensions =
-				physical_device->impl->enumerateDeviceExtensionProperties(nullptr, *(physical_device->dispatcher)) |
+				extension_properties |
 				std::views::transform(
 					[](vk::ExtensionProperties const& prop) -> std::string_view {
 						return prop.extensionName;
