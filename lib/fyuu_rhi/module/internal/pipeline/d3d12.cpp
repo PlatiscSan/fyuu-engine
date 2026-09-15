@@ -173,7 +173,8 @@ namespace fyuu_rhi {
 				.space = space,
 				.root_signature = native->root_signature,
 				.resource_heap = native->resource_descriptors.Heap(),
-				.sampler_heap = native->sampler_descriptors.Heap()
+				.sampler_heap = native->sampler_descriptors.Heap(),
+				.resource_descriptors = native->resource_descriptors
 			};
 			std::uint32_t root_parameter = 0u;
 			for (auto const& metadata : native->bindings) {
@@ -270,6 +271,7 @@ namespace fyuu_rhi {
 						if (size == 0u || size > resource_size - offset) {
 							throw std::out_of_range("The D3D12 pipeline buffer range exceeds the resource");
 						}
+						auto descriptor_size = size;
 						if (metadata.flags.Test(Bits::UniformBuffer)) {
 							constexpr auto alignment = D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT;
 							if (offset % alignment != 0u) {
@@ -279,6 +281,7 @@ namespace fyuu_rhi {
 								throw std::out_of_range("The D3D12 constant-buffer range cannot be represented");
 							}
 							auto aligned_size = (size + alignment - 1u) & ~(alignment - 1u);
+							descriptor_size = aligned_size;
 							if (aligned_size > resource_size - offset || aligned_size > (std::numeric_limits<UINT>::max)()) {
 								throw std::out_of_range("The D3D12 constant-buffer range cannot be represented");
 							}
@@ -312,6 +315,17 @@ namespace fyuu_rhi {
 								destination
 							);
 						}
+						result.dynamic_buffers.emplace_back(
+							d3d12::PipelineResourceGroup::DynamicBuffer{
+								.table = result.tables.size(),
+								.descriptor = element,
+								.resource = resource.allocation->GetResource(),
+								.base_offset = offset,
+								.size = descriptor_size,
+								.capacity = resource_size,
+								.uniform = metadata.flags.Test(Bits::UniformBuffer)
+							}
+						);
 					}
 				}
 				result.tables.emplace_back(

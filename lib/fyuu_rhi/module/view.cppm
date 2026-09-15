@@ -17,6 +17,12 @@ export namespace fyuu_rhi {
 		struct ExecuteCommands;
 	}
 
+	/**
+	 * @brief Move-only interpretation of a range within a Resource.
+	 *
+	 * A View does not replace Resource ownership. Bind both the Resource and View
+	 * to a graph when a command needs state transitions as well as a native view.
+	 */
 	class View {
 	public:
 		using UniqueHandle = std::unique_ptr<

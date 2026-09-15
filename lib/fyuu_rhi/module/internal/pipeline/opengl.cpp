@@ -89,7 +89,7 @@ namespace fyuu_rhi {
 						return binding.space == space;
 					}
 				);
-			if (space != 0u || std::ranges::empty(metadata)) {
+			if (std::ranges::empty(metadata)) {
 				throw std::out_of_range(
 					"The OpenGL pipeline has no requested resource space"
 				);
@@ -182,6 +182,8 @@ namespace fyuu_rhi {
 						.buffer = 0u,
 						.buffer_offset = 0u,
 						.buffer_size = pipeline::PipelineWholeBuffer,
+						.buffer_capacity = 0u,
+						.dynamic_buffer = false,
 						.view = 0u,
 						.view_target = 0u,
 						.view_format = 0u,
@@ -196,7 +198,22 @@ namespace fyuu_rhi {
 						}
 						result.buffer = native_resource.impl.get();
 						result.buffer_offset = binding.value.Offset();
-						result.buffer_size = binding.value.Size();
+						result.buffer_capacity = resource->GetBufferSize();
+						if (result.buffer_offset > result.buffer_capacity) {
+							throw std::out_of_range(
+								"The OpenGL buffer binding offset exceeds the buffer"
+							);
+						}
+						result.buffer_size = binding.value.Size() ==
+							pipeline::PipelineWholeBuffer
+							? result.buffer_capacity - result.buffer_offset
+							: binding.value.Size();
+						if (result.buffer_size > result.buffer_capacity - result.buffer_offset) {
+							throw std::out_of_range(
+								"The OpenGL buffer binding range exceeds the buffer"
+							);
+						}
+						result.dynamic_buffer = true;
 					}
 					else if (auto view = binding.value.BoundView()) {
 						auto const& native_view = NativeView(view);
@@ -216,6 +233,13 @@ namespace fyuu_rhi {
 						);
 					}
 					return result;
+				}
+			);
+			std::ranges::sort(
+				native_bindings,
+				{},
+				[](auto const& binding) {
+					return std::pair(binding.slot, binding.array_element);
 				}
 			);
 

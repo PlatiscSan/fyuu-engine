@@ -402,6 +402,7 @@ namespace {
 		> groups;
 		Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> const& commands;
 		std::vector<PresentationWork>* presentations;
+		std::vector<ManagedDescriptorRange>* temporary_descriptors;
 		std::size_t presentation_index = 0u;
 		fyuu_rhi::d3d12::Pipeline const* pipeline = nullptr;
 		std::optional<BeginRendering> rendering;
@@ -562,6 +563,17 @@ namespace {
 			if (group.root_signature.Get() != pipeline->root_signature.Get()) {
 				throw std::invalid_argument("D3D12 resource group root signature mismatch");
 			}
+			if (group.space != value.space) {
+				throw std::invalid_argument("D3D12 resource group space mismatch");
+			}
+			if (
+				!value.additional_buffer_offsets.empty() &&
+				value.additional_buffer_offsets.size() != group.dynamic_buffers.size()
+			) {
+				throw std::invalid_argument(
+					"D3D12 dynamic-offset count does not match the resource group"
+				);
+			}
 			ID3D12DescriptorHeap* heaps[] = { group.resource_heap.Native(), group.sampler_heap.Native() };
 			UINT count = 0u;
 			ID3D12DescriptorHeap* active[2]{};
@@ -573,13 +585,200 @@ namespace {
 			if (count) {
 				commands->SetDescriptorHeaps(count, active);
 			}
-			for (auto const& table : group.tables) {
+			std::vector<D3D12_GPU_DESCRIPTOR_HANDLE> table_handles;
+			table_handles.reserve(group.tables.size());
+			std::ranges::transform(
+				group.tables,
+				std::back_inserter(table_handles),
+				[](auto const& table) {
+					return table.descriptors.GPU();
+				}
+			);
+			if (!value.additional_buffer_offsets.empty()) {
+				Microsoft::WRL::ComPtr<ID3D12Device> device;
+				ThrowIfFailed(
+					pipeline->root_signature->GetDevice(
+						IID_PPV_ARGS(&device)
+					)
+				);
+				auto temporary_base = temporary_descriptors->size();
+				auto dynamic_table_count = std::ranges::count_if(
+					std::views::iota(std::size_t{ 0u }, group.tables.size()),
+					[&](std::size_t table) {
+						return std::ranges::any_of(
+							group.dynamic_buffers,
+							[table](auto const& binding) {
+								return binding.table == table;
+							}
+						);
+					}
+				);
+				temporary_descriptors->reserve(
+					temporary_base + static_cast<std::size_t>(dynamic_table_count)
+				);
+				std::vector<std::size_t> temporary_tables(
+					group.tables.size(),
+					(std::numeric_limits<std::size_t>::max)()
+				);
+				std::ranges::for_each(
+					std::views::iota(std::size_t{ 0u }, group.tables.size()),
+					[&](std::size_t table_index) {
+						if (!std::ranges::any_of(
+							group.dynamic_buffers,
+							[table_index](auto const& binding) {
+								return binding.table == table_index;
+							}
+						)) {
+							return;
+						}
+						auto const& table = group.tables[table_index];
+						auto descriptors = group.resource_descriptors.Allocate(
+							table.descriptors.Count()
+						);
+						device->CopyDescriptorsSimple(
+							static_cast<UINT>(table.descriptors.Count()),
+							descriptors.CPU(),
+							table.descriptors.CPU(),
+							D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV
+						);
+						table_handles[table_index] = descriptors.GPU();
+						temporary_tables[table_index] = temporary_descriptors->size();
+						temporary_descriptors->emplace_back(std::move(descriptors));
+					}
+				);
+				std::ranges::for_each(
+					std::views::iota(
+						std::size_t{ 0u },
+						group.dynamic_buffers.size()
+					),
+					[&](std::size_t index) {
+						auto const& binding = group.dynamic_buffers[index];
+						auto offset = value.additional_buffer_offsets[index];
+						if (
+							offset > binding.capacity - binding.base_offset ||
+							binding.size >
+								binding.capacity - binding.base_offset - offset
+						) {
+							throw std::out_of_range(
+								"D3D12 dynamic buffer offset exceeds the bound buffer"
+							);
+						}
+						auto final_offset = binding.base_offset + offset;
+						auto destination = (*temporary_descriptors)[
+							temporary_tables[binding.table]
+						].CPU(binding.descriptor);
+						if (binding.uniform) {
+							constexpr auto alignment =
+								D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT;
+							if (final_offset % alignment != 0u) {
+								throw std::invalid_argument(
+									"D3D12 dynamic constant-buffer offset must be 256-byte aligned"
+								);
+							}
+							auto aligned_size =
+								(binding.size + alignment - 1u) & ~(alignment - 1u);
+							D3D12_CONSTANT_BUFFER_VIEW_DESC descriptor{
+								.BufferLocation =
+									binding.resource->GetGPUVirtualAddress() + final_offset,
+								.SizeInBytes = static_cast<UINT>(aligned_size)
+							};
+							device->CreateConstantBufferView(&descriptor, destination);
+						}
+						else {
+							if (
+								final_offset % sizeof(std::uint32_t) != 0u ||
+								binding.size % sizeof(std::uint32_t) != 0u
+							) {
+								throw std::invalid_argument(
+									"D3D12 dynamic storage-buffer range is invalid"
+								);
+							}
+							D3D12_UNORDERED_ACCESS_VIEW_DESC descriptor;
+							descriptor.Format = DXGI_FORMAT_R32_TYPELESS;
+							descriptor.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+							descriptor.Buffer = {
+								.FirstElement = final_offset / sizeof(std::uint32_t),
+								.NumElements = static_cast<UINT>(
+									binding.size / sizeof(std::uint32_t)
+								),
+								.StructureByteStride = 0u,
+								.CounterOffsetInBytes = 0u,
+								.Flags = D3D12_BUFFER_UAV_FLAG_RAW
+							};
+							device->CreateUnorderedAccessView(
+								binding.resource.Get(),
+								nullptr,
+								&descriptor,
+								destination
+							);
+						}
+					}
+				);
+			}
+			for (std::size_t index = 0u; index < group.tables.size(); ++index) {
+				auto const& table = group.tables[index];
 				if (pipeline->compute) {
-					commands->SetComputeRootDescriptorTable(table.root_parameter, table.descriptors.GPU());
+					commands->SetComputeRootDescriptorTable(
+						table.root_parameter,
+						table_handles[index]
+					);
 				}
 				else {
-					commands->SetGraphicsRootDescriptorTable(table.root_parameter, table.descriptors.GPU());
+					commands->SetGraphicsRootDescriptorTable(
+						table.root_parameter,
+						table_handles[index]
+					);
 				}
+			}
+		}
+
+		void operator()(SetPipelineConstants const& value) {
+			if (!pipeline) {
+				throw std::logic_error(
+					"D3D12 pipeline constants require a bound pipeline"
+				);
+			}
+			auto range = std::ranges::find_if(
+				pipeline->constant_ranges,
+				[&value](auto const& candidate) {
+					return candidate.slot == value.slot && candidate.space == value.space;
+				}
+			);
+			if (range == pipeline->constant_ranges.end()) {
+				throw std::invalid_argument(
+					"D3D12 pipeline has no matching immediate-constant range"
+				);
+			}
+			if (
+				value.offset > range->size ||
+				value.data.size() > range->size - value.offset
+			) {
+				throw std::out_of_range(
+					"D3D12 immediate-constant write exceeds its reflected range"
+				);
+			}
+
+			auto value_count = static_cast<UINT>(
+				value.data.size() / sizeof(std::uint32_t)
+			);
+			auto destination_offset = static_cast<UINT>(
+				value.offset / sizeof(std::uint32_t)
+			);
+			if (pipeline->compute) {
+				commands->SetComputeRoot32BitConstants(
+					range->root_parameter,
+					value_count,
+					value.data.data(),
+					destination_offset
+				);
+			}
+			else {
+				commands->SetGraphicsRoot32BitConstants(
+					range->root_parameter,
+					value_count,
+					value.data.data(),
+					destination_offset
+				);
 			}
 		}
 
@@ -982,7 +1181,8 @@ namespace {
 			pipelines,
 			groups,
 			commands,
-			&prepared.presentations
+			&prepared.presentations,
+			&prepared.commands.descriptors
 		};
 		for (auto const& node : prepared.plan->nodes) {
 			for (std::size_t resource = 0u; resource < plan.first_accesses.size(); ++resource) {

@@ -333,7 +333,8 @@ namespace {
 
 	std::string ConvertSPIRVToESSL(
 		shader::SlangCompiledEntryPoint const& entry,
-		std::uint32_t version
+		std::uint32_t version,
+		std::span<opengl::Pipeline::ConstantRange const> constant_ranges
 	) {
 		if (entry.code.empty() || entry.code.size() % sizeof(std::uint32_t) != 0u) {
 			throw std::runtime_error(
@@ -355,13 +356,60 @@ namespace {
 			spirv_cross::CompilerGLSL::Options::Mediump;
 		options.fragment.default_int_precision =
 			spirv_cross::CompilerGLSL::Options::Highp;
+		options.emit_push_constant_as_uniform_buffer = !constant_ranges.empty();
 		compiler.set_common_options(options);
+		auto resources = compiler.get_shader_resources();
+		if (resources.push_constant_buffers.size() > constant_ranges.size()) {
+			throw std::runtime_error(
+				"OpenGL ES shader exposes an unmatched immediate-constant block"
+			);
+		}
+		std::ranges::for_each(
+			std::views::iota(std::size_t{ 0u }, resources.push_constant_buffers.size()),
+			[&](std::size_t index) {
+				compiler.set_decoration(
+					resources.push_constant_buffers[index].id,
+					spv::DecorationBinding,
+					constant_ranges[index].slot
+				);
+			}
+		);
 		return compiler.compile();
+	}
+
+	std::string ConvertGLSLImmediateConstants(
+		shader::SlangCompiledEntryPoint const& entry,
+		std::span<opengl::Pipeline::ConstantRange const> constant_ranges
+	) {
+		std::string result(
+			reinterpret_cast<char const*>(entry.code.data()),
+			entry.code.size()
+		);
+		constexpr std::string_view declaration =
+			"layout(push_constant)\nlayout(std430) uniform";
+		std::size_t position = 0u;
+		std::size_t range_index = 0u;
+		while ((position = result.find(declaration, position)) != std::string::npos) {
+			if (range_index == constant_ranges.size()) {
+				throw std::runtime_error(
+					"OpenGL shader exposes an unmatched immediate-constant block"
+				);
+			}
+			auto replacement = std::format(
+				"layout(std430, binding = {}) readonly buffer",
+				constant_ranges[range_index].slot
+			);
+			result.replace(position, declaration.size(), replacement);
+			position += replacement.size();
+			++range_index;
+		}
+		return result;
 	}
 
 	GLuint CompileShader(
 		shader::SlangCompiledEntryPoint const& entry,
-		std::uint32_t essl_version
+		std::uint32_t essl_version,
+		std::span<opengl::Pipeline::ConstantRange const> constant_ranges
 	) {
 		auto shader_type = ShaderStage(entry.stage);
 		GLuint shader = glCreateShader(shader_type);
@@ -372,7 +420,19 @@ namespace {
 		GLchar const* source = nullptr;
 		GLint length = 0;
 		if (essl_version != 0u) {
-			converted_source = ConvertSPIRVToESSL(entry, essl_version);
+			converted_source = ConvertSPIRVToESSL(
+				entry,
+				essl_version,
+				constant_ranges
+			);
+			source = converted_source.data();
+			length = static_cast<GLint>(converted_source.size());
+		}
+		else if (!constant_ranges.empty()) {
+			converted_source = ConvertGLSLImmediateConstants(
+				entry,
+				constant_ranges
+			);
 			source = converted_source.data();
 			length = static_cast<GLint>(converted_source.size());
 		}
@@ -451,6 +511,28 @@ namespace {
 		return std::format("opengl-{}-{:016x}", profile, hash.result());
 	}
 
+	std::vector<opengl::Pipeline::ConstantRange> MakeConstantRanges(
+		SlangPipelineInterface const& interface,
+		GLenum target
+	) {
+		std::vector<opengl::Pipeline::ConstantRange> result;
+		result.reserve(interface.push_constants.size());
+		std::ranges::transform(
+			interface.push_constants,
+			std::back_inserter(result),
+			[target](auto const& range) {
+				return opengl::Pipeline::ConstantRange{
+					.slot = range.slot,
+					.space = range.space,
+					.offset = range.offset,
+					.size = range.size,
+					.target = target
+				};
+			}
+		);
+		return result;
+	}
+
 	GLuint LoadProgramBinary(std::filesystem::path const& path) {
 		if (!SupportsProgramBinary()) {
 			return 0u;
@@ -509,7 +591,8 @@ namespace {
 	GLuint CreateProgram(
 		shader::SlangProgram const& program,
 		ShaderTarget const& target,
-		bool compute
+		bool compute,
+		std::span<opengl::Pipeline::ConstantRange const> constant_ranges
 	) {
 		auto cache_path = PipelineCachePath(program, target.cache_name);
 		GLuint result = LoadProgramBinary(cache_path);
@@ -529,8 +612,12 @@ namespace {
 			std::ranges::transform(
 				program.GetEntryPoints(),
 				std::back_inserter(shaders),
-				[&target](auto const& entry) {
-					return CompileShader(entry, target.essl_version);
+				[&](auto const& entry) {
+					return CompileShader(
+						entry,
+						target.essl_version,
+						constant_ranges
+					);
 				}
 			);
 			std::ranges::for_each(
@@ -832,19 +919,20 @@ namespace fyuu_rhi {
 				descriptor.program,
 				CacheTag(shader_target.cache_name)
 			);
-			if (std::ranges::any_of(
-				program.GetInterface().bindings,
-				[](auto const& binding) {
-					return binding.space != 0u;
-				}
-			)) {
-				throw std::invalid_argument(
-					"OpenGL pipeline resource bindings must use space 0"
-				);
-			}
-			if (!program.GetInterface().push_constants.empty()) {
-				throw std::invalid_argument(
-					"OpenGL pipelines do not support push constants"
+			auto constant_ranges = MakeConstantRanges(
+				program.GetInterface(),
+				shader_target.essl_version == 0u
+					? GL_SHADER_STORAGE_BUFFER
+					: GL_UNIFORM_BUFFER
+			);
+			if (
+				!constant_ranges.empty() &&
+				!GLAD_GL_VERSION_4_3 &&
+				!GLAD_GL_ES_VERSION_3_1 &&
+				!GLAD_GL_ARB_shader_storage_buffer_object
+			) {
+				throw std::runtime_error(
+					"OpenGL immediate constants require OpenGL 4.3 or OpenGL ES 3.1"
 				);
 			}
 
@@ -885,7 +973,12 @@ namespace fyuu_rhi {
 				);
 			}
 
-			auto native_program = CreateProgram(program, shader_target, false);
+			auto native_program = CreateProgram(
+				program,
+				shader_target,
+				false,
+				constant_ranges
+			);
 			return MakePipeline(
 				opengl::Pipeline{
 					opengl::ManagedPipeline(
@@ -909,7 +1002,8 @@ namespace fyuu_rhi {
 						descriptor.color_targets.begin(),
 						descriptor.color_targets.end()
 					),
-					pipeline::MakePipelineBindingMetadata(program.GetInterface())
+					pipeline::MakePipelineBindingMetadata(program.GetInterface()),
+					std::move(constant_ranges)
 				}
 			);
 		}
@@ -942,21 +1036,12 @@ namespace fyuu_rhi {
 				descriptor.program,
 				CacheTag(shader_target.cache_name)
 			);
-			if (std::ranges::any_of(
-				program.GetInterface().bindings,
-				[](auto const& binding) {
-					return binding.space != 0u;
-				}
-			)) {
-				throw std::invalid_argument(
-					"OpenGL compute resource bindings must use space 0"
-				);
-			}
-			if (!program.GetInterface().push_constants.empty()) {
-				throw std::invalid_argument(
-					"OpenGL compute pipelines do not support push constants"
-				);
-			}
+			auto constant_ranges = MakeConstantRanges(
+				program.GetInterface(),
+				shader_target.essl_version == 0u
+					? GL_SHADER_STORAGE_BUFFER
+					: GL_UNIFORM_BUFFER
+			);
 			if (
 				program.GetEntryPoints().size() != 1u ||
 				program.GetEntryPoints().front().stage != pipeline::Stage::Compute
@@ -966,7 +1051,12 @@ namespace fyuu_rhi {
 				);
 			}
 
-			auto native_program = CreateProgram(program, shader_target, true);
+			auto native_program = CreateProgram(
+				program,
+				shader_target,
+				true,
+				constant_ranges
+			);
 			return MakePipeline(
 				opengl::Pipeline{
 					opengl::ManagedPipeline(
@@ -981,7 +1071,8 @@ namespace fyuu_rhi {
 					{},
 					std::nullopt,
 					{},
-					pipeline::MakePipelineBindingMetadata(program.GetInterface())
+					pipeline::MakePipelineBindingMetadata(program.GetInterface()),
+					std::move(constant_ranges)
 				}
 			);
 		}

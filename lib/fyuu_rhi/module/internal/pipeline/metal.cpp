@@ -188,6 +188,8 @@ namespace fyuu_rhi {
 						.buffer = {},
 						.buffer_offset = 0u,
 						.buffer_size = pipeline::PipelineWholeBuffer,
+						.buffer_capacity = 0u,
+						.dynamic_buffer = false,
 						.texture = {},
 						.sampler = {}
 					};
@@ -225,6 +227,8 @@ namespace fyuu_rhi {
 						result.buffer = *buffer;
 						result.buffer_offset = offset;
 						result.buffer_size = size;
+						result.buffer_capacity = length;
+						result.dynamic_buffer = true;
 					}
 					if (auto view = binding.value.BoundView()) {
 						auto const& native_view = NativeView(view);
@@ -266,6 +270,13 @@ namespace fyuu_rhi {
 						result.sampler = native_sampler.impl;
 					}
 					return result;
+				}
+			);
+			std::ranges::sort(
+				native_bindings,
+				{},
+				[](auto const& binding) {
+					return binding.resource_slot;
 				}
 			);
 

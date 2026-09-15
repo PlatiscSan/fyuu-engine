@@ -88,6 +88,7 @@ namespace fyuu_rhi::d3d12 {
 		struct ManagedCommandList {
 			std::shared_ptr<QueueContext> owner;
 			Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> impl;
+			std::vector<ManagedDescriptorRange> descriptors;
 			std::uint64_t fence_value = 0u;
 			bool is_open = false;
 
@@ -108,6 +109,7 @@ namespace fyuu_rhi::d3d12 {
 			ManagedCommandList(ManagedCommandList&& other) noexcept
 				: owner(std::move(other.owner)),
 				impl(std::move(other.impl)),
+				descriptors(std::move(other.descriptors)),
 				fence_value(other.fence_value),
 				is_open(other.is_open) {
 				other.fence_value = 0u;
@@ -168,11 +170,19 @@ namespace fyuu_rhi::d3d12 {
 	};
 
 	struct Pipeline {
+		struct ConstantRange {
+			std::uint32_t slot;
+			std::uint32_t space;
+			std::uint32_t root_parameter;
+			std::uint32_t size;
+		};
+
 		DescriptorAllocator resource_descriptors;
 		DescriptorAllocator sampler_descriptors;
 		Microsoft::WRL::ComPtr<ID3D12RootSignature> root_signature;
 		Microsoft::WRL::ComPtr<ID3D12PipelineState> impl;
 		std::vector<pipeline::BindingMetadata> bindings;
+		std::vector<ConstantRange> constant_ranges;
 		D3D_PRIMITIVE_TOPOLOGY primitive_topology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
 		bool compute = false;
 	};
@@ -182,12 +192,23 @@ namespace fyuu_rhi::d3d12 {
 			std::uint32_t root_parameter = 0u;
 			ManagedDescriptorRange descriptors;
 		};
+		struct DynamicBuffer {
+			std::size_t table;
+			std::size_t descriptor;
+			Microsoft::WRL::ComPtr<ID3D12Resource> resource;
+			std::size_t base_offset;
+			std::size_t size;
+			std::size_t capacity;
+			bool uniform;
+		};
 
 		std::uint32_t space = 0u;
 		Microsoft::WRL::ComPtr<ID3D12RootSignature> root_signature;
 		ManagedDescriptorHeap resource_heap;
 		ManagedDescriptorHeap sampler_heap;
+		DescriptorAllocator resource_descriptors;
 		std::vector<Table> tables;
+		std::vector<DynamicBuffer> dynamic_buffers;
 	};
 
 } // namespace fyuu_rhi::d3d12::data

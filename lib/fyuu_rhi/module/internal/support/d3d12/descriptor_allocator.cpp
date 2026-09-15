@@ -252,6 +252,10 @@ namespace fyuu_rhi::d3d12 {
 			}
 			return m_heap->GetGpuHandle(*m_index + offset);
 		}
+
+		std::size_t Count() const noexcept {
+			return m_count;
+		}
 	};
 
 	class DescriptorAllocator final {

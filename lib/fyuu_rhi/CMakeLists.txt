@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.28)
 project(FyuuRHI VERSION 1.0.0 LANGUAGES CXX)
 
+option(FYUU_RHI_BUILD_DOCUMENTATION "Build FyuuRHI API documentation with Doxygen" OFF)
+
 set(CMAKE_C_STANDARD 23)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -240,4 +242,8 @@ disable_rtti(${PROJECT_NAME})
 
 if(BUILD_TESTING)
 	add_subdirectory(test/hello_triangle)
+endif()
+
+if(FYUU_RHI_BUILD_DOCUMENTATION)
+	add_subdirectory(doc)
 endif()

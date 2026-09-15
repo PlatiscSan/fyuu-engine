@@ -263,6 +263,27 @@ namespace {
 		return result;
 	}
 
+	std::vector<metal::Pipeline::ConstantRange> MakeConstantRanges(
+		SlangPipelineInterface const& interface
+	) {
+		std::vector<metal::Pipeline::ConstantRange> result;
+		result.reserve(interface.push_constants.size());
+		std::ranges::transform(
+			interface.push_constants,
+			std::back_inserter(result),
+			[](auto const& range) {
+				return metal::Pipeline::ConstantRange{
+					.slot = range.slot,
+					.space = range.space,
+					.offset = range.offset,
+					.size = range.size,
+					.visibility = range.visibility
+				};
+			}
+		);
+		return result;
+	}
+
 } // namespace
 
 namespace fyuu_rhi {
@@ -383,11 +404,6 @@ namespace fyuu_rhi {
 				descriptor.program,
 				"metal-msl"
 			);
-			if (!program.GetInterface().push_constants.empty()) {
-				throw std::invalid_argument(
-					"Metal pipelines do not support RHI push constants"
-				);
-			}
 
 			NS::SharedPtr<MTL::Function> vertex_function;
 			NS::SharedPtr<MTL::Function> fragment_function;
@@ -584,7 +600,8 @@ namespace fyuu_rhi {
 					MapFrontFace(descriptor.rasterization.front_face),
 					MapCullMode(descriptor.rasterization.cull_mode),
 					descriptor.rasterization.depth_bias,
-					MakeBindings(program.GetInterface())
+					MakeBindings(program.GetInterface()),
+					MakeConstantRanges(program.GetInterface())
 				}
 			);
 		}
@@ -601,11 +618,6 @@ namespace fyuu_rhi {
 				descriptor.program,
 				"metal-msl"
 			);
-			if (!program.GetInterface().push_constants.empty()) {
-				throw std::invalid_argument(
-					"Metal pipelines do not support RHI push constants"
-				);
-			}
 			if (
 				program.GetEntryPoints().size() != 1u ||
 				program.GetEntryPoints().front().stage != pipeline::Stage::Compute
@@ -637,7 +649,8 @@ namespace fyuu_rhi {
 					MTL::WindingCounterClockwise,
 					MTL::CullModeNone,
 					{},
-					MakeBindings(program.GetInterface())
+					MakeBindings(program.GetInterface()),
+					MakeConstantRanges(program.GetInterface())
 				}
 			);
 		}

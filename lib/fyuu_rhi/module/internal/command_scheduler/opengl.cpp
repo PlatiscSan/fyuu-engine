@@ -322,6 +322,9 @@ namespace {
 				else if constexpr (std::same_as<T, BindResourceGroup>) {
 					return "BindResourceGroup";
 				}
+				else if constexpr (std::same_as<T, SetPipelineConstants>) {
+					return "SetPipelineConstants";
+				}
 				else if constexpr (std::same_as<T, BindVertexBuffer>) {
 					return "BindVertexBuffer";
 				}
@@ -935,6 +938,32 @@ namespace fyuu_rhi::opengl {
 		/// Color attachments of the active render pass, for MSAA resolve at EndRendering.
 		std::vector<ColorAttachment> active_colors;
 
+		struct ConstantState {
+			opengl::Pipeline::ConstantRange const* range;
+			GLuint buffer;
+			std::vector<std::byte> data;
+		};
+
+		std::vector<ConstantState> constants;
+
+		~Replayer() {
+			std::vector<GLuint> buffers;
+			buffers.reserve(constants.size());
+			std::ranges::transform(
+				constants,
+				std::back_inserter(buffers),
+				[](auto const& constant) {
+					return constant.buffer;
+				}
+			);
+			if (!buffers.empty()) {
+				glDeleteBuffers(
+					static_cast<GLsizei>(buffers.size()),
+					buffers.data()
+				);
+			}
+		}
+
 		Submission::ResourceSnapshot const& ResourceAt(std::size_t index) const {
 			return submission.resources.at(index);
 		}
@@ -966,11 +995,39 @@ namespace fyuu_rhi::opengl {
 			ApplyFrontFace();
 		}
 
+		void ApplyConstant(ConstantState const& constant) const {
+			glBindBuffer(constant.range->target, constant.buffer);
+			glBufferData(
+				constant.range->target,
+				static_cast<GLsizeiptr>(constant.data.size()),
+				constant.data.data(),
+				GL_DYNAMIC_DRAW
+			);
+			glBindBufferBase(
+				constant.range->target,
+				constant.range->slot,
+				constant.buffer
+			);
+		}
+
 		/// Binds the pipeline's program, rasterization and depth state, and ensures
 		/// a VAO exists for its vertex layout.
 		void BindPipelineState(Submission::PipelineSnapshot const& value) {
 			glUseProgram(value.impl);
 			pipeline = &value;
+			std::ranges::for_each(
+				constants,
+				[&](auto const& constant) {
+					if (std::ranges::find_if(
+						value.constant_ranges,
+						[&](auto const& range) {
+							return &range == constant.range;
+						}
+					) != value.constant_ranges.end()) {
+						ApplyConstant(constant);
+					}
+				}
+			);
 
 			if (value.compute) {
 				return;
@@ -1260,6 +1317,24 @@ namespace fyuu_rhi::opengl {
 			// Contract: slang emits GLSL with layout(binding = slot + array_element),
 			// matching the binding units/uniform/texture/image indices used here.
 			auto const& group = submission.groups.at(value.group);
+			if (group.space != value.space) {
+				throw std::invalid_argument("OpenGL resource group space mismatch");
+			}
+			auto dynamic_count = std::ranges::count_if(
+				group.bindings,
+				[](auto const& binding) {
+					return binding.dynamic_buffer;
+				}
+			);
+			if (
+				!value.additional_buffer_offsets.empty() &&
+				value.additional_buffer_offsets.size() != static_cast<std::size_t>(dynamic_count)
+			) {
+				throw std::invalid_argument(
+					"OpenGL dynamic-offset count does not match the resource group"
+				);
+			}
+			std::size_t dynamic_index = 0u;
 			for (auto const& binding : group.bindings) {
 				GLenum unit = binding.slot + binding.array_element;
 				if (binding.buffer != 0u) {
@@ -1270,7 +1345,39 @@ namespace fyuu_rhi::opengl {
 							break;
 						}
 					}
-					glBindBufferBase(target, unit, binding.buffer);
+					auto dynamic_offset = value.additional_buffer_offsets.empty()
+						? 0u
+						: value.additional_buffer_offsets[dynamic_index];
+					++dynamic_index;
+					if (
+						dynamic_offset > binding.buffer_capacity - binding.buffer_offset ||
+						binding.buffer_size >
+							binding.buffer_capacity - binding.buffer_offset - dynamic_offset
+					) {
+						throw std::out_of_range(
+							"OpenGL dynamic buffer offset exceeds the bound buffer"
+						);
+					}
+					GLint alignment = 1;
+					glGetIntegerv(
+						target == GL_UNIFORM_BUFFER
+							? GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT
+							: GL_SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT,
+						&alignment
+					);
+					auto final_offset = binding.buffer_offset + dynamic_offset;
+					if (final_offset % static_cast<std::size_t>(alignment) != 0u) {
+						throw std::invalid_argument(
+							"OpenGL dynamic buffer offset does not satisfy alignment"
+						);
+					}
+					glBindBufferRange(
+						target,
+						unit,
+						binding.buffer,
+						static_cast<GLintptr>(final_offset),
+						static_cast<GLsizeiptr>(binding.buffer_size)
+					);
 					continue;
 				}
 				if (binding.view == 0u) {
@@ -1307,6 +1414,56 @@ namespace fyuu_rhi::opengl {
 					glBindSampler(unit, binding.sampler);
 				}
 			}
+		}
+
+		void operator()(SetPipelineConstants const& value) {
+			if (!pipeline) {
+				throw std::logic_error(
+					"OpenGL pipeline constants require a bound pipeline"
+				);
+			}
+			auto range = std::ranges::find_if(
+				pipeline->constant_ranges,
+				[&](auto const& candidate) {
+					return candidate.slot == value.slot && candidate.space == value.space;
+				}
+			);
+			if (range == pipeline->constant_ranges.end()) {
+				throw std::invalid_argument(
+					"OpenGL pipeline has no matching immediate-constant range"
+				);
+			}
+			if (
+				value.offset > range->size ||
+				value.data.size() > range->size - value.offset
+			) {
+				throw std::out_of_range(
+					"OpenGL immediate-constant write exceeds its reflected range"
+				);
+			}
+			auto state = std::ranges::find_if(
+				constants,
+				[range](auto const& candidate) {
+					return candidate.range == &*range;
+				}
+			);
+			if (state == constants.end()) {
+				GLuint buffer = 0u;
+				glGenBuffers(1u, &buffer);
+				state = constants.emplace(
+					constants.end(),
+					ConstantState{
+						&*range,
+						buffer,
+						std::vector<std::byte>(range->size)
+					}
+				);
+			}
+			std::ranges::copy(
+				value.data,
+				state->data.begin() + value.offset
+			);
+			ApplyConstant(*state);
 		}
 
 		void operator()(BindVertexBuffer const& value) {
@@ -2057,7 +2214,8 @@ namespace fyuu_rhi::execution {
 						.write_mask = native->color_targets.empty()
 							? pipeline::ColorWriteMask::All
 							: native->color_targets.front().write_mask,
-						.bindings = native->bindings
+						.bindings = native->bindings,
+						.constant_ranges = native->constant_ranges
 					}
 				);
 			}
@@ -2077,6 +2235,7 @@ namespace fyuu_rhi::execution {
 					);
 				}
 				opengl::Submission::GroupSnapshot snapshot;
+				snapshot.space = native->space;
 				snapshot.bindings.reserve(native->bindings.size());
 				for (auto const& binding : native->bindings) {
 					snapshot.bindings.emplace_back(
@@ -2086,6 +2245,8 @@ namespace fyuu_rhi::execution {
 							.buffer = binding.buffer,
 							.buffer_offset = binding.buffer_offset,
 							.buffer_size = binding.buffer_size,
+							.buffer_capacity = binding.buffer_capacity,
+							.dynamic_buffer = binding.dynamic_buffer,
 							.view = binding.view,
 							.view_target = binding.view_target,
 							.view_format = binding.view_format,

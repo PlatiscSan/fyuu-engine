@@ -37,6 +37,7 @@ namespace fyuu_rhi::d3d12 {
 		ManagedCommandList previous(std::move(other));
 		std::swap(owner, previous.owner);
 		std::swap(impl, previous.impl);
+		std::swap(descriptors, previous.descriptors);
 		std::swap(fence_value, previous.fence_value);
 		std::swap(is_open, previous.is_open);
 		return *this;

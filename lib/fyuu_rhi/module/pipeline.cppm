@@ -43,6 +43,12 @@ export namespace fyuu_rhi::pipeline {
 		Mesh
 	};
 
+	/**
+	 * @brief Source-level Slang program description compiled for the active backend.
+	 *
+	 * All spans are borrowed only for the duration of pipeline creation. Entry-point
+	 * stages, reflected bindings, and immediate-constant ranges form the pipeline ABI.
+	 */
 	struct SlangPipelineProgramDescriptor {
 		struct Module {
 			std::string name;
@@ -261,6 +267,7 @@ export namespace fyuu_rhi::pipeline {
 		bool alpha_to_coverage_enabled = false;
 	};
 
+	/// Complete graphics pipeline description, including program and fixed-function state.
 	struct GraphicsPipelineDescriptor {
 		SlangPipelineProgramDescriptor program{};
 		VertexState vertex{};
@@ -271,12 +278,20 @@ export namespace fyuu_rhi::pipeline {
 		std::span<ColorTargetState const> color_targets{};
 	};
 
+	/// Compute pipeline description containing a program with a compute entry point.
 	struct ComputePipelineDescriptor {
 		SlangPipelineProgramDescriptor program{};
 	};
 
 	inline constexpr std::size_t PipelineWholeBuffer = std::numeric_limits<std::size_t>::max();
 
+	/**
+	 * @brief One value supplied while materializing an immutable resource group.
+	 *
+	 * The factories borrow their arguments only during resource-group creation.
+	 * FromBuffer records a base byte offset and range; BindResourceGroup may add a
+	 * per-submission offset without rebuilding the public resource group.
+	 */
 	class BindingValue {
 	private:
 		struct BufferBinding {
@@ -367,6 +382,7 @@ export namespace fyuu_rhi::pipeline {
 		}
 	};
 
+	/// Supplies one array element of one reflected slot in a pipeline space.
 	struct ResourceBinding {
 		std::uint32_t slot = 0;
 		std::uint32_t array_element = 0;
@@ -392,6 +408,12 @@ export namespace fyuu_rhi {
 	// creation. BindingValue borrows the uniquely owned objects only while the
 	// group is being created. Each backend implementation must retain whatever
 	// native ownership its materialized descriptors require.
+	/**
+	 * @brief Move-only immutable materialization of one reflected pipeline space.
+	 *
+	 * Create it from the Pipeline that defines the ABI. At recording time bind it
+	 * to the same space and optionally provide additional buffer offsets.
+	 */
 	class PipelineResourceGroup {
 	public:
 		using UniqueHandle = std::unique_ptr<
@@ -417,10 +439,14 @@ export namespace fyuu_rhi {
 			return static_cast<bool>(m_impl);
 		}
 
+		/// Returns the logical shader space/set supplied at creation.
 		std::uint32_t Space() const noexcept;
 
 	};
 
+	/**
+	 * @brief Move-only graphics or compute pipeline and its reflected binding ABI.
+	 */
 	class Pipeline {
 	public:
 		using UniqueHandle = std::unique_ptr<
@@ -446,7 +472,15 @@ export namespace fyuu_rhi {
 			return static_cast<bool>(m_impl);
 		}
 
-		PipelineResourceGroup CreatePipelineResourceGroup(std::uint32_t space, std::span<pipeline::ResourceBinding const> bindings);
+		/**
+		 * @brief Materializes every declared binding in one shader space.
+		 * @param space Logical register space / descriptor set.
+		 * @param bindings Values for every required slot and array element in space.
+		 */
+		PipelineResourceGroup CreatePipelineResourceGroup(
+			std::uint32_t space,
+			std::span<pipeline::ResourceBinding const> bindings
+		);
 	};
 
 }

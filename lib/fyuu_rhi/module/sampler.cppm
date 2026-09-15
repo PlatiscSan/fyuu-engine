@@ -50,6 +50,7 @@ export namespace fyuu_rhi {
 		Always,
 	};
 
+	/// Immutable filtering, addressing, comparison, anisotropy, and LOD state.
 	struct SamplerDescriptor {
 		AddressMode address_mode_u = AddressMode::Unknown;
 		AddressMode address_mode_v = AddressMode::Unknown;
@@ -63,6 +64,7 @@ export namespace fyuu_rhi {
 		float max_lod = std::numeric_limits<float>::max();
 	};
 
+	/** @brief Move-only owner of immutable texture-sampling state. */
 	class Sampler {
 	public:
 		using UniqueHandle = std::unique_ptr<

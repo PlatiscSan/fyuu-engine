@@ -42,10 +42,10 @@ namespace fyuu_rhi {
 		static vk::DescriptorType DescriptorType(ResourceFlags const& flags) {
 			using Bits = ResourceFlagBits;
 			if (flags.Test(Bits::UniformBuffer)) {
-				return vk::DescriptorType::eUniformBuffer;
+				return vk::DescriptorType::eUniformBufferDynamic;
 			}
 			if (flags.Test(Bits::StorageBuffer)) {
-				return vk::DescriptorType::eStorageBuffer;
+				return vk::DescriptorType::eStorageBufferDynamic;
 			}
 			bool view = flags.Test(Bits::TextureBinding) || flags.Test(Bits::StorageBinding);
 			bool sampler = flags.Test(Bits::SamplerBinding);
@@ -273,12 +273,53 @@ namespace fyuu_rhi {
 				std::array<vk::CopyDescriptorSet, 0u>{},
 				*native->dispatcher
 			);
+			auto dynamic_bindings = bindings |
+				std::views::filter(
+					[](auto const& binding) {
+						return binding.value.Buffer() != nullptr;
+					}
+				) |
+				std::ranges::to<std::vector>();
+			std::ranges::sort(
+				dynamic_bindings,
+				{},
+				[](auto const& binding) {
+					return std::pair(binding.slot, binding.array_element);
+				}
+			);
+			std::vector<vulkan::PipelineResourceGroup::DynamicBuffer> dynamic_buffers;
+			dynamic_buffers.reserve(dynamic_bindings.size());
+			std::ranges::transform(
+				dynamic_bindings,
+				std::back_inserter(dynamic_buffers),
+				[](auto const& binding) {
+					auto capacity = binding.value.Buffer()->GetBufferSize();
+					auto offset = binding.value.Offset();
+					if (offset > capacity) {
+						throw std::out_of_range(
+							"The Vulkan buffer binding offset exceeds the buffer"
+						);
+					}
+					auto size = binding.value.Size() == pipeline::PipelineWholeBuffer
+						? capacity - offset
+						: binding.value.Size();
+					if (size > capacity - offset) {
+						throw std::out_of_range(
+							"The Vulkan buffer binding range exceeds the buffer"
+						);
+					}
+					return vulkan::PipelineResourceGroup::DynamicBuffer{
+						.maximum_offset = capacity - offset - size
+					};
+				}
+			);
 			return MakePipelineResourceGroup(
 				vulkan::PipelineResourceGroup{
 					.space = space,
 					.pool = std::move(pool),
 					.set = descriptor_sets.front(),
-					.layout = native->layout
+					.layout = native->layout,
+					.dynamic_buffers = std::move(dynamic_buffers)
 				}
 			);
 		}

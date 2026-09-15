@@ -31,6 +31,12 @@ set_target_properties(MyApplication PROPERTIES CXX_EXTENSIONS OFF)
 import fyuu_rhi;
 ```
 
+完整对象与命令参考由公开声明旁的注释生成。安装 Doxygen 后，以
+`-DFYUU_RHI_BUILD_DOCUMENTATION=ON` 配置工程，再构建 `FyuuRHIDocumentation`
+目标会生成英文站点，HTML 入口位于构建目录下的
+`lib/fyuu_rhi/doc/en/html/index.html`。构建 `FyuuRHIDocumentationZhCN` 目标会在
+`doc/zh-CN` 下生成简体中文站点。
+
 可用后端取决于目标平台以及配置阶段找到的依赖。应用不应假定某个后端必然存在，而应查询当前构建实际提供的后端：
 
 ```cpp

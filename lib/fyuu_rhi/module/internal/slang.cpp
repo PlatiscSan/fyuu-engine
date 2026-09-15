@@ -166,7 +166,7 @@ namespace fyuu_rhi::shader {
 	private:
 		/// Bumped whenever the on-disk cache format changes; older entries are
 		/// ignored instead of being parsed with a mismatched schema.
-		static constexpr std::uint32_t CACHE_SCHEMA_VERSION = 5u;
+		static constexpr std::uint32_t CACHE_SCHEMA_VERSION = 6u;
 
 		/// Per-entry-point compiled bytecode, in program order.
 		std::vector<SlangCompiledEntryPoint> m_entry_points;
@@ -332,9 +332,13 @@ namespace fyuu_rhi::shader {
 				}
 			};
 
+			auto reflection_target = target;
+			reflection_target.format = SLANG_SPIRV;
+			reflection_target.profile = SlangGlobalSession()->findProfile("spirv_1_0");
+			std::array targets{ target, reflection_target };
 			slang::SessionDesc session_desc{};
-			session_desc.targets = &target;
-			session_desc.targetCount = 1;
+			session_desc.targets = targets.data();
+			session_desc.targetCount = static_cast<SlangInt>(targets.size());
 			session_desc.searchPaths = search_paths.data();
 			session_desc.searchPathCount = static_cast<SlangInt>(search_paths.size());
 			session_desc.preprocessorMacros = macros.data();
@@ -716,13 +720,36 @@ namespace fyuu_rhi::shader {
 					continue;
 				}
 				auto category = variable->getCategory();
-				if (category == slang::ParameterCategory::PushConstantBuffer) {
+				bool push_constant = std::ranges::any_of(
+					std::views::iota(0u, variable->getCategoryCount()),
+					[variable](unsigned category_index) {
+						return variable->getCategoryByIndex(category_index) ==
+							slang::ParameterCategory::PushConstantBuffer;
+					}
+				);
+				if (push_constant) {
+					auto binding_index = variable->getBindingIndex();
+					auto binding_space = variable->getBindingSpace();
+					auto constant_type = variable->getTypeLayout()->getElementTypeLayout();
+					if (!constant_type) {
+						constant_type = variable->getTypeLayout();
+					}
 					result.push_constants.push_back(
 						{
-							CheckedUint32(variable->getOffset(category), "push constant offset"),
-							CheckedUint32(variable->getTypeLayout()->getSize(slang::ParameterCategory::Uniform), "push constant size"),
-							variable->getBindingIndex(),
-							variable->getBindingSpace(),
+							CheckedUint32(
+								variable->getOffset(
+									slang::ParameterCategory::PushConstantBuffer
+								),
+								"push constant offset"
+							),
+							CheckedUint32(
+								constant_type->getSize(slang::ParameterCategory::Uniform),
+								"push constant size"
+							),
+							binding_index == ~0u
+								? static_cast<std::uint32_t>(result.push_constants.size())
+								: binding_index,
+							binding_space == ~0u ? 0u : binding_space,
 							visibility
 						}
 					);
@@ -1098,7 +1125,10 @@ namespace fyuu_rhi::shader {
 
 			// Reflect the linked program: the engine-facing interface plus the
 			// raw JSON dump preserved for tooling/debugging.
-			auto reflection = linked_program->getLayout(0, diagnostics.writeRef());
+			// Interface reflection always uses the auxiliary SPIR-V layout. Slang's
+			// DXIL, GLSL, WGSL, and MSL layouts erase Vulkan push-constant categories,
+			// while SPIR-V preserves the backend-independent immediate-constant intent.
+			auto reflection = linked_program->getLayout(1, diagnostics.writeRef());
 			if (!reflection) {
 				Check(SLANG_FAIL, diagnostics, "Reflecting Slang program");
 			}

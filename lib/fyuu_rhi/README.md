@@ -37,6 +37,12 @@ set_target_properties(MyApplication PROPERTIES CXX_EXTENSIONS OFF)
 import fyuu_rhi;
 ```
 
+To generate the complete object and command reference, install Doxygen and
+configure with `-DFYUU_RHI_BUILD_DOCUMENTATION=ON`. Build the
+`FyuuRHIDocumentation` target; its HTML entry is
+`lib/fyuu_rhi/doc/en/html/index.html` under the selected build directory. Build
+`FyuuRHIDocumentationZhCN` for the Simplified Chinese site under `doc/zh-CN`.
+
 Backend availability depends on the target platform and the dependencies found
 at configure time. Query it instead of assuming:
 

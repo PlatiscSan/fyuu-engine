@@ -1,0 +1,196 @@
+/**
+@mainpage FyuuRHI 对象使用指南
+
+@tableofcontents
+
+FyuuRHI 的公开对象按以下方向创建：
+
+@code
+Instance -> PhysicalDevice -> LogicalDevice
+                              |- Resource -> View
+                              |- Sampler
+                              |- Pipeline -> PipelineResourceGroup
+                              `- CommandScheduler -> CommandGraphBuilder
+                                                   -> CommandGraphBindings
+                                                   -> CommandGraphResources
+@endcode
+
+除 Instance 与 CommandScheduler 外，GPU 对象均为独占所有权并只能移动。不要混用
+不同 Backend 或不同 LogicalDevice 创建的对象。命令图启动后暂时取得绑定对象的所有权，
+并在成功、失败或取消时交还给 receiver。
+
+@section context 初始化与日志
+
+首先调用 fyuu_rhi::InitializeRHIContext。应用名、引擎名和版本会被后端用于实例与诊断
+元数据；fyuu_rhi::log::Sink 由应用拥有，必须活到最后一次 RHI 调用之后，并允许从录制
+或完成线程同步调用。
+
+@code
+fyuu_rhi::InitializeRHIContext(
+    "Application",
+    { 0u, 1u, 0u, 0u },
+    "Engine",
+    { 0u, 1u, 0u, 0u },
+    &sink
+);
+@endcode
+
+@section instance Instance
+
+fyuu_rhi::EnumerateBackends 返回当前构建实际包含的后端。把其中一个值传给
+fyuu_rhi::RequestInstance；回调收到的 fyuu_rhi::Instance 是 RHI 所保留单例状态的
+非 owning 句柄。
+
+- EnumeratePhysicalDevices() 返回该后端可用的适配器。
+- ShareContextOnThisThread() 只对 OpenGL 有实际作用；额外线程执行 OpenGL 工作前调用。
+- Instance 不需要 visitor，也不公开任何原生 API 句柄。
+
+@section physical_device PhysicalDevice
+
+fyuu_rhi::PhysicalDevice 是 move-only 适配器对象。GetInfo() 返回名称、设备类别以及后端
+能够提供的 vendor ID、device ID、专用显存。缺失的 optional 表示无法查询，并不表示零。
+fyuu_rhi::BestPerformance 可从非空 span 中按设备类别和显存选择高性能适配器。
+CreateLogicalDevice() 创建后续所有 GPU 对象的共同归属域。
+
+@section logical_device LogicalDevice
+
+fyuu_rhi::LogicalDevice 是 move-only 工厂。它创建：
+
+- CreateBuffer()：字节长度固定的缓冲区；
+- CreateTexture()：尺寸、mip、数组层和创建能力固定的纹理；
+- CreateSampler()：不可变采样状态；
+- CreateGraphicsPipeline() / CreateComputePipeline()：Slang 管线；
+- CreateScheduler()：可复制、共享调度上下文的命令调度器。
+
+由不同 LogicalDevice 创建的资源、View、Sampler、Pipeline 和 PipelineResourceGroup
+不能放进同一次执行，也不能互相建立绑定。
+
+@section resource Resource 与 ResourceFlags
+
+fyuu_rhi::Resource 同时表示 buffer 或 texture，并且 move-only。资源标志集合必须在创建时
+完整声明资源将来的用途：内存可见性、复制方向、buffer 用途、texture 用途、
+维度、可创建的 View 类型、aspect、sample count 和 format。标志是正确性契约，不是提示。
+
+Buffer 常用组合：
+
+@code
+fyuu_rhi::ResourceFlags flags;
+flags.Set(fyuu_rhi::ResourceFlagBits::HostVisible);
+flags.Set(fyuu_rhi::ResourceFlagBits::CopyDST);
+flags.Set(fyuu_rhi::ResourceFlagBits::UniformBuffer);
+auto buffer = device.CreateBuffer(4096u, flags);
+@endcode
+
+Texture 常用组合需要一个 Texture1D/2D/3D、一个格式、一个 sample count、内存策略以及
+将使用的 binding/attachment/copy 能力。GetBufferSize() 只用于 buffer；
+GetTextureExtent() 只用于 texture；GetFlags() 返回原始创建标志。
+
+@section view View
+
+fyuu_rhi::View 是 Resource 中一段数据的解释方式，并不取代 Resource 所有权。通过
+Resource::CreateBufferView() 或 Resource::CreateTextureView() 创建。创建参数必须落在
+资源范围内，View flags 必须与资源在创建时声明的能力兼容。使用附件或纹理绑定时，
+命令图通常同时注册 Resource（负责访问和状态）与 View（负责原生视图）。
+
+@section sampler Sampler
+
+fyuu_rhi::Sampler 是 move-only 不可变采样状态。fyuu_rhi::SamplerDescriptor 定义 U/V/W
+寻址、放大/缩小/mipmap 过滤、各向异性、比较采样与 LOD 范围。`max_anisotropy == 1`
+表示关闭各向异性过滤；比较函数为 Unknown 表示普通非比较采样。
+
+@section pipeline Pipeline
+
+fyuu_rhi::Pipeline 是 move-only 图形或计算管线。SlangPipelineProgramDescriptor 的 spans
+只在创建调用期间借用；模块源码、入口点、宏、include path、优化级别与矩阵布局共同
+产生后端 Shader 和统一反射 ABI。
+
+GraphicsPipelineDescriptor 还定义顶点 buffer/attribute、图元、正面方向与裁剪、深度偏移、
+多重采样、深度模板和每个颜色附件的格式/混合/写掩码。实际 BeginRendering 附件必须与
+管线声明兼容。ComputePipelineDescriptor 应只提供计算入口点。
+
+@section resource_group PipelineResourceGroup 与 BindingValue
+
+Pipeline::CreatePipelineResourceGroup(space, bindings) 为一个反射出的 shader space/set 创建
+不可变资源组。每个必要 slot 和 array element 必须且只能提供一次：
+
+- BindingValue::FromBuffer：buffer、组内基础字节 offset 和有效 range；
+- BindingValue::FromView：独立 texture/storage view；
+- BindingValue::FromSampler：独立 sampler；
+- BindingValue::FromCombined：一个逻辑组合 texture+sampler 绑定。
+
+BindingValue 中的 C++ 引用只在 CreatePipelineResourceGroup 调用期间借用；后端会保存维持
+原生 descriptor 有效所需的所有权。PipelineResourceGroup::Space() 返回创建时的 space。
+
+动态 buffer 绑定不修改资源组。录制 BindResourceGroup 时使用相同 space，并在
+additional_buffer_offsets 中按 `(slot, array_element)` 顺序提供附加字节偏移。只有直接
+buffer binding 消耗数组元素，texture 与 sampler 不消耗。空数组表示所有附加偏移为零。
+最终范围为 `base offset + additional offset`，必须满足资源边界及后端 uniform/storage
+alignment；同一不可变资源组可在不同 draw/dispatch 前使用不同偏移。
+
+@section scheduler CommandScheduler 与命令图
+
+fyuu_rhi::execution::CommandScheduler 可复制；副本共享调度上下文。schedule() 返回一个
+新的 CommandGraphBuilder，此时不预占物理队列。Builder 的 RegisterResource/View/Sampler/
+Pipeline/ResourceGroup 返回类型化槽位编号。槽位编号写入命令，实际对象在 connect() 后
+绑定。
+
+CreateNode(queue, dependency) 创建节点。QueueType 表示能力要求，并不保证专用物理队列。
+Node::DependsOn 建立有向依赖；Node::Access 声明资源区间、AccessMode 和 ResourceUsage；
+Node::Record 按顺序追加命令。Access 声明必须真实覆盖节点内的命令访问，调度器据此进行
+拓扑排序、分 batch、资源状态转换、queue-family ownership transfer 和跨队列同步。
+
+@section commands 命令对象
+
+- BeginRendering / EndRendering：打开和关闭渲染范围；area、附件 load/store、clear、resolve
+  和 depth/stencil 必须完整描述。
+- BindPipeline：绑定已注册图形或计算管线。
+- BindResourceGroup：绑定相同 space 的资源组，并可提供动态 buffer 附加偏移。
+- SetPipelineConstants：写入当前管线反射出的立即常量范围；slot/space 选择范围，offset
+  相对该范围起点，offset 与 data 长度均按四字节对齐。
+- BindVertexBuffer / BindIndexBuffer：指定 buffer 槽、stride/type 和基础 offset。
+- Viewport / Scissor：设置光栅化范围；Viewport::clip_space 指明应用的 NDC Y 方向。
+- Draw / DrawIndexed：普通或索引化实例绘制。
+- Dispatch：提交 X/Y/Z 计算 workgroup 数。
+- CopyBuffer、CopyBufferToTexture、CopyTextureToBuffer、CopyTexture：复制已声明区间。
+- WriteBuffer：把 CPU 数据写进 host-visible buffer；目标还必须具备匹配的创建用途。
+- Present：把 source 纹理呈现到 presentation target；target 是目标槽位，不是资源槽位。
+
+ResourceUsage 必须与命令角色一致，例如顶点读取用 VertexBuffer，上传目标用
+CopyDestination，颜色附件写入用 ColorAttachment，呈现读取用 PresentationSource。
+ResourceRange 的 monostate 表示完整资源；具体 BufferRange 或 TextureRange 的零长度/count
+不是“完整资源”的别名，而是无效范围。
+
+@section completion 绑定、启动与对象回收
+
+把 Builder 作为右值 connect(receiver) 后得到 CommandGraphBindings。必须给每个注册槽位
+调用一次对应 BindResource/BindView/BindSampler/BindPipeline/BindResourceGroup，并用
+SetPresentationTarget 填满 Present 引用的目标槽，然后调用 start()。
+
+Receiver 必须可移动、提供 get_env()，并实现：
+
+- `RecoverBindings(CommandGraphResources&&) noexcept`；
+- `set_value(CommandGraphResources&&) && noexcept`；
+- `set_error(std::exception_ptr) && noexcept`；
+- `set_stopped() && noexcept`。
+
+成功时 GPU 对象随 set_value 返回。失败或取消时先调用 RecoverBindings，再发送唯一终止
+信号。CommandGraphResources 的 TakeResource/View/Sampler/Pipeline/ResourceGroup 按原槽位
+取回对象，每个槽只能消费一次。回调可能来自内部完成线程，receiver 必须同步共享状态。
+
+CompletionToken 是后端提交后的 move-only 状态：Poll() 非阻塞查询完成；Error() 返回封存
+异常；IsStopped() 返回取消状态。普通 sender 使用者通常通过 receiver 接收结果，不需要
+直接管理 token。
+
+@section presentation 平台窗口与 Present
+
+PlatformHandle 在 Windows 为 HWND，在 Android 为 ANativeWindow*，在 Linux 为 X11 或
+Wayland variant，在 Apple 平台为 CA::MetalLayer*。窗口、事件循环、尺寸变化和关闭流程由
+应用管理。Present::target 对应 CommandGraphBindings::SetPresentationTarget 的槽位；一张
+图可呈现多个不同目标。
+
+@section errors 错误与停止
+
+图的准备阶段直接报告缺失绑定、越界、后端/设备混用和参数错误。录制及提交错误通过
+receiver 的 error 通道交付。StopTokenView 在准备与录制阶段生效；已提交到 GPU 的工作
+通常无法取消。所有后端诊断还会同步写入配置的 log::Sink。
+*/

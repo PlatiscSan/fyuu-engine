@@ -20,6 +20,12 @@ import :execution;
 
 export namespace fyuu_rhi {
 
+	/**
+	 * @brief Move-only factory and ownership boundary for GPU objects.
+	 *
+	 * Resources, pipelines, samplers, resource groups, and scheduler work submitted
+	 * together must originate from the same LogicalDevice.
+	 */
 	class LogicalDevice {
 	public:
 		using UniqueHandle = std::unique_ptr<
@@ -44,8 +50,10 @@ export namespace fyuu_rhi {
 			return static_cast<bool>(m_impl);
 		}
 
+		/// Creates a buffer of exactly @p size_in_bytes with the declared usage flags.
 		Resource CreateBuffer(std::size_t size_in_bytes, ResourceFlags const& flags);
 
+		/// Creates a texture; dimension, format, samples, memory, and usage come from flags.
 		Resource CreateTexture(
 			std::size_t width,
 			std::size_t height,
@@ -54,12 +62,16 @@ export namespace fyuu_rhi {
 			ResourceFlags const& flags
 		);
 
+		/// Creates immutable sampling state.
 		Sampler CreateSampler(SamplerDescriptor const& descriptor);
 
+		/// Compiles and creates a graphics pipeline from a Slang program and fixed state.
 		Pipeline CreateGraphicsPipeline(pipeline::GraphicsPipelineDescriptor const& descriptor);
 
+		/// Compiles and creates a compute pipeline from a Slang program.
 		Pipeline CreateComputePipeline(pipeline::ComputePipelineDescriptor const& descriptor);
 
+		/// Creates a copyable command scheduler sharing this device's native queues.
 		execution::CommandScheduler CreateScheduler();
 
 	};

@@ -102,9 +102,20 @@ namespace fyuu_rhi::webgpu {
 	};
 
 	struct Pipeline {
+		struct ConstantRange {
+			std::uint32_t slot;
+			std::uint32_t space;
+			std::uint32_t offset;
+			std::uint32_t size;
+			std::uint32_t binding;
+		};
+
 		wgpu::Device device;
 		std::vector<wgpu::BindGroupLayout> bind_group_layouts;
 		std::vector<pipeline::BindingMetadata> bindings;
+		std::vector<ConstantRange> constant_ranges;
+		std::uint32_t constant_group;
+		bool native_immediates;
 		std::variant<
 			std::monostate,
 			wgpu::RenderPipeline,
@@ -113,7 +124,18 @@ namespace fyuu_rhi::webgpu {
 	};
 
 	struct PipelineResourceGroup {
+		struct DynamicBuffer {
+			std::size_t entry;
+			std::uint64_t base_offset;
+			std::uint64_t size;
+			std::uint64_t capacity;
+		};
+
 		std::uint32_t space;
+		wgpu::Device device;
+		wgpu::BindGroupLayout layout;
+		std::vector<wgpu::BindGroupEntry> entries;
+		std::vector<DynamicBuffer> dynamic_buffers;
 		wgpu::BindGroup impl;
 	};
 

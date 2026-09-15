@@ -6,6 +6,7 @@ module;
 #include <utility>
 #include <vector>
 #include <algorithm>
+#include <iterator>
 #include <string>
 #include <limits>
 
@@ -368,6 +369,36 @@ namespace {
 		    serialized.size(),
 		    IID_PPV_ARGS(&result)
 		));
+		return result;
+	}
+
+	std::vector<d3d12::Pipeline::ConstantRange> MakeConstantRanges(
+		SlangPipelineInterface const& pipeline_interface
+	) {
+		std::uint32_t root_parameter = 0u;
+		std::ranges::for_each(
+			pipeline_interface.bindings,
+			[&root_parameter](auto const& binding) {
+				bool combined = binding.flags.Test(ResourceFlagBits::TextureBinding) &&
+					binding.flags.Test(ResourceFlagBits::SamplerBinding);
+				root_parameter += combined ? 2u : 1u;
+			}
+		);
+
+		std::vector<d3d12::Pipeline::ConstantRange> result;
+		result.reserve(pipeline_interface.push_constants.size());
+		std::ranges::transform(
+			pipeline_interface.push_constants,
+			std::back_inserter(result),
+			[&root_parameter](auto const& range) {
+				return d3d12::Pipeline::ConstantRange{
+					.slot = range.slot,
+					.space = range.space,
+					.root_parameter = root_parameter++,
+					.size = range.size
+				};
+			}
+		);
 		return result;
 	}
 
@@ -860,6 +891,7 @@ namespace fyuu_rhi {
 			shader::SlangProgram program(target, descriptor.program, cache_tag);
 
 			auto bindings = pipeline::MakePipelineBindingMetadata(program.GetInterface());
+			auto constant_ranges = MakeConstantRanges(program.GetInterface());
 			auto root_signature = CreateRootSignature(device, program.GetInterface());
 			auto primitive_topology = MapTopology(descriptor.primitive.topology);
 
@@ -1082,6 +1114,7 @@ namespace fyuu_rhi {
 			        std::move(root_signature),
 			        std::move(pso),
 			        std::move(bindings),
+			        std::move(constant_ranges),
 			        primitive_topology,
 			        false
 			    }
@@ -1111,6 +1144,7 @@ namespace fyuu_rhi {
 			shader::SlangProgram program(target, descriptor.program, cache_tag);
 
 			auto bindings = pipeline::MakePipelineBindingMetadata(program.GetInterface());
+			auto constant_ranges = MakeConstantRanges(program.GetInterface());
 			auto root_signature = CreateRootSignature(device, program.GetInterface());
 
 			D3D12_COMPUTE_PIPELINE_STATE_DESC native{};
@@ -1180,6 +1214,7 @@ namespace fyuu_rhi {
 			        std::move(root_signature),
 			        std::move(pso),
 			        std::move(bindings),
+			        std::move(constant_ranges),
 			        D3D_PRIMITIVE_TOPOLOGY_UNDEFINED,
 			        true
 			    }

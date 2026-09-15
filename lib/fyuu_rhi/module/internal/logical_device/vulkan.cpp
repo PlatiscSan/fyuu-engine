@@ -134,10 +134,10 @@ namespace {
 			return flags.Test(Bits::TextureBinding) ? vk::DescriptorType::eCombinedImageSampler	: vk::DescriptorType::eSampler;
 		}
 		if (flags.Test(Bits::UniformBuffer)) {
-			return vk::DescriptorType::eUniformBuffer;
+			return vk::DescriptorType::eUniformBufferDynamic;
 		}
 		if (flags.Test(Bits::StorageBuffer)) {
-			return vk::DescriptorType::eStorageBuffer;
+			return vk::DescriptorType::eStorageBufferDynamic;
 		}
 		if (flags.Test(Bits::StorageBinding)) {
 			return vk::DescriptorType::eStorageImage;
@@ -219,6 +219,20 @@ namespace {
 		vulkan::Pipeline result;
 		result.dispatcher = logical_device->dispatcher;
 		result.bindings = MakePipelineBindingMetadata(program.GetInterface());
+		result.constant_ranges.reserve(program.GetInterface().push_constants.size());
+		std::ranges::transform(
+			program.GetInterface().push_constants,
+			std::back_inserter(result.constant_ranges),
+			[](auto const& range) {
+				return vulkan::Pipeline::ConstantRange{
+					.slot = range.slot,
+					.space = range.space,
+					.offset = range.offset,
+					.size = range.size,
+					.stages = ShaderStages(range.visibility)
+				};
+			}
+		);
 
 		std::uint32_t max_space = 0u;
 		for (auto const& binding : program.GetInterface().bindings) {
@@ -284,13 +298,13 @@ namespace {
 		);
 
 		std::vector<vk::PushConstantRange> push_constants;
-		push_constants.reserve(program.GetInterface().push_constants.size());
+		push_constants.reserve(result.constant_ranges.size());
 		std::ranges::transform(
-			program.GetInterface().push_constants,
+			result.constant_ranges,
 			std::back_inserter(push_constants),
 			[](auto const& range) {
 				return vk::PushConstantRange(
-					ShaderStages(range.visibility),
+					range.stages,
 					range.offset,
 					range.size
 				);

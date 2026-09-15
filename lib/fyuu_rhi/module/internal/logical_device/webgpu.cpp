@@ -4,6 +4,7 @@ module;
 #include <cstddef>
 #include <stdexcept>
 #include <vector>
+#include <string>
 
 #include <algorithm>
 #include <iterator>
@@ -11,6 +12,7 @@ module;
 #include <cstdint>
 
 #include <optional>
+#include <string_view>
 
 #include <ranges>
 #endif // !defined(__cpp_lib_modules)
@@ -35,6 +37,67 @@ namespace {
 
 	using namespace fyuu_rhi;
 	using namespace fyuu_rhi::pipeline;
+
+	std::vector<webgpu::Pipeline::ConstantRange> MakeConstantRanges(
+		shader::SlangProgram const& program
+	) {
+		std::vector<webgpu::Pipeline::ConstantRange> result;
+		result.reserve(program.GetInterface().push_constants.size());
+		std::ranges::transform(
+			program.GetInterface().push_constants,
+			std::back_inserter(result),
+			[index = std::uint32_t{ 0u }](auto const& range) mutable {
+				return webgpu::Pipeline::ConstantRange{
+					.slot = range.slot,
+					.space = range.space,
+					.offset = range.offset,
+					.size = range.size,
+					.binding = index++
+				};
+			}
+		);
+		return result;
+	}
+
+	std::string ShaderSource(
+		shader::SlangCompiledEntryPoint const& entry,
+		bool has_immediate_constants,
+		bool native_immediates,
+		std::uint32_t constant_group
+	) {
+		std::string result(
+			reinterpret_cast<char const*>(entry.code.data()),
+			entry.code.size()
+		);
+		if (!has_immediate_constants) {
+			return result;
+		}
+
+		constexpr std::string_view source = "\nvar<uniform>";
+		std::size_t position = 0u;
+		std::uint32_t binding = 0u;
+		while ((position = result.find(source, position)) != std::string::npos) {
+			auto previous_line = result.rfind('\n', position - 1u);
+			auto attributes = result.substr(
+				previous_line == std::string::npos ? 0u : previous_line + 1u,
+				position - (previous_line == std::string::npos ? 0u : previous_line + 1u)
+			);
+			if (attributes.find("@group(") != std::string::npos) {
+				position += source.size();
+				continue;
+			}
+			auto destination = native_immediates
+				? std::string("\nvar<immediate>")
+				: std::format(
+					"\n@group({}) @binding({})\nvar<uniform>",
+					constant_group,
+					binding++
+				);
+			result.replace(position, source.size(), destination);
+			position += destination.size();
+		}
+		return result;
+	}
 
 	wgpu::CompareFunction MapCompareOperation(CompareOperation operation) noexcept {
 		switch (operation) {
@@ -284,9 +347,14 @@ namespace fyuu_rhi {
 				descriptor.program,
 				"webgpu-wgsl"
 			);
-			if (!program.GetInterface().push_constants.empty()) {
-				throw std::invalid_argument("WebGPU does not support push constants");
-			}
+			bool has_immediate_constants = !program.GetInterface().push_constants.empty();
+			bool native_immediates =
+				has_immediate_constants &&
+				logical_device->instance.HasWGSLLanguageFeature(
+					wgpu::WGSLLanguageFeatureName::ImmediateAddressSpace
+				);
+			auto constant_group = BindGroupCount(program.GetInterface());
+			auto constant_ranges = MakeConstantRanges(program);
 
 			std::vector<wgpu::ShaderModule> modules;
 			modules.reserve(program.GetEntryPoints().size());
@@ -305,12 +373,18 @@ namespace fyuu_rhi {
 							"WebGPU graphics pipelines support only vertex and fragment stages"
 						);
 					}
+					auto source_code = ShaderSource(
+						entry,
+						has_immediate_constants,
+						native_immediates,
+						constant_group
+					);
 					wgpu::ShaderSourceWGSL source(
 						wgpu::ShaderSourceWGSL::Init{
 							nullptr,
 							{
-							reinterpret_cast<char const*>(entry.code.data()),
-							entry.code.size()
+							source_code.data(),
+							source_code.size()
 							}
 						}
 					);
@@ -488,9 +562,11 @@ namespace fyuu_rhi {
 				&pipeline_descriptor
 			);
 			std::vector<wgpu::BindGroupLayout> bind_group_layouts;
-			bind_group_layouts.reserve(BindGroupCount(program.GetInterface()));
+			auto bind_group_count = BindGroupCount(program.GetInterface()) +
+				(has_immediate_constants && !native_immediates ? 1u : 0u);
+			bind_group_layouts.reserve(bind_group_count);
 			std::ranges::transform(
-				std::views::iota(0u, BindGroupCount(program.GetInterface())),
+				std::views::iota(0u, bind_group_count),
 				std::back_inserter(bind_group_layouts),
 				[&](std::uint32_t index) {
 					return native_pipeline.GetBindGroupLayout(index);
@@ -501,6 +577,9 @@ namespace fyuu_rhi {
 					logical_device->impl,
 					std::move(bind_group_layouts),
 					pipeline::MakePipelineBindingMetadata(program.GetInterface()),
+					std::move(constant_ranges),
+					constant_group,
+					native_immediates,
 					std::move(native_pipeline)
 				}
 			);
@@ -518,9 +597,14 @@ namespace fyuu_rhi {
 				descriptor.program,
 				"webgpu-wgsl"
 			);
-			if (!program.GetInterface().push_constants.empty()) {
-				throw std::invalid_argument("WebGPU does not support push constants");
-			}
+			bool has_immediate_constants = !program.GetInterface().push_constants.empty();
+			bool native_immediates =
+				has_immediate_constants &&
+				logical_device->instance.HasWGSLLanguageFeature(
+					wgpu::WGSLLanguageFeatureName::ImmediateAddressSpace
+				);
+			auto constant_group = BindGroupCount(program.GetInterface());
+			auto constant_ranges = MakeConstantRanges(program);
 			if (
 				program.GetEntryPoints().size() != 1u ||
 				program.GetEntryPoints().front().stage != pipeline::Stage::Compute
@@ -531,12 +615,18 @@ namespace fyuu_rhi {
 			}
 
 			auto const& entry = program.GetEntryPoints().front();
+			auto source_code = ShaderSource(
+				entry,
+				has_immediate_constants,
+				native_immediates,
+				constant_group
+			);
 			wgpu::ShaderSourceWGSL source(
 				wgpu::ShaderSourceWGSL::Init{
 					nullptr,
 					{
-					reinterpret_cast<char const*>(entry.code.data()),
-					entry.code.size()
+					source_code.data(),
+					source_code.size()
 					}
 				}
 			);
@@ -554,9 +644,11 @@ namespace fyuu_rhi {
 				&pipeline_descriptor
 			);
 			std::vector<wgpu::BindGroupLayout> bind_group_layouts;
-			bind_group_layouts.reserve(BindGroupCount(program.GetInterface()));
+			auto bind_group_count = BindGroupCount(program.GetInterface()) +
+				(has_immediate_constants && !native_immediates ? 1u : 0u);
+			bind_group_layouts.reserve(bind_group_count);
 			std::ranges::transform(
-				std::views::iota(0u, BindGroupCount(program.GetInterface())),
+				std::views::iota(0u, bind_group_count),
 				std::back_inserter(bind_group_layouts),
 				[&](std::uint32_t index) {
 					return native_pipeline.GetBindGroupLayout(index);
@@ -567,6 +659,9 @@ namespace fyuu_rhi {
 					logical_device->impl,
 					std::move(bind_group_layouts),
 					pipeline::MakePipelineBindingMetadata(program.GetInterface()),
+					std::move(constant_ranges),
+					constant_group,
+					native_immediates,
 					std::move(native_pipeline)
 				}
 			);

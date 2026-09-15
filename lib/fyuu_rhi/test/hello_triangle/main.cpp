@@ -378,9 +378,29 @@ namespace {
 		return flags;
 	}
 
+	fyuu_rhi::ResourceFlags UniformBufferFlags() {
+		fyuu_rhi::ResourceFlags flags;
+		flags.Set(fyuu_rhi::ResourceFlagBits::HostVisible);
+		flags.Set(fyuu_rhi::ResourceFlagBits::CopyDST);
+		flags.Set(fyuu_rhi::ResourceFlagBits::UniformBuffer);
+		return flags;
+	}
+
 	fyuu_rhi::Pipeline CreateTrianglePipeline(fyuu_rhi::LogicalDevice& device) {
 		using namespace fyuu_rhi::pipeline;
 		static constexpr char ShaderSource[] = R"(
+			struct DynamicConstants {
+				float4 color_scale;
+			};
+			[[vk::binding(0, 1)]]
+			ConstantBuffer<DynamicConstants> dynamic_constants : register(b0, space1);
+
+			struct ImmediateConstants {
+				float4 color_scale;
+			};
+			[[vk::push_constant]]
+			ConstantBuffer<ImmediateConstants> immediate_constants;
+
 			struct VertexOutput {
 				float4 position : SV_Position;
 				float4 color : COLOR0;
@@ -394,11 +414,15 @@ namespace {
 			}
 			[shader("fragment")]
 			float4 fragment_main(VertexOutput input) : SV_Target0 {
-				return input.color;
+				return input.color * immediate_constants.color_scale *
+					dynamic_constants.color_scale;
 			}
 		)";
 		static const std::array modules{
-			SlangPipelineProgramDescriptor::Module{ "hello_triangle", ShaderSource }
+			SlangPipelineProgramDescriptor::Module{
+				"hello_triangle_immediate_constants",
+				ShaderSource
+			}
 		};
 		static const std::array entry_points{
 			SlangPipelineProgramDescriptor::EntryPoint{ "vertex_main", Stage::Vertex },
@@ -523,16 +547,53 @@ namespace {
 			vertex_bytes.size(),
 			VertexBufferFlags()
 		);
+		auto uniform_buffer = device.CreateBuffer(512u, UniformBufferFlags());
 		auto pipeline = CreateTrianglePipeline(device);
+		std::array resource_bindings{
+			fyuu_rhi::pipeline::ResourceBinding{
+				.slot = 0u,
+				.value = fyuu_rhi::pipeline::BindingValue::FromBuffer(
+					uniform_buffer,
+					0u,
+					16u
+				)
+			}
+		};
+		auto resource_group = pipeline.CreatePipelineResourceGroup(
+			1u,
+			resource_bindings
+		);
 		auto scheduler = device.CreateScheduler();
 		bool running = true;
 		std::size_t frame = 0u;
 		do {
+			std::array constant_data{
+				frame == 0u ? 1.0f : 0.5f,
+				1.0f,
+				1.0f,
+				1.0f
+			};
+			auto constant_bytes = std::as_bytes(std::span(constant_data));
+			std::array red_override{ frame == 0u ? 0.75f : 0.25f };
+			auto red_override_bytes = std::as_bytes(std::span(red_override));
+			std::vector<std::byte> uniform_data(512u);
+			std::array first_dynamic_color{ 1.0f, 0.5f, 1.0f, 1.0f };
+			std::array second_dynamic_color{ 0.5f, 1.0f, 1.0f, 1.0f };
+			std::ranges::copy(
+				std::as_bytes(std::span(first_dynamic_color)),
+				uniform_data.begin()
+			);
+			std::ranges::copy(
+				std::as_bytes(std::span(second_dynamic_color)),
+				uniform_data.begin() + 256u
+			);
 			auto builder = scheduler.schedule();
 			auto const target_binding = builder.RegisterResource();
 			auto const vertex_binding = builder.RegisterResource();
+			auto const uniform_binding = builder.RegisterResource();
 			auto const target_view_binding = builder.RegisterView();
 			auto const pipeline_binding = builder.RegisterPipeline();
+			auto const group_binding = builder.RegisterResourceGroup();
 			auto upload = builder.CreateNode(QueueType::Transfer);
 			upload.Record(
 				WriteBuffer{
@@ -542,6 +603,13 @@ namespace {
 						vertex_bytes.begin(),
 						vertex_bytes.end()
 					)
+				}
+			);
+			upload.Record(
+				WriteBuffer{
+					.resource = uniform_binding,
+					.offset = 0u,
+					.data = uniform_data
 				}
 			);
 			auto node = builder.CreateNode(QueueType::Graphics, upload);
@@ -562,7 +630,22 @@ namespace {
 					{}
 				}
 			)
+			.Access(
+				{
+					uniform_binding,
+					AccessMode::Read,
+					ResourceUsage::Uniform,
+					{}
+				}
+			)
 			.Record(BindPipeline{ pipeline_binding })
+			.Record(
+				BindResourceGroup{
+					.group = group_binding,
+					.space = 1u,
+					.additional_buffer_offsets = { frame == 0u ? 0u : 256u }
+				}
+			)
 			.Record(
 				BindVertexBuffer{
 					.resource = vertex_binding,
@@ -595,6 +678,28 @@ namespace {
 				}
 			)
 			.Record(Scissor{ 0, 0, TargetWidth, TargetHeight })
+			.Record(
+				SetPipelineConstants{
+					.slot = 0u,
+					.space = 0u,
+					.offset = 0u,
+					.data = std::vector<std::byte>(
+						constant_bytes.begin(),
+						constant_bytes.end()
+					)
+				}
+			)
+			.Record(
+				SetPipelineConstants{
+					.slot = 0u,
+					.space = 0u,
+					.offset = 0u,
+					.data = std::vector<std::byte>(
+						red_override_bytes.begin(),
+						red_override_bytes.end()
+					)
+				}
+			)
 			.Record(Draw{ 3u, 1u, 0u, 0u })
 			.Record(EndRendering{});
 			auto present = builder.CreateNode(QueueType::Present, node);
@@ -622,8 +727,10 @@ namespace {
 			);
 			operation.BindResource(target_binding, std::move(target));
 			operation.BindResource(vertex_binding, std::move(vertex_buffer));
+			operation.BindResource(uniform_binding, std::move(uniform_buffer));
 			operation.BindView(target_view_binding, std::move(target_view));
 			operation.BindPipeline(pipeline_binding, std::move(pipeline));
+			operation.BindResourceGroup(group_binding, std::move(resource_group));
 			operation.SetPresentationTarget(window.Handle());
 			operation.start();
 
@@ -655,8 +762,10 @@ namespace {
 			}
 			target = completion->resources->TakeResource(target_binding);
 			vertex_buffer = completion->resources->TakeResource(vertex_binding);
+			uniform_buffer = completion->resources->TakeResource(uniform_binding);
 			target_view = completion->resources->TakeView(target_view_binding);
 			pipeline = completion->resources->TakePipeline(pipeline_binding);
+			resource_group = completion->resources->TakeResourceGroup(group_binding);
 			++frame;
 			if (test_mode && frame == 1u) {
 				window.Resize(800u, 600u);

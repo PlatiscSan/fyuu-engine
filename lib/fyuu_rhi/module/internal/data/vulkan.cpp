@@ -339,10 +339,19 @@ namespace fyuu_rhi::vulkan {
 	};
 
 	struct Pipeline {
+		struct ConstantRange {
+			std::uint32_t slot;
+			std::uint32_t space;
+			std::uint32_t offset;
+			std::uint32_t size;
+			vk::ShaderStageFlags stages;
+		};
+
 		std::shared_ptr<vk::detail::DispatchLoaderDynamic> dispatcher;
 		vk::PipelineBindPoint bind_point = vk::PipelineBindPoint::eGraphics;
 		std::vector<vk::SharedDescriptorSetLayout> descriptor_set_layouts;
 		std::vector<pipeline::BindingMetadata> bindings;
+		std::vector<ConstantRange> constant_ranges;
 		vk::SharedPipelineLayout layout;
 		vk::SharedRenderPass compatible_render_pass;
 		std::vector<vk::Format> color_formats;
@@ -352,10 +361,15 @@ namespace fyuu_rhi::vulkan {
 	};
 
 	struct PipelineResourceGroup {
+		struct DynamicBuffer {
+			std::size_t maximum_offset;
+		};
+
 		std::uint32_t space;
 		vk::SharedDescriptorPool pool;
 		vk::DescriptorSet set;
 		vk::SharedPipelineLayout layout;
+		std::vector<DynamicBuffer> dynamic_buffers;
 	};
 
 } // namespace fyuu_rhi::vulkan

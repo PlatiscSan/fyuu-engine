@@ -1,0 +1,222 @@
+/**
+@mainpage FyuuRHI Object Guide
+
+@tableofcontents
+
+FyuuRHI objects are created in this direction:
+
+@code
+Instance -> PhysicalDevice -> LogicalDevice
+                              |- Resource -> View
+                              |- Sampler
+                              |- Pipeline -> PipelineResourceGroup
+                              `- CommandScheduler -> CommandGraphBuilder
+                                                   -> CommandGraphBindings
+                                                   -> CommandGraphResources
+@endcode
+
+Except for Instance and CommandScheduler, GPU objects have unique ownership and
+are move-only. Never mix objects created by different Backend values or different
+LogicalDevice objects. A started command graph temporarily owns every bound
+object and returns them to its receiver on success, failure, or cancellation.
+
+@section context Context and diagnostics
+
+Call fyuu_rhi::InitializeRHIContext before using any backend. Application and
+engine names and versions become backend metadata. The application owns the
+fyuu_rhi::log::Sink; it must outlive all RHI calls and accept synchronous calls
+from recording and completion threads.
+
+@code
+fyuu_rhi::InitializeRHIContext(
+    "Application",
+    { 0u, 1u, 0u, 0u },
+    "Engine",
+    { 0u, 1u, 0u, 0u },
+    &sink
+);
+@endcode
+
+@section instance Instance
+
+fyuu_rhi::EnumerateBackends returns the backends compiled into this build. Pass
+one returned value to fyuu_rhi::RequestInstance. Its callback receives an
+fyuu_rhi::Instance, a non-owning handle to singleton state retained by FyuuRHI.
+
+- EnumeratePhysicalDevices() returns the adapters exposed by that backend.
+- ShareContextOnThisThread() makes the shared OpenGL context current on an
+  additional thread; it is a no-op for other backends.
+- Instance exposes no native API handle and requires no visitor.
+
+@section physical_device PhysicalDevice
+
+fyuu_rhi::PhysicalDevice is a move-only adapter object. GetInfo() returns its
+name and class plus optional vendor ID, device ID, and dedicated-memory size.
+An empty optional means that the backend cannot report the value, not that the
+value is zero. fyuu_rhi::BestPerformance selects from a non-empty span by device
+class and memory. CreateLogicalDevice() establishes the ownership domain for all
+objects that will be used together.
+
+@section logical_device LogicalDevice
+
+fyuu_rhi::LogicalDevice is a move-only factory. It creates buffers, textures,
+immutable samplers, graphics and compute pipelines, and copyable command
+schedulers. Resources, views, samplers, pipelines, and resource groups from two
+logical devices cannot be placed in the same execution or bound to each other.
+
+@section resource Resource and creation flags
+
+fyuu_rhi::Resource is a move-only buffer or texture. Resource creation flags
+must declare every future use: memory visibility, copy directions, buffer roles,
+texture roles, dimension, allowed view types and aspects, sample count, and
+format. These flags are correctness requirements, not optimization hints.
+
+@code
+fyuu_rhi::ResourceFlags flags;
+flags.Set(fyuu_rhi::ResourceFlagBits::HostVisible);
+flags.Set(fyuu_rhi::ResourceFlagBits::CopyDST);
+flags.Set(fyuu_rhi::ResourceFlagBits::UniformBuffer);
+auto buffer = device.CreateBuffer(4096u, flags);
+@endcode
+
+A texture normally selects exactly one dimension, format, sample count, memory
+policy, and the binding, attachment, or copy capabilities it needs.
+GetBufferSize() applies only to buffers, GetTextureExtent() only to textures,
+and GetFlags() returns the immutable creation contract.
+
+@section view View
+
+fyuu_rhi::View is a move-only interpretation of part of a Resource; it does not
+replace Resource ownership. Create it through Resource::CreateBufferView() or
+Resource::CreateTextureView(). Its range must fit the resource and its flags
+must be allowed by the resource's creation flags. Commands commonly bind both a
+Resource for access/state tracking and a View for the native view description.
+
+@section sampler Sampler
+
+fyuu_rhi::Sampler is move-only immutable sampling state. SamplerDescriptor
+specifies U/V/W addressing, magnification/minification/mipmap filtering,
+anisotropy, comparison, and the LOD interval. A maximum anisotropy of one
+disables anisotropic filtering; an Unknown comparison function selects ordinary
+non-comparison sampling.
+
+@section pipeline Pipeline
+
+fyuu_rhi::Pipeline is a move-only graphics or compute pipeline. Spans in
+SlangPipelineProgramDescriptor are borrowed only during creation. Modules,
+entry points, macros, include paths, optimization, and matrix layout produce
+backend shaders and the common reflected binding ABI.
+
+GraphicsPipelineDescriptor also specifies vertex buffers and attributes,
+topology, rasterization, multisampling, depth/stencil state, and the format,
+blend state, and write mask of each color attachment. BeginRendering attachments
+must be compatible with these declarations. ComputePipelineDescriptor must
+describe a compute program.
+
+@section resource_group PipelineResourceGroup and BindingValue
+
+Pipeline::CreatePipelineResourceGroup(space, bindings) materializes one
+reflected shader space/set. Supply every required slot and array element exactly
+once:
+
+- BindingValue::FromBuffer records a buffer, base byte offset, and range.
+- BindingValue::FromView binds an independent texture or storage view.
+- BindingValue::FromSampler binds an independent sampler.
+- BindingValue::FromCombined binds one logical combined texture and sampler.
+
+The C++ references in BindingValue are borrowed only during group creation.
+Each backend retains the native ownership required to keep its descriptors
+valid. PipelineResourceGroup::Space() returns the creation space.
+
+Dynamic buffer binding does not mutate the group. BindResourceGroup names the
+same space and supplies additional_buffer_offsets ordered by `(slot,
+array_element)`. Only direct buffer bindings consume entries; textures and
+samplers do not. An empty array means zero additional offsets. Each effective
+range begins at `base offset + additional offset` and must meet resource bounds
+and the backend's uniform/storage alignment. The same immutable group can be
+reused with different offsets before different draws or dispatches.
+
+@section scheduler CommandScheduler and command graphs
+
+fyuu_rhi::execution::CommandScheduler is copyable; copies share scheduling
+state. schedule() starts a CommandGraphBuilder without reserving a physical
+queue. RegisterResource/View/Sampler/Pipeline/ResourceGroup create typed slots.
+Commands store these slot numbers; actual objects are moved into the operation
+after connect().
+
+CreateNode(queue, dependency) creates a node. QueueType is a capability request,
+not a promise of a dedicated hardware queue. Node::DependsOn adds a directed
+edge, Node::Access declares a ResourceRange, AccessMode, and ResourceUsage, and
+Node::Record appends commands in node-local order. Access declarations must
+accurately cover the commands: the scheduler derives topological order,
+batches, state transitions, queue-family ownership transfers, and cross-queue
+synchronization from them.
+
+@section commands Command records
+
+- BeginRendering / EndRendering open and close a render scope and describe its
+  area, load/store operations, clear values, resolve attachments, and optional
+  depth/stencil attachment.
+- BindPipeline selects a registered graphics or compute pipeline.
+- BindResourceGroup selects a matching space and optional dynamic buffer offsets.
+- SetPipelineConstants writes one reflected immediate-constant range. slot and
+  space select the range; offset is relative to its start; offset and data size
+  are four-byte aligned.
+- BindVertexBuffer / BindIndexBuffer select buffers and their stride/type and
+  base offsets.
+- Viewport / Scissor set rasterization bounds. Viewport::clip_space states the
+  application's NDC Y orientation.
+- Draw / DrawIndexed issue ordinary or indexed instanced rendering.
+- Dispatch submits an X/Y/Z compute workgroup grid.
+- CopyBuffer, CopyBufferToTexture, CopyTextureToBuffer, and CopyTexture copy
+  declared ranges.
+- WriteBuffer writes CPU data into a host-visible buffer with matching creation
+  capabilities.
+- Present sends a source texture to a presentation-target slot.
+
+ResourceUsage must match the command role: examples include VertexBuffer,
+CopyDestination, ColorAttachment, and PresentationSource. A monostate
+ResourceRange means the whole resource. Zero size/count in a concrete
+BufferRange or TextureRange is invalid and does not mean the whole resource.
+
+@section completion Binding, execution, and ownership return
+
+Move a finished builder into connect(receiver) to obtain CommandGraphBindings.
+Bind every registered slot exactly once with the corresponding BindResource,
+BindView, BindSampler, BindPipeline, or BindResourceGroup function. Fill every
+Present target through SetPresentationTarget, then call start().
+
+The moveable receiver provides get_env() and these noexcept operations:
+
+- `RecoverBindings(CommandGraphResources&&)`;
+- `set_value(CommandGraphResources&&) &&`;
+- `set_error(std::exception_ptr) &&`;
+- `set_stopped() &&`.
+
+Success delivers owned objects to set_value. Failure or cancellation first
+returns them through RecoverBindings and then sends one terminal signal.
+CommandGraphResources::TakeResource/View/Sampler/Pipeline/ResourceGroup uses the
+original slot number and consumes each slot once. Completion may occur on an
+internal worker thread, so receivers must synchronize shared application state.
+
+CompletionToken is move-only backend submission state. Poll() is non-blocking,
+Error() returns a captured failure, and IsStopped() reports cancellation. Most
+sender users receive completion through the receiver instead of managing a
+token directly.
+
+@section presentation Platform handles and presentation
+
+PlatformHandle is HWND on Windows, ANativeWindow* on Android, an X11/Wayland
+variant on Linux, and CA::MetalLayer* on Apple platforms. The application owns
+the window, event loop, resize handling, and close flow. Present::target refers
+to a SetPresentationTarget slot, not to a resource slot. One graph may present
+to several distinct targets.
+
+@section errors Errors and stopping
+
+Preparation reports missing bindings, invalid ranges, and backend/device mixing
+before native submission. Recording and submission failures use the receiver's
+error channel. StopTokenView is observed during preparation and recording;
+already-submitted GPU work generally cannot be cancelled. Backend diagnostics
+are also written synchronously to the configured log::Sink.
+*/

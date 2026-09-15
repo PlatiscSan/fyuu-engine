@@ -74,6 +74,14 @@ namespace fyuu_rhi::metal {
 	};
 
 	struct Pipeline {
+		struct ConstantRange {
+			std::uint32_t slot;
+			std::uint32_t space;
+			std::uint32_t offset;
+			std::uint32_t size;
+			std::uint32_t visibility;
+		};
+
 		NS::SharedPtr<MTL::Device> device;
 		std::variant<
 			NS::SharedPtr<MTL::RenderPipelineState>,
@@ -85,6 +93,7 @@ namespace fyuu_rhi::metal {
 		MTL::CullMode cull_mode;
 		pipeline::DepthBiasState depth_bias;
 		std::vector<PipelineBinding> bindings;
+		std::vector<ConstantRange> constant_ranges;
 	};
 
 	struct PipelineResourceGroup {
@@ -95,6 +104,8 @@ namespace fyuu_rhi::metal {
 			NS::SharedPtr<MTL::Buffer> buffer;
 			std::size_t buffer_offset;
 			std::size_t buffer_size;
+			std::size_t buffer_capacity;
+			bool dynamic_buffer;
 			NS::SharedPtr<MTL::Texture> texture;
 			NS::SharedPtr<MTL::SamplerState> sampler;
 		};

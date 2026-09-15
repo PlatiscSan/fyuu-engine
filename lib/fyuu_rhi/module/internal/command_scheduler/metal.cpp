@@ -117,8 +117,18 @@ namespace fyuu_rhi::metal {
 			std::size_t offset;
 		};
 
+		struct ConstantState {
+			Pipeline::ConstantRange const* range;
+			std::vector<std::byte> data;
+		};
+		struct PendingGroup {
+			PipelineResourceGroup const* group;
+			std::span<std::size_t const> dynamic_offsets;
+		};
+
 		std::vector<VertexBufferBinding> pending_vertex_buffers;
-		std::vector<PipelineResourceGroup const*> pending_groups;
+		std::vector<PendingGroup> pending_groups;
+		std::vector<ConstantState> constants;
 		std::optional<Viewport> pending_viewport;
 		std::optional<Scissor> pending_scissor;
 
@@ -179,16 +189,48 @@ namespace fyuu_rhi::metal {
 			return blit_encoder;
 		}
 
-		void BindGroup(PipelineResourceGroup const& group) {
+		void BindGroup(
+			PipelineResourceGroup const& group,
+			std::span<std::size_t const> dynamic_offsets
+		) {
+			auto dynamic_count = std::ranges::count_if(
+				group.bindings,
+				[](auto const& binding) {
+					return binding.dynamic_buffer;
+				}
+			);
+			if (!dynamic_offsets.empty() && dynamic_offsets.size() != dynamic_count) {
+				throw std::invalid_argument(
+					"Metal dynamic-offset count does not match the resource group"
+				);
+			}
+			std::size_t dynamic_index = 0u;
 			std::ranges::for_each(
 				group.bindings,
 				[&](auto const& binding) {
+					auto buffer_offset = binding.buffer_offset;
+					if (binding.dynamic_buffer) {
+						auto dynamic_offset = dynamic_offsets.empty()
+							? 0u
+							: dynamic_offsets[dynamic_index];
+						++dynamic_index;
+						if (
+							dynamic_offset > binding.buffer_capacity - buffer_offset ||
+							binding.buffer_size >
+								binding.buffer_capacity - buffer_offset - dynamic_offset
+						) {
+							throw std::out_of_range(
+								"Metal dynamic buffer offset exceeds the bound buffer"
+							);
+						}
+						buffer_offset += dynamic_offset;
+					}
 					if (render_encoder) {
 						if (Visible(binding.visibility, pipeline::Stage::Vertex)) {
 							if (binding.buffer) {
 								render_encoder->setVertexBuffer(
 									binding.buffer.get(),
-									binding.buffer_offset,
+									buffer_offset,
 									binding.resource_slot
 								);
 							}
@@ -209,7 +251,7 @@ namespace fyuu_rhi::metal {
 							if (binding.buffer) {
 								render_encoder->setFragmentBuffer(
 									binding.buffer.get(),
-									binding.buffer_offset,
+									buffer_offset,
 									binding.resource_slot
 								);
 							}
@@ -231,7 +273,7 @@ namespace fyuu_rhi::metal {
 						if (binding.buffer) {
 							compute_encoder->setBuffer(
 								binding.buffer.get(),
-								binding.buffer_offset,
+								buffer_offset,
 								binding.resource_slot
 							);
 						}
@@ -250,6 +292,32 @@ namespace fyuu_rhi::metal {
 					}
 				}
 			);
+		}
+
+		void ApplyConstant(ConstantState const& constant) {
+			if (render_encoder) {
+				if (Visible(constant.range->visibility, pipeline::Stage::Vertex)) {
+					render_encoder->setVertexBytes(
+						constant.data.data(),
+						constant.data.size(),
+						constant.range->slot
+					);
+				}
+				if (Visible(constant.range->visibility, pipeline::Stage::Fragment)) {
+					render_encoder->setFragmentBytes(
+						constant.data.data(),
+						constant.data.size(),
+						constant.range->slot
+					);
+				}
+			}
+			else if (compute_encoder) {
+				compute_encoder->setBytes(
+					constant.data.data(),
+					constant.data.size(),
+					constant.range->slot
+				);
+			}
 		}
 
 		void FlushRenderState() {
@@ -290,8 +358,14 @@ namespace fyuu_rhi::metal {
 			}
 			std::ranges::for_each(
 				pending_groups,
-				[this](auto group) {
-					BindGroup(*group);
+				[this](auto const& group) {
+					BindGroup(*group.group, group.dynamic_offsets);
+				}
+			);
+			std::ranges::for_each(
+				constants,
+				[this](auto const& constant) {
+					ApplyConstant(constant);
 				}
 			);
 		}
@@ -399,15 +473,64 @@ namespace fyuu_rhi::metal {
 
 		void operator()(BindResourceGroup const& value) {
 			auto const& group = groups[value.group].get();
-			if (group.space != value.index) {
-				throw std::invalid_argument("Metal resource group space does not match bind index");
+			if (group.space != value.space) {
+				throw std::invalid_argument("Metal resource group space mismatch");
 			}
 			if (render_encoder || compute_encoder) {
-				BindGroup(group);
+				BindGroup(group, value.additional_buffer_offsets);
 			}
 			else {
-				pending_groups.emplace_back(&group);
+				pending_groups.emplace_back(
+					PendingGroup{ &group, value.additional_buffer_offsets }
+				);
 			}
+		}
+
+		void operator()(SetPipelineConstants const& value) {
+			if (!pipeline) {
+				throw std::logic_error(
+					"Metal pipeline constants require a bound pipeline"
+				);
+			}
+			auto range = std::ranges::find_if(
+				pipeline->constant_ranges,
+				[&value](auto const& candidate) {
+					return candidate.slot == value.slot && candidate.space == value.space;
+				}
+			);
+			if (range == pipeline->constant_ranges.end()) {
+				throw std::invalid_argument(
+					"Metal pipeline has no matching immediate-constant range"
+				);
+			}
+			if (
+				value.offset > range->size ||
+				value.data.size() > range->size - value.offset
+			) {
+				throw std::out_of_range(
+					"Metal immediate-constant write exceeds its reflected range"
+				);
+			}
+			auto state = std::ranges::find_if(
+				constants,
+				[range](auto const& candidate) {
+					return candidate.range == &*range;
+				}
+			);
+			if (state == constants.end()) {
+				state = constants.emplace(
+					constants.end(),
+					ConstantState{
+						&*range,
+						std::vector<std::byte>(range->size)
+					}
+				);
+			}
+			std::ranges::copy(
+				value.data,
+				state->data.begin() + value.offset
+			);
+			ApplyConstant(*state);
 		}
 
 		void operator()(BindVertexBuffer const& value) {
@@ -510,8 +633,14 @@ namespace fyuu_rhi::metal {
 				compute_encoder->setComputePipelineState(state->get());
 				std::ranges::for_each(
 					pending_groups,
-					[this](auto group) {
-						BindGroup(*group);
+					[this](auto const& group) {
+						BindGroup(*group.group, group.dynamic_offsets);
+					}
+				);
+				std::ranges::for_each(
+					constants,
+					[this](auto const& constant) {
+						ApplyConstant(constant);
 					}
 				);
 			}

@@ -150,6 +150,7 @@ namespace fyuu_rhi::webgpu {
 		wgpu::RenderPassEncoder render_pass;
 		wgpu::ComputePassEncoder compute_pass;
 		wgpu::ComputePipeline compute_pipeline;
+		webgpu::Pipeline const* pipeline = nullptr;
 
 		// WebGPU requires all graphics state to be set inside the render pass, but
 		// the plan may record Bind*/Viewport/Scissor before BeginRendering (D3D12 and
@@ -183,6 +184,10 @@ namespace fyuu_rhi::webgpu {
 			std::uint32_t index;
 			wgpu::BindGroup group;
 		};
+		struct ConstantState {
+			webgpu::Pipeline::ConstantRange const* range;
+			std::vector<std::byte> data;
+		};
 
 		wgpu::RenderPipeline pending_pipeline;
 		std::vector<VertexBufferPending> pending_vertex_buffers;
@@ -190,6 +195,184 @@ namespace fyuu_rhi::webgpu {
 		std::optional<ViewportPending> pending_viewport;
 		std::optional<ScissorPending> pending_scissor;
 		std::vector<BindGroupPending> pending_bind_groups;
+		std::vector<SetPipelineConstants const*> pending_constants;
+		std::vector<ConstantState> constants;
+		std::vector<wgpu::Buffer> constant_buffers;
+		std::vector<wgpu::BindGroup> constant_groups;
+		std::vector<wgpu::BindGroup> dynamic_groups;
+
+		wgpu::BindGroup BindGroup(
+			webgpu::PipelineResourceGroup const& group,
+			std::span<std::size_t const> dynamic_offsets
+		) {
+			if (dynamic_offsets.empty()) {
+				return group.impl;
+			}
+			if (dynamic_offsets.size() != group.dynamic_buffers.size()) {
+				throw std::invalid_argument(
+					"WebGPU dynamic-offset count does not match the resource group"
+				);
+			}
+			auto entries = group.entries;
+			std::ranges::for_each(
+				std::views::iota(std::size_t{ 0u }, group.dynamic_buffers.size()),
+				[&](std::size_t index) {
+					auto const& binding = group.dynamic_buffers[index];
+					auto offset = dynamic_offsets[index];
+					if (
+						offset > binding.capacity - binding.base_offset ||
+						binding.size > binding.capacity - binding.base_offset - offset
+					) {
+						throw std::out_of_range(
+							"WebGPU dynamic buffer offset exceeds the bound buffer"
+						);
+					}
+					entries[binding.entry].offset = binding.base_offset + offset;
+					entries[binding.entry].size = binding.size;
+				}
+			);
+			wgpu::BindGroupDescriptor descriptor{
+				.layout = group.layout,
+				.entryCount = entries.size(),
+				.entries = entries.data()
+			};
+			auto result = group.device.CreateBindGroup(&descriptor);
+			dynamic_groups.emplace_back(result);
+			return result;
+		}
+
+		webgpu::Pipeline::ConstantRange const& ConstantRange(
+			SetPipelineConstants const& value
+		) const {
+			if (!pipeline) {
+				throw std::logic_error(
+					"WebGPU pipeline constants require a bound pipeline"
+				);
+			}
+			auto range = std::ranges::find_if(
+				pipeline->constant_ranges,
+				[&value](auto const& candidate) {
+					return candidate.slot == value.slot && candidate.space == value.space;
+				}
+			);
+			if (range == pipeline->constant_ranges.end()) {
+				throw std::invalid_argument(
+					"WebGPU pipeline has no matching immediate-constant range"
+				);
+			}
+			if (
+				value.offset > range->size ||
+				value.data.size() > range->size - value.offset
+			) {
+				throw std::out_of_range(
+					"WebGPU immediate-constant write exceeds its reflected range"
+				);
+			}
+			return *range;
+		}
+
+		void SetConstants(SetPipelineConstants const& value) {
+			auto const& range = ConstantRange(value);
+			if (!pipeline->native_immediates) {
+				auto state = std::ranges::find_if(
+					constants,
+					[&range](auto const& candidate) {
+						return candidate.range == &range;
+					}
+				);
+				if (state == constants.end()) {
+					state = constants.emplace(
+						constants.end(),
+						ConstantState{
+							&range,
+							std::vector<std::byte>(range.size)
+						}
+					);
+				}
+				std::ranges::copy(
+					value.data,
+					state->data.begin() + value.offset
+				);
+				if (!render_pass && !compute_pass) {
+					pending_constants.emplace_back(&value);
+					return;
+				}
+
+				std::vector<wgpu::BindGroupEntry> entries;
+				entries.reserve(pipeline->constant_ranges.size());
+				std::ranges::for_each(
+					pipeline->constant_ranges,
+					[&](auto const& constant_range) {
+						auto source = std::ranges::find_if(
+							constants,
+							[&](auto const& candidate) {
+								return candidate.range == &constant_range;
+							}
+						);
+						if (source == constants.end()) {
+							source = constants.emplace(
+								constants.end(),
+								ConstantState{
+									&constant_range,
+									std::vector<std::byte>(constant_range.size)
+								}
+							);
+						}
+						wgpu::BufferDescriptor descriptor{
+							.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst,
+							.size = constant_range.size
+						};
+						auto buffer = pipeline->device.CreateBuffer(&descriptor);
+						pipeline->device.GetQueue().WriteBuffer(
+							buffer,
+							0u,
+							source->data.data(),
+							source->data.size()
+						);
+						entries.emplace_back(
+							wgpu::BindGroupEntry{
+								.binding = constant_range.binding,
+								.buffer = buffer,
+								.offset = 0u,
+								.size = constant_range.size
+							}
+						);
+						constant_buffers.emplace_back(std::move(buffer));
+					}
+				);
+				wgpu::BindGroupDescriptor descriptor{
+					.layout = pipeline->bind_group_layouts[pipeline->constant_group],
+					.entryCount = entries.size(),
+					.entries = entries.data()
+				};
+				auto group = pipeline->device.CreateBindGroup(&descriptor);
+				if (render_pass) {
+					render_pass.SetBindGroup(pipeline->constant_group, group);
+				}
+				else if (compute_pass) {
+					compute_pass.SetBindGroup(pipeline->constant_group, group);
+				}
+				constant_groups.emplace_back(std::move(group));
+				return;
+			}
+			if (render_pass) {
+				render_pass.SetImmediates(
+					range.offset + value.offset,
+					value.data.data(),
+					value.data.size()
+				);
+				return;
+			}
+			if (compute_pass) {
+				compute_pass.SetImmediates(
+					range.offset + value.offset,
+					value.data.data(),
+					value.data.size()
+				);
+				return;
+			}
+			pending_constants.emplace_back(&value);
+		}
 
 		void FlushRenderState() {
 			if (pending_pipeline) {
@@ -233,6 +416,13 @@ namespace fyuu_rhi::webgpu {
 				render_pass.SetBindGroup(group.index, group.group);
 			}
 			pending_bind_groups.clear();
+			std::ranges::for_each(
+				pending_constants,
+				[this](auto value) {
+					SetConstants(*value);
+				}
+			);
+			pending_constants.clear();
 		}
 
 		/// Ends any active pass. Encoder-level commands (copies, presents) are
@@ -337,12 +527,12 @@ namespace fyuu_rhi::webgpu {
 		}
 
 		void operator()(BindPipeline const& value) {
-			auto const& pipeline = pipelines[value.pipeline].get().impl;
-			if (auto compute = std::get_if<wgpu::ComputePipeline>(&pipeline)) {
+			pipeline = &pipelines[value.pipeline].get();
+			if (auto compute = std::get_if<wgpu::ComputePipeline>(&pipeline->impl)) {
 				compute_pipeline = *compute;
 				return;
 			}
-			auto render = std::get_if<wgpu::RenderPipeline>(&pipeline);
+			auto render = std::get_if<wgpu::RenderPipeline>(&pipeline->impl);
 			if (!render) {
 				throw std::invalid_argument("WebGPU command uses an empty pipeline");
 			}
@@ -356,15 +546,23 @@ namespace fyuu_rhi::webgpu {
 
 		void operator()(BindResourceGroup const& value) {
 			auto const& group = groups[value.group].get();
+			if (group.space != value.space) {
+				throw std::invalid_argument("WebGPU resource group space mismatch");
+			}
+			auto impl = BindGroup(group, value.additional_buffer_offsets);
 			if (render_pass) {
-				render_pass.SetBindGroup(value.index, group.impl);
+				render_pass.SetBindGroup(value.space, impl);
 			}
 			else if (compute_pass) {
-				compute_pass.SetBindGroup(value.index, group.impl);
+				compute_pass.SetBindGroup(value.space, impl);
 			}
 			else {
-				pending_bind_groups.push_back({ value.index, group.impl });
+				pending_bind_groups.push_back({ value.space, impl });
 			}
+		}
+
+		void operator()(SetPipelineConstants const& value) {
+			SetConstants(value);
 		}
 
 		void operator()(BindVertexBuffer const& value) {
@@ -462,6 +660,13 @@ namespace fyuu_rhi::webgpu {
 					compute_pass.SetBindGroup(group.index, group.group);
 				}
 				pending_bind_groups.clear();
+				std::ranges::for_each(
+					pending_constants,
+					[this](auto constant) {
+						SetConstants(*constant);
+					}
+				);
+				pending_constants.clear();
 			}
 			else if (compute_pipeline) {
 				compute_pass.SetPipeline(compute_pipeline);

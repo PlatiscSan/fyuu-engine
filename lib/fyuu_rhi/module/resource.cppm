@@ -21,6 +21,13 @@ export namespace fyuu_rhi {
 		struct ExecuteCommands;
 	}
 
+	/**
+	 * @brief Orthogonal creation capabilities for buffers, textures, and views.
+	 *
+	 * A resource must declare every operation it will participate in. Select one
+	 * memory policy, one texture dimension for textures, one sample count, and one
+	 * format where required. View flags describe which views may be created later.
+	 */
 	enum class ResourceFlagBits : std::uint32_t {
 		CopySRC,
 		CopyDST,
@@ -169,6 +176,7 @@ export namespace fyuu_rhi {
 		Count
 	};
 
+	/// Thread-safe flag set used to assemble ResourceFlagBits creation contracts.
 	using ResourceFlags = plastic::concurrency::AtomicFlags<ResourceFlagBits>;
 
 	enum class ResourceMapFlagBits : std::uint8_t {
@@ -179,11 +187,13 @@ export namespace fyuu_rhi {
 
 	using ResourceMapFlags = plastic::concurrency::AtomicFlags<ResourceMapFlagBits>;
 
+	/// Byte interval within a buffer.
 	struct ResourceDataRange {
 		std::size_t offset = 0u;
 		std::size_t size = 0u;
 	};
 
+	/// Immutable dimensions recorded for a texture resource.
 	struct ResourceTextureExtent {
 		std::uint32_t width = 0u;
 		std::uint32_t height = 0u;
@@ -191,12 +201,14 @@ export namespace fyuu_rhi {
 		std::uint32_t mip_levels = 0u;
 	};
 
+	/// Host/buffer layout used by buffer-to-texture and texture-to-buffer copies.
 	struct TextureDataLayout {
 		std::size_t offset = 0u;
 		std::uint32_t bytes_per_row = 0u;
 		std::uint32_t rows_per_image = 0u;
 	};
 
+	/// Texture subresource and texel box used by copy commands.
 	struct TextureRegion {
 		std::uint32_t mip_level = 0u;
 		std::uint32_t base_array_layer = 0u;
@@ -209,6 +221,13 @@ export namespace fyuu_rhi {
 		std::uint32_t depth = 1u;
 	};
 
+	/**
+	 * @brief Move-only owner of either a buffer or texture.
+	 *
+	 * Resources create their own views so backend and logical-device identity can
+	 * be validated without exposing native handles. During command execution a
+	 * Resource is moved into CommandGraphBindings and returned at completion.
+	 */
 	class Resource {
 	public:
 		using UniqueHandle = std::unique_ptr<
@@ -237,12 +256,14 @@ export namespace fyuu_rhi {
 			return static_cast<bool>(m_impl);
 		}
 
+		/// Creates a typed view over the byte range [offset, offset + range).
 		View CreateBufferView(
 			std::size_t offset,
 			std::size_t range,
 			ResourceFlags const& flags
 		);
 
+		/// Creates a view over the selected mip and array-layer ranges.
 		View CreateTextureView(
 			std::size_t base_mip_lvl,
 			std::size_t mip_lvl_cnt,
@@ -251,10 +272,13 @@ export namespace fyuu_rhi {
 			ResourceFlags const& flags
 		);
 
+		/// Returns the byte size; calling this on a texture is an error.
 		std::size_t GetBufferSize() const;
 
+		/// Returns the immutable creation flags.
 		ResourceFlags GetFlags() const noexcept;
 
+		/// Returns texture dimensions; calling this on a buffer is an error.
 		ResourceTextureExtent GetTextureExtent() const;
 
 	};

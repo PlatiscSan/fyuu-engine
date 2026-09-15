@@ -167,6 +167,7 @@ namespace fyuu_rhi {
 			}
 
 			std::vector<wgpu::BindGroupEntry> entries;
+			std::vector<webgpu::PipelineResourceGroup::DynamicBuffer> dynamic_buffers;
 			entries.reserve(bindings.size() * 2u);
 			std::ranges::for_each(
 				bindings,
@@ -194,6 +195,30 @@ namespace fyuu_rhi {
 						if (entry.size == pipeline::PipelineWholeBuffer) {
 							entry.size = wgpu::kWholeSize;
 						}
+						auto capacity = native_buffer->GetSize();
+						if (entry.offset > capacity) {
+							throw std::out_of_range(
+								"The WebGPU buffer binding offset exceeds the buffer"
+							);
+						}
+						auto size = entry.size == wgpu::kWholeSize
+							? capacity - entry.offset
+							: entry.size;
+						if (
+							size > capacity - entry.offset
+						) {
+							throw std::out_of_range(
+								"The WebGPU buffer binding range exceeds the buffer"
+							);
+						}
+						dynamic_buffers.emplace_back(
+							webgpu::PipelineResourceGroup::DynamicBuffer{
+								.entry = entries.size(),
+								.base_offset = entry.offset,
+								.size = size,
+								.capacity = capacity
+							}
+						);
 					}
 					else if (auto view = binding.value.BoundView()) {
 						auto const& native_view = NativeView(view);
@@ -236,16 +261,28 @@ namespace fyuu_rhi {
 					entries.emplace_back(std::move(entry));
 				}
 			);
+			std::ranges::sort(
+				dynamic_buffers,
+				{},
+				[&entries](auto const& binding) {
+					return entries[binding.entry].binding;
+				}
+			);
 
 			wgpu::BindGroupDescriptor descriptor{
 				.layout = native->bind_group_layouts[space],
 				.entryCount = entries.size(),
 				.entries = entries.data()
 			};
+			auto impl = native->device.CreateBindGroup(&descriptor);
 			return MakePipelineResourceGroup(
 				webgpu::PipelineResourceGroup{
 					.space = space,
-					.impl = native->device.CreateBindGroup(&descriptor)
+					.device = native->device,
+					.layout = native->bind_group_layouts[space],
+					.entries = std::move(entries),
+					.dynamic_buffers = std::move(dynamic_buffers),
+					.impl = std::move(impl)
 				}
 			);
 		}

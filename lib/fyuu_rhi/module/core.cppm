@@ -30,7 +30,12 @@ export namespace fyuu_rhi {
 			Fatal
 		};
 	
-		/// Receives records synchronously.
+		/**
+		 * @brief Application-owned synchronous diagnostic destination.
+		 *
+		 * The Sink passed to InitializeRHIContext() must outlive every RHI call.
+		 * Write() may be invoked from command recording and completion threads.
+		 */
 		class Sink {
 		public:
 			virtual ~Sink() noexcept = default;
@@ -43,6 +48,7 @@ export namespace fyuu_rhi {
 
 	}
 
+	/// Rendering API implemented by an Instance.
 	enum class Backend : std::uint8_t {
 		Unknown,
 		Vulkan,
@@ -52,6 +58,7 @@ export namespace fyuu_rhi {
 		WebGPU,
 	};
 
+	/// Four-component application or engine version embedded in backend metadata.
 	struct Version {
 		std::uint8_t variant;
 		std::uint8_t major;
@@ -59,6 +66,12 @@ export namespace fyuu_rhi {
 		std::uint8_t patch;
 	};
 
+	/**
+	 * @brief Initializes process-wide names, versions, platform state, and logging.
+	 *
+	 * Call once before EnumerateBackends() or RequestInstance(). String data is
+	 * copied; @p sink is borrowed and must remain alive until RHI use has ended.
+	 */
 	void InitializeRHIContext(
 		std::string_view app_name, Version const& app_ver, 
 		std::string_view engine_name, Version const& engine_ver,

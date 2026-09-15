@@ -1167,12 +1167,78 @@ namespace {
 			if (*group.layout != *pipeline->layout) {
 				throw std::invalid_argument("Vulkan resource group pipeline layout mismatch");
 			}
+			if (group.space != value.space) {
+				throw std::invalid_argument("Vulkan resource group space mismatch");
+			}
+			if (
+				!value.additional_buffer_offsets.empty() &&
+				value.additional_buffer_offsets.size() != group.dynamic_buffers.size()
+			) {
+				throw std::invalid_argument(
+					"Vulkan dynamic-offset count does not match the resource group"
+				);
+			}
+			std::vector<std::uint32_t> dynamic_offsets;
+			dynamic_offsets.reserve(group.dynamic_buffers.size());
+			std::ranges::transform(
+				std::views::iota(std::size_t{ 0u }, group.dynamic_buffers.size()),
+				std::back_inserter(dynamic_offsets),
+				[&](std::size_t index) {
+					auto offset = value.additional_buffer_offsets.empty()
+						? 0u
+						: value.additional_buffer_offsets[index];
+					if (
+						offset > group.dynamic_buffers[index].maximum_offset ||
+						offset > (std::numeric_limits<std::uint32_t>::max)()
+					) {
+						throw std::out_of_range(
+							"Vulkan dynamic buffer offset exceeds the bound buffer"
+						);
+					}
+					return static_cast<std::uint32_t>(offset);
+				}
+			);
 			commands.bindDescriptorSets(
 				pipeline->bind_point,
 				*pipeline->layout,
-				value.index,
+				value.space,
 				group.set,
-				{},
+				dynamic_offsets,
+				dispatcher
+			);
+		}
+
+		void operator()(SetPipelineConstants const& value) {
+			if (!pipeline) {
+				throw std::logic_error(
+					"Vulkan pipeline constants require a bound pipeline"
+				);
+			}
+			auto range = std::ranges::find_if(
+				pipeline->constant_ranges,
+				[&value](auto const& candidate) {
+					return candidate.slot == value.slot && candidate.space == value.space;
+				}
+			);
+			if (range == pipeline->constant_ranges.end()) {
+				throw std::invalid_argument(
+					"Vulkan pipeline has no matching immediate-constant range"
+				);
+			}
+			if (
+				value.offset > range->size ||
+				value.data.size() > range->size - value.offset
+			) {
+				throw std::out_of_range(
+					"Vulkan immediate-constant write exceeds its reflected range"
+				);
+			}
+			commands.pushConstants(
+				*pipeline->layout,
+				range->stages,
+				range->offset + value.offset,
+				static_cast<std::uint32_t>(value.data.size()),
+				value.data.data(),
 				dispatcher
 			);
 		}

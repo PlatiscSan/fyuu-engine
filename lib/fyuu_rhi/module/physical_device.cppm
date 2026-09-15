@@ -19,6 +19,7 @@ import :logical_device;
 
 export namespace fyuu_rhi {
 
+	/** @brief Move-only handle describing one adapter exposed by an Instance. */
 	class PhysicalDevice {
 	public:
 		using UniqueHandle = std::unique_ptr<
@@ -30,6 +31,7 @@ export namespace fyuu_rhi {
 		UniqueHandle m_impl;
 
 	public:
+		/// Backend-independent adapter information; unavailable numeric fields are empty.
 		struct Info {
 			std::string name;
 			std::optional<std::uint32_t> vendor_id;
@@ -57,8 +59,10 @@ export namespace fyuu_rhi {
 			return static_cast<bool>(m_impl);
 		}
 
+		/// Queries the adapter name, class, identifiers, and dedicated-memory size.
 		Info GetInfo() const;
 	
+		/// Creates a logical device from this adapter.
 		LogicalDevice CreateLogicalDevice() const;
 	};
 

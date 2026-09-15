@@ -69,6 +69,7 @@ export namespace fyuu_rhi::execution {
 		ApiNative
 	};
 
+	/// Capability requested by a graph node; it does not identify a physical queue.
 	enum class QueueType : std::uint8_t {
 		Graphics,
 		Compute,
@@ -76,12 +77,14 @@ export namespace fyuu_rhi::execution {
 		Present
 	};
 
+	/// Whether a node reads, writes, or both reads and writes a declared range.
 	enum class AccessMode : std::uint8_t {
 		Read,
 		Write,
 		ReadWrite
 	};
 
+	/// Command-time resource role used to derive states, barriers, and synchronization.
 	enum class ResourceUsage : std::uint32_t {
 		None = 0u,
 		Indirect = 1u << 0u,
@@ -121,6 +124,7 @@ export namespace fyuu_rhi::execution {
 		return (value & expected) == expected;
 	}
 
+	/// Non-owning type-erased view of any noexcept stop token.
 	class StopTokenView {
 	private:
 		void const* m_token = nullptr;
@@ -165,6 +169,12 @@ export namespace fyuu_rhi::execution {
 	// is invalid rather than another spelling of the complete resource.
 	using ResourceRange = std::variant<std::monostate, BufferRange, TextureRange>;
 
+	/**
+	 * @brief Declares one node's access to a registered resource range.
+	 *
+	 * This is a correctness contract rather than a hint. Commands in the node must
+	 * agree with it; the scheduler uses it to build barriers and queue dependencies.
+	 */
 	struct ResourceAccess {
 		std::size_t resource;
 		AccessMode mode = AccessMode::Read;
@@ -218,23 +228,44 @@ export namespace fyuu_rhi::execution {
 		std::uint32_t height = 0u;
 	};
 
+	/// Begins a render scope with color and optional depth/stencil attachments.
 	struct BeginRendering {
 		RenderArea area;
 		std::vector<ColorAttachment> colors;
 		std::optional<DepthStencilAttachment> depth_stencil;
 	};
 
+	/// Ends the active render scope.
 	struct EndRendering {};
 
+	/// Binds a registered graphics or compute pipeline.
 	struct BindPipeline {
 		std::size_t pipeline;
 	};
 
+	/** @brief Binds an immutable resource group and optional per-draw buffer offsets. */
 	struct BindResourceGroup {
 		std::size_t group;
-		std::uint32_t index = 0u;
+		/// Logical descriptor space/set occupied by the resource group.
+		std::uint32_t space = 0u;
+		/// Additional byte offsets for buffer bindings, ordered by slot and then
+		/// array element. Texture and sampler bindings do not consume an entry.
+		/// An empty array keeps every buffer at its resource-group base offset.
+		std::vector<std::size_t> additional_buffer_offsets;
 	};
 
+	/// Updates one reflected immediate-constant range of the currently bound
+	/// graphics or compute pipeline. Offset is relative to the beginning of the
+	/// range identified by slot and space. Data and offset are four-byte aligned
+	/// so every backend observes the same write granularity.
+	struct SetPipelineConstants {
+		std::uint32_t slot = 0u;
+		std::uint32_t space = 0u;
+		std::uint32_t offset = 0u;
+		std::vector<std::byte> data;
+	};
+
+	/// Binds a registered buffer as one vertex-input slot.
 	struct BindVertexBuffer {
 		std::size_t resource;
 		std::uint32_t slot = 0u;
@@ -247,12 +278,14 @@ export namespace fyuu_rhi::execution {
 		Uint32
 	};
 
+	/// Binds a registered buffer as the index source for subsequent indexed draws.
 	struct BindIndexBuffer {
 		std::size_t resource;
 		IndexType type = IndexType::Uint16;
 		std::size_t offset = 0u;
 	};
 
+	/// Sets viewport bounds, depth range, and application clip-space orientation.
 	struct Viewport {
 		float x = 0.0f;
 		float y = 0.0f;
@@ -266,6 +299,7 @@ export namespace fyuu_rhi::execution {
 		ClipSpace clip_space = ClipSpace::YUp;
 	};
 
+	/// Restricts rasterization to a framebuffer rectangle.
 	struct Scissor {
 		std::int32_t x = 0;
 		std::int32_t y = 0;
@@ -273,6 +307,7 @@ export namespace fyuu_rhi::execution {
 		std::uint32_t height = 0u;
 	};
 
+	/// Issues a non-indexed instanced draw.
 	struct Draw {
 		std::uint32_t vertex_count = 0u;
 		std::uint32_t instance_count = 1u;
@@ -280,6 +315,7 @@ export namespace fyuu_rhi::execution {
 		std::uint32_t first_instance = 0u;
 	};
 
+	/// Issues an indexed instanced draw using the current index buffer.
 	struct DrawIndexed {
 		std::uint32_t index_count = 0u;
 		std::uint32_t instance_count = 1u;
@@ -288,12 +324,14 @@ export namespace fyuu_rhi::execution {
 		std::uint32_t first_instance = 0u;
 	};
 
+	/// Dispatches a three-dimensional compute workgroup grid.
 	struct Dispatch {
 		std::uint32_t group_count_x = 1u;
 		std::uint32_t group_count_y = 1u;
 		std::uint32_t group_count_z = 1u;
 	};
 
+	/// Copies a byte range between two registered buffers.
 	struct CopyBuffer {
 		std::size_t source;
 		std::size_t destination;
@@ -302,6 +340,7 @@ export namespace fyuu_rhi::execution {
 		std::size_t size = 0u;
 	};
 
+	/// Copies formatted buffer data into a texture region.
 	struct CopyBufferToTexture {
 		std::size_t source;
 		std::size_t destination;
@@ -309,6 +348,7 @@ export namespace fyuu_rhi::execution {
 		TextureRegion destination_region;
 	};
 
+	/// Copies a texture region into a formatted buffer layout.
 	struct CopyTextureToBuffer {
 		std::size_t source;
 		std::size_t destination;
@@ -316,6 +356,7 @@ export namespace fyuu_rhi::execution {
 		TextureDataLayout destination_layout;
 	};
 
+	/// Copies matching regions between two textures.
 	struct CopyTexture {
 		std::size_t source;
 		std::size_t destination;
@@ -333,6 +374,7 @@ export namespace fyuu_rhi::execution {
 		std::vector<std::byte> data;
 	};
 
+	/// Presents a registered texture to a registered native-window target.
 	struct Present {
 		std::size_t source;
 		std::size_t target = 0u;
@@ -345,6 +387,7 @@ export namespace fyuu_rhi::execution {
 		EndRendering,
 		BindPipeline,
 		BindResourceGroup,
+		SetPipelineConstants,
 		BindVertexBuffer,
 		BindIndexBuffer,
 		Viewport,
@@ -360,6 +403,7 @@ export namespace fyuu_rhi::execution {
 		Present
 	>;
 
+	/// User-authored graph node before validation, batching, and barrier planning.
 	struct ExecutionNode {
 		std::size_t id;
 		QueueType queue = QueueType::Graphics;
@@ -420,6 +464,7 @@ export namespace fyuu_rhi::execution {
 		std::vector<ExecutionBarrier> barriers;
 	};
 
+	/// Validated, topologically sorted and batched graph consumed by a backend.
 	struct ExecutionPlan {
 		BindingLayout bindings;
 		std::vector<std::size_t> topological_order;
@@ -813,6 +858,23 @@ export namespace fyuu_rhi::execution {
 				}
 				ValidateIndex(command.group, graph.bindings.resource_group_count,
 					"BindResourceGroup contains an invalid resource group");
+			}
+
+			void operator()(SetPipelineConstants const& command) const {
+				if (node.queue != QueueType::Graphics && node.queue != QueueType::Compute) {
+					throw std::invalid_argument(
+						"SetPipelineConstants requires a graphics or compute node"
+					);
+				}
+				if (
+					command.data.empty() ||
+					command.offset % sizeof(std::uint32_t) != 0u ||
+					command.data.size() % sizeof(std::uint32_t) != 0u
+				) {
+					throw std::invalid_argument(
+						"SetPipelineConstants requires non-empty, four-byte-aligned data"
+					);
+				}
 			}
 	
 			void operator()(BindVertexBuffer const& command) const {
@@ -1272,6 +1334,12 @@ export namespace fyuu_rhi::execution {
 	using PlatformHandle = CA::MetalLayer*;
 #endif // defined(_WIN32)
 
+	/**
+	 * @brief Move-only backend completion state for submitted GPU work.
+	 *
+	 * Poll() is non-blocking. Once complete, Error() contains a captured failure
+	 * or IsStopped() reports cancellation; a successful token has neither.
+	 */
 	class CompletionToken {
 	public:
 		using UniqueHandle = std::unique_ptr<
@@ -1312,6 +1380,12 @@ export namespace fyuu_rhi::execution {
 		}
 	};
 
+	/**
+	 * @brief Owns every object returned after a command graph reaches a terminal state.
+	 *
+	 * Each Take function consumes its indexed slot exactly once. Indices are the
+	 * values returned by the matching CommandGraphBuilder Register function.
+	 */
 	class CommandGraphResources {
 	private:
 		std::vector<Resource> m_resources;
@@ -1415,6 +1489,13 @@ export namespace fyuu_rhi::execution {
 		};
 #endif // defined(__cpp_lib_senders) && __cpp_lib_senders >= 202406L
 
+	/**
+	 * @brief Single-use builder for a dependency-ordered command graph.
+	 *
+	 * Register typed binding slots, create nodes, declare accesses, record commands,
+	 * then move the builder into connect(). Actual GPU objects are moved into the
+	 * resulting CommandGraphBindings.
+	 */
 	class CommandGraphBuilder {
 	public:
 #if defined(__cpp_lib_senders) && __cpp_lib_senders >= 202406L
@@ -1444,6 +1525,7 @@ export namespace fyuu_rhi::execution {
 		}
 
 	public:
+		/** @brief Lightweight handle used to edit one node owned by its builder. */
 		class Node {
 			friend class CommandGraphBuilder;
 
@@ -1457,6 +1539,7 @@ export namespace fyuu_rhi::execution {
 			}
 
 		public:
+			/// Adds a directed dependency; both nodes must belong to this builder.
 			Node& DependsOn(Node const& dependency) {
 				if (m_builder != dependency.m_builder) {
 					throw std::invalid_argument("Command graph dependency belongs to another builder");
@@ -1465,6 +1548,7 @@ export namespace fyuu_rhi::execution {
 				return *this;
 			}
 
+			/// Declares a resource range accessed by this node.
 			Node& Access(ResourceAccess const& access) {
 				m_builder->GetNode(m_index).accesses.emplace_back(access);
 				return *this;
@@ -1472,6 +1556,7 @@ export namespace fyuu_rhi::execution {
 
 			template <class Command>
 				requires std::constructible_from<CommandRecord, Command>
+			/// Appends one command in node-local recording order.
 			Node& Record(Command&& command) {
 				m_builder->GetNode(m_index).commands.emplace_back(std::forward<Command>(command));
 				return *this;
@@ -1520,6 +1605,12 @@ export namespace fyuu_rhi::execution {
 		) &&;
 	};
 
+	/**
+	 * @brief Copyable entry point for building and submitting command graphs.
+	 *
+	 * Copies share native scheduling state. Independent graphs may execute
+	 * concurrently; synchronization is restricted to native objects that require it.
+	 */
 	class CommandScheduler {
 	private:
 		std::shared_ptr<struct CommandSchedulerContext> m_impl;
@@ -1566,11 +1657,20 @@ export namespace fyuu_rhi::execution {
 			: m_impl(impl) {
 		}
 
+		/// Starts a fresh graph without reserving queues or creating GPU sync objects.
 		CommandGraphBuilder schedule() const noexcept {
 			return CommandGraphBuilder{ m_impl };
 		}
 	};
 
+	/**
+	 * @brief Move-only operation state containing a planned graph and its GPU objects.
+	 *
+	 * Bind every registered slot exactly once, set presentation targets, then call
+	 * start(). On success objects are delivered to set_value(); before an error or
+	 * cancellation they are first returned through RecoverBindings(). Completion
+	 * may run on an internal worker thread.
+	 */
 	template <class Receiver> class CommandGraphBindings {
 	public:
 #if defined(__cpp_lib_senders) && __cpp_lib_senders >= 202406L

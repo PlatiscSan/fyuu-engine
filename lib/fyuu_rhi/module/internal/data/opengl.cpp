@@ -295,6 +295,14 @@ namespace fyuu_rhi::opengl {
 	using ManagedPipeline = boost::scope::unique_resource<GLuint, PipelineDeleter>;
 
 	struct Pipeline {
+		struct ConstantRange {
+			std::uint32_t slot;
+			std::uint32_t space;
+			std::uint32_t offset;
+			std::uint32_t size;
+			GLenum target;
+		};
+
 		ManagedPipeline impl;
 		bool compute;
 		std::vector<pipeline::VertexBufferLayout> vertex_buffers;
@@ -305,6 +313,7 @@ namespace fyuu_rhi::opengl {
 		std::optional<pipeline::DepthStencilState> depth_stencil;
 		std::vector<pipeline::ColorTargetState> color_targets;
 		std::vector<pipeline::BindingMetadata> bindings;
+		std::vector<ConstantRange> constant_ranges;
 	};
 
 	struct PipelineResourceGroup {
@@ -314,6 +323,8 @@ namespace fyuu_rhi::opengl {
 			GLuint buffer;
 			std::size_t buffer_offset;
 			std::size_t buffer_size;
+			std::size_t buffer_capacity;
+			bool dynamic_buffer;
 			GLuint view;
 			GLenum view_target;
 			GLenum view_format;
@@ -361,6 +372,7 @@ namespace fyuu_rhi::opengl {
 			std::optional<pipeline::BlendState> blend;
 			pipeline::ColorWriteMask write_mask;
 			std::vector<pipeline::BindingMetadata> bindings;
+			std::vector<Pipeline::ConstantRange> constant_ranges;
 		};
 
 		struct GroupBindingSnapshot {
@@ -369,6 +381,8 @@ namespace fyuu_rhi::opengl {
 			GLuint buffer;
 			std::size_t buffer_offset;
 			std::size_t buffer_size;
+			std::size_t buffer_capacity;
+			bool dynamic_buffer;
 			GLuint view;
 			GLenum view_target;
 			GLenum view_format;
@@ -376,6 +390,7 @@ namespace fyuu_rhi::opengl {
 		};
 
 		struct GroupSnapshot {
+			std::uint32_t space;
 			std::vector<GroupBindingSnapshot> bindings;
 		};
 
