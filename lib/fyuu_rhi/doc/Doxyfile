@@ -1,7 +1,7 @@
 PROJECT_NAME           = FyuuRHI
 PROJECT_BRIEF          = "FyuuEngine rendering hardware interface"
 
-EXTRACT_ALL            = NO
+EXTRACT_ALL            = YES
 EXTRACT_PRIVATE        = NO
 EXTRACT_STATIC         = NO
 JAVADOC_AUTOBRIEF      = YES
