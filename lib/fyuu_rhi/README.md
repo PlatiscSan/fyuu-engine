@@ -1,6 +1,6 @@
 # FyuuRHI
 
-[简体中文](README.zh-CN.md)
+[API Reference](#api-reference) · [简体中文](README.zh-CN.md)
 
 FyuuRHI is FyuuEngine's low-level rendering interface. It provides one C++23
 API for device discovery, resource and pipeline creation, command-graph
@@ -37,7 +37,9 @@ set_target_properties(MyApplication PROPERTIES CXX_EXTENSIONS OFF)
 import fyuu_rhi;
 ```
 
-To generate the complete object and command reference, install Doxygen and
+## API reference
+
+To view the complete object and command reference, install Doxygen and
 configure with `-DFYUU_RHI_BUILD_DOCUMENTATION=ON`. Build the
 `FyuuRHIDocumentation` target; its HTML entry is
 `lib/fyuu_rhi/doc/en/html/index.html` under the selected build directory. Build

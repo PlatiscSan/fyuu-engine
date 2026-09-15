@@ -1,6 +1,6 @@
 # FyuuRHI
 
-[English](README.md)
+[API 文档](#api-文档) · [English](README.md)
 
 FyuuRHI 是 FyuuEngine 的底层渲染接口。它提供统一的 C++23 API，涵盖设备发现、资源与管线创建、命令图执行、同步和呈现，并通过不透明句柄隔离各图形 API 的原生对象。
 
@@ -31,7 +31,9 @@ set_target_properties(MyApplication PROPERTIES CXX_EXTENSIONS OFF)
 import fyuu_rhi;
 ```
 
-完整对象与命令参考由公开声明旁的注释生成。安装 Doxygen 后，以
+## API 文档
+
+要查看完整的对象与命令参考，请先安装 Doxygen，并以
 `-DFYUU_RHI_BUILD_DOCUMENTATION=ON` 配置工程，再构建 `FyuuRHIDocumentation`
 目标会生成英文站点，HTML 入口位于构建目录下的
 `lib/fyuu_rhi/doc/en/html/index.html`。构建 `FyuuRHIDocumentationZhCN` 目标会在
