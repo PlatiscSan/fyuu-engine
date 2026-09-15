@@ -1,0 +1,15 @@
+<map id="fyuu_rhi::pipeline::GraphicsPipelineDescriptor" name="fyuu_rhi::pipeline::GraphicsPipelineDescriptor">
+<area shape="rect" id="Node000001" title="Complete graphics pipeline description, including program and fixed&#45;function state." alt="" coords="590,139,777,181"/>
+<area shape="rect" id="Node000002" href="$structfyuu__rhi_1_1pipeline_1_1_slang_pipeline_program_descriptor.html" title="Source&#45;level Slang program description compiled for the active backend." alt="" coords="246,5,463,48"/>
+<area shape="poly" id="edge1_Node000001_Node000002" title=" " alt="" coords="468,50,519,65,567,84,614,109,656,138,650,138,611,114,565,89,517,70,469,55"/>
+<area shape="rect" id="Node000003" href="$structfyuu__rhi_1_1pipeline_1_1_vertex_state.html" title=" " alt="" coords="295,72,414,115"/>
+<area shape="poly" id="edge2_Node000001_Node000003" title=" " alt="" coords="429,102,567,128,601,138,596,138,565,133,429,108"/>
+<area shape="rect" id="Node000004" href="$structfyuu__rhi_1_1pipeline_1_1_primitive_state.html" title=" " alt="" coords="295,139,414,181"/>
+<area shape="poly" id="edge3_Node000001_Node000004" title=" " alt="" coords="429,157,592,159,587,161,430,163"/>
+<area shape="rect" id="Node000005" href="$structfyuu__rhi_1_1pipeline_1_1_rasterization_state.html" title=" " alt="" coords="286,205,423,248"/>
+<area shape="poly" id="edge4_Node000001_Node000005" title=" " alt="" coords="438,211,565,187,596,182,601,181,567,192,439,216"/>
+<area shape="rect" id="Node000006" href="$structfyuu__rhi_1_1pipeline_1_1_depth_bias_state.html" title=" " alt="" coords="5,205,127,248"/>
+<area shape="poly" id="edge5_Node000005_Node000006" title=" " alt="" coords="142,224,287,225,283,229,143,229"/>
+<area shape="rect" id="Node000007" href="$structfyuu__rhi_1_1pipeline_1_1_multisample_state.html" title=" " alt="" coords="289,272,420,315"/>
+<area shape="poly" id="edge6_Node000001_Node000007" title=" " alt="" coords="434,274,499,256,565,231,611,206,651,183,656,181,614,211,567,236,500,261,435,279"/>
+</map>

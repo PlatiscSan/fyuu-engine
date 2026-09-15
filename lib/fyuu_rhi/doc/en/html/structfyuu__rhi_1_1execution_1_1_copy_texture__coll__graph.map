@@ -1,0 +1,5 @@
+<map id="fyuu_rhi::execution::CopyTexture" name="fyuu_rhi::execution::CopyTexture">
+<area shape="rect" id="Node000001" title="Copies matching regions between two textures." alt="" coords="19,125,151,168"/>
+<area shape="rect" id="Node000002" href="$structfyuu__rhi_1_1_texture_region.html" title="Texture subresource and texel box used by copy commands." alt="" coords="5,5,165,32"/>
+<area shape="poly" id="edge1_Node000001_Node000002" title=" " alt="" coords="87,46,88,126,82,125,83,49"/>
+</map>

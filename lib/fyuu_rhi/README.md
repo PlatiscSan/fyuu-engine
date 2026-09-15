@@ -1,6 +1,6 @@
 # FyuuRHI
 
-[API Reference](#api-reference) · [简体中文](README.zh-CN.md)
+[API Reference](doc/en/html/index.html) · [简体中文](README.zh-CN.md)
 
 FyuuRHI is FyuuEngine's low-level rendering interface. It provides one C++23
 API for device discovery, resource and pipeline creation, command-graph
@@ -39,11 +39,12 @@ import fyuu_rhi;
 
 ## API reference
 
-To view the complete object and command reference, install Doxygen and
-configure with `-DFYUU_RHI_BUILD_DOCUMENTATION=ON`. Build the
-`FyuuRHIDocumentation` target; its HTML entry is
-`lib/fyuu_rhi/doc/en/html/index.html` under the selected build directory. Build
-`FyuuRHIDocumentationZhCN` for the Simplified Chinese site under `doc/zh-CN`.
+Open the checked-in [English API reference](doc/en/html/index.html), or view the
+[Simplified Chinese API reference](doc/zh-CN/html/index.html).
+
+To regenerate the pages, install Doxygen, configure with
+`-DFYUU_RHI_BUILD_DOCUMENTATION=ON`, and build `FyuuRHIDocumentation` and
+`FyuuRHIDocumentationZhCN`.
 
 Backend availability depends on the target platform and the dependencies found
 at configure time. Query it instead of assuming:

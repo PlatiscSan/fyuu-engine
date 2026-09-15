@@ -1,0 +1,7 @@
+<map id="fyuu_rhi::execution::CopyTextureToBuffer" name="fyuu_rhi::execution::CopyTextureToBuffer">
+<area shape="rect" id="Node000001" title="Copies a texture region into a formatted buffer layout." alt="" coords="107,104,258,147"/>
+<area shape="rect" id="Node000002" href="$structfyuu__rhi_1_1_texture_region.html" title="Texture subresource and texel box used by copy commands." alt="" coords="5,5,165,32"/>
+<area shape="poly" id="edge1_Node000001_Node000002" title=" " alt="" coords="108,41,166,103,161,104,105,45"/>
+<area shape="rect" id="Node000003" href="$structfyuu__rhi_1_1_texture_data_layout.html" title="Host/buffer layout used by buffer&#45;to&#45;texture and texture&#45;to&#45;buffer copies." alt="" coords="188,5,374,32"/>
+<area shape="poly" id="edge2_Node000001_Node000003" title=" " alt="" coords="266,44,236,82,210,106,207,101,232,78,261,46"/>
+</map>
