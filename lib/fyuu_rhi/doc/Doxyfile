@@ -1,0 +1,31 @@
+PROJECT_NAME           = FyuuRHI
+PROJECT_BRIEF          = "FyuuEngine rendering hardware interface"
+
+EXTRACT_ALL            = NO
+EXTRACT_PRIVATE        = NO
+EXTRACT_STATIC         = NO
+JAVADOC_AUTOBRIEF      = YES
+MARKDOWN_SUPPORT       = YES
+FULL_PATH_NAMES        = NO
+STRIP_FROM_PATH        = lib/fyuu_rhi
+WARN_IF_UNDOCUMENTED   = NO
+
+GENERATE_HTML          = YES
+GENERATE_XML           = NO
+GENERATE_LATEX         = NO
+RECURSIVE              = NO
+FILE_PATTERNS          = *.cppm *.dox
+EXTENSION_MAPPING      = cppm=C++
+EXCLUDE_SYMBOLS        = fyuu_rhi::details::* \
+                         fyuu_rhi::execution::details::* \
+                         fyuu_rhi::*::data::*
+
+INPUT                  = lib/fyuu_rhi/module/core.cppm \
+                         lib/fyuu_rhi/module/instance.cppm \
+                         lib/fyuu_rhi/module/physical_device.cppm \
+                         lib/fyuu_rhi/module/logical_device.cppm \
+                         lib/fyuu_rhi/module/resource.cppm \
+                         lib/fyuu_rhi/module/view.cppm \
+                         lib/fyuu_rhi/module/sampler.cppm \
+                         lib/fyuu_rhi/module/pipeline.cppm \
+                         lib/fyuu_rhi/module/execution.cppm

@@ -28,13 +28,23 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v6
 
+      - name: Install documentation tools
+        run: sudo apt-get update && sudo apt-get install --yes doxygen graphviz
+
+      - name: Generate FyuuRHI API pages
+        run: |
+          mkdir -p build/rhi-api/en build/rhi-api/zh-CN
+          doxygen lib/fyuu_rhi/doc/Doxyfile.en
+          doxygen lib/fyuu_rhi/doc/Doxyfile.zh-CN
+          cp lib/fyuu_rhi/doc/index.html build/rhi-api/index.html
+
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
 
       - name: Upload FyuuRHI API pages
         uses: actions/upload-pages-artifact@v4
         with:
-          path: lib/fyuu_rhi/doc
+          path: build/rhi-api
 
       - name: Deploy GitHub Pages
         id: deployment

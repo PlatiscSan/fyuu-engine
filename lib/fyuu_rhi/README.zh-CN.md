@@ -36,8 +36,9 @@ import fyuu_rhi;
 查看已发布的[简体中文 API 文档](https://platiscsan.github.io/fyuu-engine/zh-CN/html/)，
 也可以切换到[英文 API 文档](https://platiscsan.github.io/fyuu-engine/en/html/)。
 
-如需重新生成页面，请先安装 Doxygen，以 `-DFYUU_RHI_BUILD_DOCUMENTATION=ON`
-配置工程，然后构建 `FyuuRHIDocumentation` 和 `FyuuRHIDocumentationZhCN`。
+线上页面由 GitHub Actions 生成，不存放在源码分支中。如需在本地生成，请先安装
+Doxygen，以 `-DFYUU_RHI_BUILD_DOCUMENTATION=ON` 配置工程，然后构建
+`FyuuRHIDocumentation` 和 `FyuuRHIDocumentationZhCN`。
 
 可用后端取决于目标平台以及配置阶段找到的依赖。应用不应假定某个后端必然存在，而应查询当前构建实际提供的后端：
 

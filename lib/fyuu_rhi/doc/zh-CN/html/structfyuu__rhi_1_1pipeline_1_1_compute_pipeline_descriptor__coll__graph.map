@@ -1,5 +1,0 @@
-<map id="fyuu_rhi::pipeline::ComputePipelineDescriptor" name="fyuu_rhi::pipeline::ComputePipelineDescriptor">
-<area shape="rect" id="Node000001" title="Compute pipeline description containing a program with a compute entry point." alt="" coords="20,120,208,163"/>
-<area shape="rect" id="Node000002" href="$structfyuu__rhi_1_1pipeline_1_1_slang_pipeline_program_descriptor.html" title="Source&#45;level Slang program description compiled for the active backend." alt="" coords="5,5,223,48"/>
-<area shape="poly" id="edge1_Node000001_Node000002" title=" " alt="" coords="116,62,117,120,111,119,112,65"/>
-</map>

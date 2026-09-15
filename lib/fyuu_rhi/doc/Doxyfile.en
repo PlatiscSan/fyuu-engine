@@ -1,0 +1,3 @@
+@INCLUDE               = lib/fyuu_rhi/doc/Doxyfile
+OUTPUT_DIRECTORY       = build/rhi-api/en
+INPUT                 += lib/fyuu_rhi/doc/mainpage.dox
