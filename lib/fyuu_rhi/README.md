@@ -1,6 +1,6 @@
 # FyuuRHI
 
-[API Reference](https://platissan.github.io/fyuu-engine/en/html/) · [简体中文](README.zh-CN.md)
+[API Reference](https://platiscsan.github.io/fyuu-engine/en/html/) · [简体中文](README.zh-CN.md)
 
 FyuuRHI is FyuuEngine's low-level rendering interface. It provides one C++23
 API for device discovery, resource and pipeline creation, command-graph
@@ -39,8 +39,8 @@ import fyuu_rhi;
 
 ## API reference
 
-Open the published [English API reference](https://platissan.github.io/fyuu-engine/en/html/),
-or view the [Simplified Chinese API reference](https://platissan.github.io/fyuu-engine/zh-CN/html/).
+Open the published [English API reference](https://platiscsan.github.io/fyuu-engine/en/html/),
+or view the [Simplified Chinese API reference](https://platiscsan.github.io/fyuu-engine/zh-CN/html/).
 
 To regenerate the pages, install Doxygen, configure with
 `-DFYUU_RHI_BUILD_DOCUMENTATION=ON`, and build `FyuuRHIDocumentation` and

@@ -1,6 +1,6 @@
 # FyuuRHI
 
-[API 文档](https://platissan.github.io/fyuu-engine/zh-CN/html/) · [English](README.md)
+[API 文档](https://platiscsan.github.io/fyuu-engine/zh-CN/html/) · [English](README.md)
 
 FyuuRHI 是 FyuuEngine 的底层渲染接口。它提供统一的 C++23 API，涵盖设备发现、资源与管线创建、命令图执行、同步和呈现，并通过不透明句柄隔离各图形 API 的原生对象。
 
@@ -33,8 +33,8 @@ import fyuu_rhi;
 
 ## API 文档
 
-查看已发布的[简体中文 API 文档](https://platissan.github.io/fyuu-engine/zh-CN/html/)，
-也可以切换到[英文 API 文档](https://platissan.github.io/fyuu-engine/en/html/)。
+查看已发布的[简体中文 API 文档](https://platiscsan.github.io/fyuu-engine/zh-CN/html/)，
+也可以切换到[英文 API 文档](https://platiscsan.github.io/fyuu-engine/en/html/)。
 
 如需重新生成页面，请先安装 Doxygen，以 `-DFYUU_RHI_BUILD_DOCUMENTATION=ON`
 配置工程，然后构建 `FyuuRHIDocumentation` 和 `FyuuRHIDocumentationZhCN`。
