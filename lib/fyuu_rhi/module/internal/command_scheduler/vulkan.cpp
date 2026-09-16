@@ -3,24 +3,34 @@ module;
 #if !defined(__cpp_lib_modules)
 #include <cstddef>
 #include <exception>
-#include <stdexcept>
-
-#include <limits>
-
 #include <memory>
+#include <stdexcept>
+#include <utility>
 
+#include <array>
 #include <deque>
 #include <vector>
 
+#include <algorithm>
 #include <functional>
+#include <iterator>
+
+#include <limits>
 
 #include <cstdint>
-#include <utility>
+#include <type_traits>
 
+#include <unordered_map>
+
+#include <atomic>
 #include <mutex>
 
+#include <optional>
 #include <variant>
 
+#include <concepts>
+#include <ranges>
+#include <span>
 #endif // !defined(__cpp_lib_modules)
 #if !defined(__APPLE__)
 #if defined(_WIN32)

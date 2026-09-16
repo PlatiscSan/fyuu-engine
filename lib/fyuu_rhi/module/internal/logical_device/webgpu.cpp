@@ -15,6 +15,7 @@ module;
 #include <string_view>
 
 #include <ranges>
+#include <format>
 #endif // !defined(__cpp_lib_modules)
 #include <dawn/webgpu_cpp.h>
 #include <slang.h>

@@ -10,6 +10,9 @@ module;
 #include <deque>
 #include <vector>
 
+#include <algorithm>
+#include <iterator>
+
 #include <string>
 
 #include <cstdint>

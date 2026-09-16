@@ -4,6 +4,7 @@ module;
 #include <cstddef>
 #include <cstdlib>
 #include <vector>
+#include <algorithm>
 #include <functional>
 #include <string>
 #include <fstream>
