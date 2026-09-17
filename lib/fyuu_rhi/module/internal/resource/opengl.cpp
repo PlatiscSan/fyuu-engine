@@ -84,6 +84,38 @@ namespace fyuu_rhi::opengl {
 } // namespace fyuu_rhi::opengl
 
 namespace fyuu_rhi {
+	template <>
+	struct MapResource<opengl::Resource> {
+		opengl::Resource* resource;
+
+		static void Unmap(void* context, ResourceDataRange, bool) noexcept {
+			auto native = static_cast<opengl::Resource*>(context);
+			(void)glUnmapNamedBuffer(native->impl.get());
+		}
+
+		ResourceMapScope operator()(ResourceDataRange range, bool writable) const {
+			if (resource->type != opengl::ResourceType::Buffer) {
+				throw std::invalid_argument("An OpenGL texture cannot be mapped directly");
+			}
+			auto data = glMapNamedBufferRange(
+				resource->impl.get(),
+				static_cast<GLintptr>(range.offset),
+				static_cast<GLsizeiptr>(range.size),
+				writable ? GL_MAP_WRITE_BIT : GL_MAP_READ_BIT
+			);
+			if (!data) {
+				throw std::runtime_error("Failed to map an OpenGL readback buffer");
+			}
+			return ResourceMapScope(
+				resource,
+				static_cast<std::byte*>(data),
+				range.offset,
+				range.size,
+				writable,
+				Unmap
+			);
+		}
+	};
 
 	template <>
 	struct CreateBufferView<opengl::Resource> {

@@ -63,6 +63,10 @@ namespace fyuu_rhi::vulkan {
 
 		vk::SharedDevice GetLogicalDevice() const noexcept;
 
+		std::byte* Map(std::size_t offset, std::size_t size, bool writable) const;
+
+		void Unmap(std::size_t offset, std::size_t size, bool writable) const noexcept;
+
 		void Write(std::size_t offset, std::span<std::byte const> data) const;
 	};
 

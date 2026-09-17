@@ -2,7 +2,6 @@ module;
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <stdexcept>
-#include <functional>
 
 #include <span>
 #endif // !defined(__cpp_lib_modules)
@@ -48,17 +47,18 @@ namespace fyuu_rhi {
 namespace {
 
 	template <fyuu_rhi::Backend backend, class Native>
-	void Request(std::function<void(fyuu_rhi::Instance)> const& func) {
+	fyuu_rhi::Instance& Request() {
 		static Native native = fyuu_rhi::CreateInstance<Native>{}();
 		static fyuu_rhi::InstanceImplementation impl{ backend, &native };
-		func(fyuu_rhi::Instance{ &impl });
+		static fyuu_rhi::Instance instance{ &impl };
+		return instance;
 	}
 
 #if defined(__linux__) && !defined(__ANDROID__)
-	void RequestOpenGL(std::function<void(fyuu_rhi::Instance)> const& func) {
-		fyuu_rhi::IsWayland() ?
-			Request<fyuu_rhi::Backend::OpenGL, fyuu_rhi::opengl::EGLInstance>(func) :
-			Request<fyuu_rhi::Backend::OpenGL, fyuu_rhi::opengl::GLXInstance>(func);
+	fyuu_rhi::Instance& RequestOpenGL() {
+		return fyuu_rhi::IsWayland()
+			? Request<fyuu_rhi::Backend::OpenGL, fyuu_rhi::opengl::EGLInstance>()
+			: Request<fyuu_rhi::Backend::OpenGL, fyuu_rhi::opengl::GLXInstance>();
 	}
 #endif // defined(__linux__) && !defined(__ANDROID__)
 
@@ -129,15 +129,12 @@ namespace fyuu_rhi {
 		return backends;
 	}
 
-	void RequestInstance(Backend backend, std::function<void(Instance)> const& func) {
+	Instance& RequestInstance(Backend backend) {
 		if (!IsInitialized()) {
 			throw std::runtime_error("RHI context is not initialized yet");
 		}
-		if (!func) {
-			throw std::invalid_argument("RequestInstance requires a callback");
-		}
 
-		using RequestFunction = void(*)(std::function<void(fyuu_rhi::Instance)> const&);
+		using RequestFunction = Instance&(*)();
 #if defined(_WIN32)
 		static constexpr frozen::unordered_map<Backend, RequestFunction, 4u> requests{
 			{ Backend::DirectX12, Request<Backend::DirectX12, d3d12::Instance> },
@@ -168,7 +165,7 @@ namespace fyuu_rhi {
 		if (request == requests.end()) {
 			throw std::invalid_argument("Requested RHI backend is not available");
 		}
-		request->second(func);
+		return request->second();
 	}
 
 } // namespace fyuu_rhi

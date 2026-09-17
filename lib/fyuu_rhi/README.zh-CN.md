@@ -77,20 +77,16 @@ fyuu_rhi::InitializeRHIContext(
 );
 ```
 
-`RequestInstance` 通过回调交付创建完成的实例：
+`RequestInstance` 直接返回所选后端在进程生命周期内有效的实例：
 
 ```cpp
-fyuu_rhi::RequestInstance(
-    fyuu_rhi::Backend::Vulkan,
-    [](fyuu_rhi::Instance instance) {
-        auto physical_devices = instance.EnumeratePhysicalDevices();
-        auto const& physical_device = fyuu_rhi::BestPerformance(physical_devices);
-        auto device = physical_device.CreateLogicalDevice();
-        auto scheduler = device.CreateScheduler();
+auto& instance = fyuu_rhi::RequestInstance(fyuu_rhi::Backend::Vulkan);
+auto physical_devices = instance.EnumeratePhysicalDevices();
+auto const& physical_device = fyuu_rhi::BestPerformance(physical_devices);
+auto device = physical_device.CreateLogicalDevice();
+auto scheduler = device.CreateScheduler();
 
-        // 在这里创建资源并提交命令图。
-    }
-);
+// 在这里创建资源并提交命令图。
 ```
 
 `PhysicalDevice::GetInfo()` 返回适配器名称和类型，以及可选的厂商编号、设备编号和专用显存容量。可选值缺失表示后端无法提供相应信息，而不是该项数值为零。

@@ -522,12 +522,139 @@ namespace {
 		}
 	};
 
+	void TestResourceMapping(fyuu_rhi::LogicalDevice& device) {
+		using namespace fyuu_rhi::execution;
+		static constexpr std::array Data{
+			std::byte{ 0x10 },
+			std::byte{ 0x21 },
+			std::byte{ 0x32 },
+			std::byte{ 0x43 },
+			std::byte{ 0x54 },
+			std::byte{ 0x65 },
+			std::byte{ 0x76 },
+			std::byte{ 0x87 }
+		};
+
+		fyuu_rhi::ResourceFlags source_flags;
+		source_flags.Set(fyuu_rhi::ResourceFlagBits::HostVisible);
+		source_flags.Set(fyuu_rhi::ResourceFlagBits::CopySRC);
+		auto source = device.CreateBuffer(Data.size(), source_flags);
+		{
+			auto mapping = source.Map({ 0u, Data.size() });
+			mapping.Write(Data);
+			mapping.Reset();
+		}
+		{
+			auto mapping = source.Map({ 0u, Data.size() });
+			mapping.Write(Data);
+		}
+		{
+			auto mapping = source.Map({ 0u, Data.size() });
+			std::array<std::byte, Data.size() + 1u> oversized{};
+			bool rejected = false;
+			try {
+				mapping.Write(oversized);
+			}
+			catch (std::out_of_range const&) {
+				rejected = true;
+			}
+			if (!rejected) {
+				throw std::runtime_error("ResourceMapScope accepted an oversized write");
+			}
+		}
+
+		fyuu_rhi::ResourceFlags destination_flags;
+		destination_flags.Set(fyuu_rhi::ResourceFlagBits::DeviceReadback);
+		destination_flags.Set(fyuu_rhi::ResourceFlagBits::CopyDST);
+		auto destination = device.CreateBuffer(Data.size(), destination_flags);
+		auto scheduler = device.CreateScheduler();
+		auto builder = scheduler.schedule();
+		auto const source_binding = builder.RegisterResource();
+		auto const destination_binding = builder.RegisterResource();
+		auto node = builder.CreateNode(QueueType::Transfer);
+		node
+		.Access(
+			{
+				source_binding,
+				AccessMode::Read,
+				ResourceUsage::CopySource,
+				{}
+			}
+		)
+		.Access(
+			{
+				destination_binding,
+				AccessMode::Write,
+				ResourceUsage::CopyDestination,
+				{}
+			}
+		)
+		.Record(
+			CopyBuffer{
+				.source = source_binding,
+				.destination = destination_binding,
+				.size = Data.size()
+			}
+		);
+
+		auto completion = std::make_shared<CompletionState>();
+		auto operation = std::move(builder).connect(CompletionReceiver{ completion });
+		operation.BindResource(source_binding, std::move(source));
+		operation.BindResource(destination_binding, std::move(destination));
+		operation.start();
+		{
+			std::unique_lock lock(completion->mutex);
+			if (!completion->condition.wait_for(
+				lock,
+				30s,
+				[&]() {
+					return completion->completed;
+				}
+			)) {
+				throw std::runtime_error("Timed out waiting for the resource mapping copy");
+			}
+			if (completion->error) {
+				std::rethrow_exception(completion->error);
+			}
+			if (completion->stopped || !completion->resources) {
+				throw std::runtime_error("The resource mapping copy was stopped");
+			}
+			source = completion->resources->TakeResource(source_binding);
+			destination = completion->resources->TakeResource(destination_binding);
+		}
+
+		{
+			auto mapping = destination.Map({ 0u, Data.size() });
+			if (!std::ranges::equal(mapping.Read(), Data)) {
+				throw std::runtime_error("ResourceMapScope returned incorrect readback data");
+			}
+			bool rejected = false;
+			try {
+				mapping.Write(Data);
+			}
+			catch (std::logic_error const&) {
+				rejected = true;
+			}
+			if (!rejected) {
+				throw std::runtime_error("A readback mapping accepted a write");
+			}
+		}
+		{
+			auto mapping = destination.Map({ 0u, Data.size() });
+			if (!std::ranges::equal(mapping.Read(), Data)) {
+				throw std::runtime_error("A resource could not be mapped again after RAII unmap");
+			}
+			mapping.Reset();
+		}
+	}
+
 	void ExecuteTriangle(
 		fyuu_rhi::LogicalDevice& device,
 		TestWindow& window,
 		bool test_mode
 	) {
 		using namespace fyuu_rhi::execution;
+		TestResourceMapping(device);
 		static constexpr std::array VertexData{
 			0.0f, 0.6f, 1.0f, 0.0f, 0.0f, 0.0f,
 			-0.6f, -0.6f, 0.0f, 1.0f, 0.0f, 0.0f,
@@ -779,22 +906,13 @@ namespace {
 		TestWindow& window,
 		bool test_mode
 	) {
-		bool requested = false;
-		fyuu_rhi::RequestInstance(
-			backend,
-			[&requested, &window, test_mode](fyuu_rhi::Instance instance) {
-				auto physical_devices = instance.EnumeratePhysicalDevices();
-				if (physical_devices.empty()) {
-					throw std::runtime_error("The backend did not expose a physical device");
-				}
-				auto device = physical_devices.front().CreateLogicalDevice();
-				ExecuteTriangle(device, window, test_mode);
-				requested = true;
-			}
-		);
-		if (!requested) {
-			throw std::runtime_error("The backend did not fulfill the instance request");
+		auto& instance = fyuu_rhi::RequestInstance(backend);
+		auto physical_devices = instance.EnumeratePhysicalDevices();
+		if (physical_devices.empty()) {
+			throw std::runtime_error("The backend did not expose a physical device");
 		}
+		auto device = physical_devices.front().CreateLogicalDevice();
+		ExecuteTriangle(device, window, test_mode);
 	}
 
 } // namespace

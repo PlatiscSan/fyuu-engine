@@ -20,6 +20,38 @@ import :resource_dispatch;
 import :view_factory;
 
 namespace fyuu_rhi {
+	template <>
+	struct MapResource<metal::Resource> {
+		metal::Resource* resource;
+
+		static void Unmap(void* context, ResourceDataRange range, bool writable) noexcept {
+			if (!writable) {
+				return;
+			}
+			auto native = static_cast<metal::Resource*>(context);
+			auto const& buffer = std::get<NS::SharedPtr<MTL::Buffer>>(native->impl);
+			buffer->didModifyRange(NS::Range::Make(range.offset, range.size));
+		}
+
+		ResourceMapScope operator()(ResourceDataRange range, bool writable) const {
+			auto buffer = std::get_if<NS::SharedPtr<MTL::Buffer>>(&resource->impl);
+			if (!buffer) {
+				throw std::invalid_argument("A Metal texture cannot be mapped directly");
+			}
+			auto data = static_cast<std::byte*>((*buffer)->contents());
+			if (!data) {
+				throw std::runtime_error("Failed to map a Metal readback buffer");
+			}
+			return ResourceMapScope(
+				resource,
+				data + range.offset,
+				range.offset,
+				range.size,
+				writable,
+				Unmap
+			);
+		}
+	};
 
 	template <>
 	struct CreateBufferView<metal::Resource> {

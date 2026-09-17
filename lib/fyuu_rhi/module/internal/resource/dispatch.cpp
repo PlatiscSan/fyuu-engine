@@ -46,4 +46,15 @@ namespace fyuu_rhi {
 		}
 	};
 
+	template <class NativeResource>
+	struct MapResource {
+		NativeResource* resource;
+
+		ResourceMapScope operator()(ResourceDataRange range, bool writable) const {
+			throw std::runtime_error(
+				"Resource mapping is not implemented for this backend"
+			);
+		}
+	};
+
 } // namespace fyuu_rhi

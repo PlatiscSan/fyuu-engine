@@ -7,6 +7,8 @@ module;
 #include <utility>
 
 #include <cstdint>
+
+#include <span>
 #endif // !defined(__cpp_lib_modules)
 export module fyuu_rhi:resource;
 #if defined(__cpp_lib_modules)
@@ -179,14 +181,6 @@ export namespace fyuu_rhi {
 	/// Thread-safe flag set used to assemble ResourceFlagBits creation contracts.
 	using ResourceFlags = plastic::concurrency::AtomicFlags<ResourceFlagBits>;
 
-	enum class ResourceMapFlagBits : std::uint8_t {
-		Read,
-		Write,
-		Count
-	};
-
-	using ResourceMapFlags = plastic::concurrency::AtomicFlags<ResourceMapFlagBits>;
-
 	/// Byte interval within a buffer.
 	struct ResourceDataRange {
 		std::size_t offset = 0u;
@@ -199,6 +193,60 @@ export namespace fyuu_rhi {
 		std::uint32_t height = 0u;
 		std::uint32_t depth_or_array_layers = 0u;
 		std::uint32_t mip_levels = 0u;
+	};
+
+	class ResourceMapScope {
+	private:
+		void* m_context = nullptr;
+		std::byte* m_data = nullptr;
+		std::size_t m_offset = 0u;
+		std::size_t m_size = 0u;
+		bool m_writable = false;
+		void (*m_unmap)(void*, ResourceDataRange, bool) noexcept = nullptr;
+
+		template <class NativeResource>
+		friend struct MapResource;
+
+		ResourceMapScope(
+			void* context,
+			std::byte* data,
+			std::size_t offset,
+			std::size_t size,
+			bool writable,
+			void (*unmap)(void*, ResourceDataRange, bool) noexcept
+		) noexcept
+			: m_context(context),
+			m_data(data),
+			m_offset(offset),
+			m_size(size),
+			m_writable(writable),
+			m_unmap(unmap) {
+		}
+
+	public:
+		ResourceMapScope(ResourceMapScope const&) = delete;
+		ResourceMapScope& operator=(ResourceMapScope const&) = delete;
+
+		ResourceMapScope(ResourceMapScope&& other) noexcept;
+		ResourceMapScope& operator=(ResourceMapScope&& other) noexcept;
+
+		~ResourceMapScope() noexcept;
+
+		/// Ends the mapping immediately. Calling Reset() again has no effect.
+		void Reset() noexcept;
+
+		/// Returns a read-only view of the mapped byte interval.
+		std::span<std::byte const> Read() noexcept {
+			return { m_data, m_size };
+		}
+
+		/**
+		 * @brief Copies bytes into the mapped interval.
+		 * @param data Bytes copied to the beginning of the mapped interval.
+		 * @throws std::logic_error if the resource was not created as HostVisible.
+		 * @throws std::out_of_range if @p data is larger than the mapped interval.
+		 */
+		void Write(std::span<std::byte const> data);
 	};
 
 	/// Host/buffer layout used by buffer-to-texture and texture-to-buffer copies.
@@ -280,6 +328,16 @@ export namespace fyuu_rhi {
 
 		/// Returns texture dimensions; calling this on a buffer is an error.
 		ResourceTextureExtent GetTextureExtent() const;
+
+		/**
+		 * @brief Maps a host-visible or readback buffer interval.
+		 *
+		 * DeviceReadback mappings expose Read(), while HostVisible mappings expose
+		 * Write(). GPU work using the interval must already be complete. Textures
+		 * must first be copied into a buffer. The returned scope owns the mapping
+		 * and automatically unmaps it on destruction.
+		 */
+		ResourceMapScope Map(ResourceDataRange range);
 
 	};
 

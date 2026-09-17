@@ -88,21 +88,16 @@ fyuu_rhi::InitializeRHIContext(
 );
 ```
 
-Instances are requested through a callback because some platforms create them
-asynchronously:
+`RequestInstance` returns the process-lifetime instance for the selected backend:
 
 ```cpp
-fyuu_rhi::RequestInstance(
-    fyuu_rhi::Backend::Vulkan,
-    [](fyuu_rhi::Instance instance) {
-        auto physical_devices = instance.EnumeratePhysicalDevices();
-        auto const& physical_device = fyuu_rhi::BestPerformance(physical_devices);
-        auto device = physical_device.CreateLogicalDevice();
-        auto scheduler = device.CreateScheduler();
+auto& instance = fyuu_rhi::RequestInstance(fyuu_rhi::Backend::Vulkan);
+auto physical_devices = instance.EnumeratePhysicalDevices();
+auto const& physical_device = fyuu_rhi::BestPerformance(physical_devices);
+auto device = physical_device.CreateLogicalDevice();
+auto scheduler = device.CreateScheduler();
 
-        // Create resources and submit command graphs here.
-    }
-);
+// Create resources and submit command graphs here.
 ```
 
 `PhysicalDevice::GetInfo()` returns the adapter name and type plus optional

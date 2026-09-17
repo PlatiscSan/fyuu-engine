@@ -26,6 +26,34 @@ import :vulkan_memory_allocator;
 import :vulkan_utility;
 
 namespace fyuu_rhi {
+	template <>
+	struct MapResource<vulkan::Resource> {
+		vulkan::Resource* resource;
+
+		static void Unmap(void* context, ResourceDataRange range, bool writable) noexcept {
+			static_cast<vulkan::ManagedAllocation*>(context)->Unmap(
+				range.offset,
+				range.size,
+				writable
+			);
+		}
+
+		ResourceMapScope operator()(ResourceDataRange range, bool writable) const {
+			auto data = resource->allocation.Map(
+				range.offset,
+				range.size,
+				writable
+			);
+			return ResourceMapScope(
+				&resource->allocation,
+				data,
+				range.offset,
+				range.size,
+				writable,
+				Unmap
+			);
+		}
+	};
 
 	template <>
 	struct CreateBufferView<vulkan::Resource> {

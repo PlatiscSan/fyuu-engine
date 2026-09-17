@@ -3,7 +3,6 @@ module;
 #if !defined(__cpp_lib_modules)
 #include <memory>
 #include <vector>
-#include <functional>
 #include <cstdint>
 #include <variant>
 #include <span>
@@ -59,8 +58,8 @@ export namespace fyuu_rhi {
 	/**
 	 * @brief Requests the singleton Instance for @p backend.
 	 * @param backend A value returned by EnumerateBackends().
-	 * @param func Called synchronously with the requested non-owning handle.
+	 * @return A process-lifetime non-owning handle for the requested backend.
 	 */
-	void RequestInstance(Backend backend, std::function<void(Instance)> const& func);
+	Instance& RequestInstance(Backend backend);
 	
 } // namespace fyuu_rhi
