@@ -114,6 +114,40 @@ auto view = texture.CreateTextureView(0u, 1u, 0u, 1u, flags);
 
 View 由资源自身创建，使实现能够在不暴露原生句柄的情况下检查后端和设备归属。缓冲区 View 使用 `CreateBufferView()` 创建。例如，经 `WriteBuffer` 写入的缓冲区必须包含 `CopyDST`；只有 `VertexBuffer` 标志并不足以允许上传。
 
+### 映射缓冲区
+
+`Resource::Map()` 映射一段字节区间，并返回仅移动的
+`ResourceMapScope`。带有 `HostVisible` 标志的缓冲区可以写入，调用
+`ResourceMapScope::Write()` 复制数据即可，不需要持有后端映射指针。带有
+`DeviceReadback` 标志的缓冲区通过 `ResourceMapScope::Read()` 读取。
+
+```cpp
+fyuu_rhi::ResourceFlags upload_flags;
+upload_flags.Set(fyuu_rhi::ResourceFlagBits::HostVisible);
+upload_flags.Set(fyuu_rhi::ResourceFlagBits::CopySRC);
+auto upload = device.CreateBuffer(data.size(), upload_flags);
+
+{
+    auto mapping = upload.Map({ 0u, data.size() });
+    mapping.Write(std::as_bytes(std::span(data)));
+} // 在这里自动解除映射。
+```
+
+映射期间，GPU 不能同时读写该区间。映射回读缓冲区前，应先等待对应命令图完成。
+纹理不能直接映射；需要先将目标区域复制到带有 `DeviceReadback` 标志的缓冲区，
+再读取该缓冲区。
+
+```cpp
+auto mapping = readback.Map({ 0u, byte_count });
+auto bytes = mapping.Read();
+Consume(bytes);
+mapping.Reset(); // 可以提前解除映射；不调用时由析构函数自动完成。
+```
+
+`Write()` 会拒绝只读映射以及大于映射区间的数据。`Reset()` 可以重复调用；
+已经移动或已经重置的 Scope 不再持有映射。映射有效期间，对应的 `Resource`
+必须保持存活。
+
 ## Shader、Pipeline 与资源组
 
 管线通过 Slang 程序描述符接收 Shader。FyuuRHI 会编译其中声明的模块，并通过反射得到资源接口。创建图形管线时，还需要描述顶点输入、图元拓扑、光栅化、多重采样、深度模板、混合和附件格式。

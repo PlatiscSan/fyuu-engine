@@ -134,6 +134,41 @@ be checked without exposing native handles. Use `CreateBufferView()` for
 buffers. A buffer written by `WriteBuffer`, for example, must include
 `CopyDST`; `VertexBuffer` alone does not permit an upload.
 
+### Mapping buffers
+
+`Resource::Map()` maps a byte interval and returns a move-only
+`ResourceMapScope`. A `HostVisible` buffer is writable; pass bytes to
+`ResourceMapScope::Write()` instead of retaining a backend mapping pointer.
+A `DeviceReadback` buffer is readable through `ResourceMapScope::Read()`.
+
+```cpp
+fyuu_rhi::ResourceFlags upload_flags;
+upload_flags.Set(fyuu_rhi::ResourceFlagBits::HostVisible);
+upload_flags.Set(fyuu_rhi::ResourceFlagBits::CopySRC);
+auto upload = device.CreateBuffer(data.size(), upload_flags);
+
+{
+    auto mapping = upload.Map({ 0u, data.size() });
+    mapping.Write(std::as_bytes(std::span(data)));
+} // Automatically unmaps here.
+```
+
+GPU work that reads or writes the interval must not overlap the mapping. Wait
+for the command graph completion before mapping a readback buffer. Textures
+cannot be mapped directly: copy the required texture region into a
+`DeviceReadback` buffer first, then read the buffer.
+
+```cpp
+auto mapping = readback.Map({ 0u, byte_count });
+auto bytes = mapping.Read();
+Consume(bytes);
+mapping.Reset(); // Optional early unmap; destruction is otherwise sufficient.
+```
+
+`Write()` rejects readback mappings and data larger than the mapped interval.
+`Reset()` is idempotent, and a moved-from or already reset scope owns no active
+mapping. The `Resource` must outlive its active mapping scope.
+
 ## Shaders, pipelines, and resource groups
 
 Pipelines receive Slang program descriptors. FyuuRHI compiles the declared
