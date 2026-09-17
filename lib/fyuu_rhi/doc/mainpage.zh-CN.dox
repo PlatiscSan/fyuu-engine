@@ -38,8 +38,13 @@ fyuu_rhi::InitializeRHIContext(
 @section instance Instance
 
 fyuu_rhi::EnumerateBackends 返回当前构建实际包含的后端。把其中一个值传给
-fyuu_rhi::RequestInstance；回调收到的 fyuu_rhi::Instance 是 RHI 所保留单例状态的
-非 owning 句柄。
+fyuu_rhi::RequestInstance；函数会直接返回 fyuu_rhi::Instance 引用。该引用指向由
+FyuuRHI 保留至进程结束的单例状态。
+
+@code
+auto& instance = fyuu_rhi::RequestInstance(fyuu_rhi::Backend::Vulkan);
+auto physical_devices = instance.EnumeratePhysicalDevices();
+@endcode
 
 - EnumeratePhysicalDevices() 返回该后端可用的适配器。
 - ShareContextOnThisThread() 只对 OpenGL 有实际作用；额外线程执行 OpenGL 工作前调用。
