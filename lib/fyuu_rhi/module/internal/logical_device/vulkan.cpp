@@ -225,8 +225,8 @@ namespace {
 			std::back_inserter(result.constant_ranges),
 			[](auto const& range) {
 				return vulkan::Pipeline::ConstantRange{
-					.slot = range.slot,
-					.space = range.space,
+					.abi_slot = range.abi_slot,
+					.abi_space = range.abi_space,
 					.offset = range.offset,
 					.size = range.size,
 					.stages = ShaderStages(range.visibility)

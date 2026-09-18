@@ -1041,6 +1041,9 @@ namespace fyuu_rhi::opengl {
 		void BindPipelineState(Submission::PipelineSnapshot const& value) {
 			glUseProgram(value.impl);
 			pipeline = &value;
+			// GL binding units are global state and two pipelines can assign the same unit to
+			// different ranges, so a pipeline switch must re-establish the incoming
+			// pipeline's constant ranges.
 			std::ranges::for_each(
 				constants,
 				[&](auto const& constant) {
@@ -1461,15 +1464,17 @@ namespace fyuu_rhi::opengl {
 					"OpenGL pipeline constants require a bound pipeline"
 				);
 			}
+			// Resolved against the pipeline bound earlier in this command list, not the one
+			// bound at draw time: SetPipelineConstants must follow its BindPipeline.
 			auto range = std::ranges::find_if(
 				pipeline->constant_ranges,
 				[&](auto const& candidate) {
-					return candidate.slot == value.slot && candidate.space == value.space;
+					return candidate.abi_slot == value.slot && candidate.abi_space == value.space;
 				}
 			);
 			if (range == pipeline->constant_ranges.end()) {
 				throw std::invalid_argument(
-					"OpenGL pipeline has no matching immediate-constant range"
+					"OpenGL pipeline has no matching pipeline-constant range"
 				);
 			}
 			if (
@@ -1477,7 +1482,7 @@ namespace fyuu_rhi::opengl {
 				value.data.size() > range->size - value.offset
 			) {
 				throw std::out_of_range(
-					"OpenGL immediate-constant write exceeds its reflected range"
+					"OpenGL pipeline-constant write exceeds its reflected range"
 				);
 			}
 			auto state = std::ranges::find_if(

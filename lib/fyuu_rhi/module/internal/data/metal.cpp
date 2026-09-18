@@ -94,8 +94,8 @@ namespace fyuu_rhi::metal {
 
 	struct Pipeline {
 		struct ConstantRange {
-			std::uint32_t slot;
-			std::uint32_t space;
+			std::uint32_t abi_slot;
+			std::uint32_t abi_space;
 			std::uint32_t offset;
 			std::uint32_t size;
 			std::uint32_t visibility;

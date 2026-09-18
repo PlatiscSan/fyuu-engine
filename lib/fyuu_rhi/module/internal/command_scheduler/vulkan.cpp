@@ -1136,18 +1136,20 @@ namespace {
 			if (!pipeline) {
 				throw std::logic_error("Vulkan pipeline constants require a bound pipeline");
 			}
+			// Resolved against the pipeline bound earlier in this command list, not the one
+			// bound at draw time: SetPipelineConstants must follow its BindPipeline.
 			auto range =
 			    std::ranges::find_if(pipeline->constant_ranges, [&value](auto const& candidate) {
-				    return candidate.slot == value.slot && candidate.space == value.space;
+				    return candidate.abi_slot == value.slot && candidate.abi_space == value.space;
 			    });
 			if (range == pipeline->constant_ranges.end()) {
 				throw std::invalid_argument(
-				    "Vulkan pipeline has no matching immediate-constant range"
+				    "Vulkan pipeline has no matching pipeline-constant range"
 				);
 			}
 			if (value.offset > range->size || value.data.size() > range->size - value.offset) {
 				throw std::out_of_range(
-				    "Vulkan immediate-constant write exceeds its reflected range"
+				    "Vulkan pipeline-constant write exceeds its reflected range"
 				);
 			}
 			commands.pushConstants(

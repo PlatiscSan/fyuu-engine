@@ -242,7 +242,7 @@ export namespace fyuu_rhi::execution {
 		std::vector<std::size_t> additional_buffer_offsets;
 	};
 
-	/// Updates one reflected immediate-constant range of the currently bound
+	/// Updates one reflected pipeline-constant range of the currently bound
 	/// graphics or compute pipeline. Offset is relative to the beginning of the
 	/// range identified by slot and space. Data and offset are four-byte aligned
 	/// so every backend observes the same write granularity.

@@ -392,7 +392,7 @@ namespace {
 	}
 
 	/// Builds the pipeline's GL binding-unit table: one unit per reflected
-	/// resource binding and one per immediate-constant range, all drawn from the
+	/// resource binding and one per pipeline-constant range, all drawn from the
 	/// same counter so a logical (space, slot) pair is unique across every kind
 	/// of binding. OpenGL is a single flat binding namespace, so this table is
 	/// the single source of truth the generated GLSL and the command scheduler
@@ -437,7 +437,7 @@ namespace {
 			interface.push_constants,
 			[&](auto const& range) {
 				constants.push_back(
-					opengl::BindingKey{ range.space, range.slot, 1u }
+					opengl::BindingKey{ range.abi_space, range.abi_slot, 1u }
 				);
 			}
 		);
@@ -584,7 +584,7 @@ namespace {
 		std::ranges::for_each(resources.atomic_counters, remap);
 		if (resources.push_constant_buffers.size() > constant_ranges.size()) {
 			throw std::runtime_error(
-				"OpenGL shader exposes an unmatched immediate-constant block"
+				"OpenGL shader exposes an unmatched pipeline-constant block"
 			);
 		}
 		std::ranges::for_each(
@@ -712,7 +712,7 @@ namespace {
 	) {
 		if (interface.push_constants.size() != units.size()) {
 			throw std::logic_error(
-				"OpenGL immediate constants were not assigned binding units"
+				"OpenGL pipeline constants were not assigned binding units"
 			);
 		}
 		std::vector<opengl::Pipeline::ConstantRange> result;
@@ -723,8 +723,8 @@ namespace {
 			[&](std::size_t index) {
 				auto const& range = interface.push_constants[index];
 				return opengl::Pipeline::ConstantRange{
-					.slot = range.slot,
-					.space = range.space,
+					.abi_slot = range.abi_slot,
+					.abi_space = range.abi_space,
 					.unit = units[index].unit,
 					.offset = range.offset,
 					.size = range.size,
@@ -1144,7 +1144,7 @@ namespace fyuu_rhi {
 				!GLAD_GL_ARB_shader_storage_buffer_object
 			) {
 				throw std::runtime_error(
-					"OpenGL immediate constants require OpenGL 4.3 or OpenGL ES 3.1"
+					"OpenGL pipeline constants require OpenGL 4.3 or OpenGL ES 3.1"
 				);
 			}
 

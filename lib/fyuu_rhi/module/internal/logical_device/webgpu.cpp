@@ -49,8 +49,8 @@ namespace {
 			std::back_inserter(result),
 			[index = std::uint32_t{ 0u }](auto const& range) mutable {
 				return webgpu::Pipeline::ConstantRange{
-					.slot = range.slot,
-					.space = range.space,
+					.abi_slot = range.abi_slot,
+					.abi_space = range.abi_space,
 					.offset = range.offset,
 					.size = range.size,
 					.binding = index++
@@ -62,7 +62,7 @@ namespace {
 
 	std::string ShaderSource(
 		shader::SlangCompiledEntryPoint const& entry,
-		bool has_immediate_constants,
+		bool has_pipeline_constants,
 		bool native_immediates,
 		std::uint32_t constant_group
 	) {
@@ -70,10 +70,13 @@ namespace {
 			reinterpret_cast<char const*>(entry.code.data()),
 			entry.code.size()
 		);
-		if (!has_immediate_constants) {
+		if (!has_pipeline_constants) {
 			return result;
 		}
 
+		// The rewrite must use a bind group no resource group occupies, and its binding
+		// number must equal the `.binding` MakeConstantRanges gave the same range, or the
+		// constant block binds another range's buffer.
 		constexpr std::string_view source = "\nvar<uniform>";
 		std::size_t position = 0u;
 		std::uint32_t binding = 0u;
@@ -349,9 +352,9 @@ namespace fyuu_rhi {
 				descriptor.program,
 				"webgpu-wgsl"
 			);
-			bool has_immediate_constants = !program.GetInterface().push_constants.empty();
+			bool has_pipeline_constants = !program.GetInterface().push_constants.empty();
 			bool native_immediates =
-				has_immediate_constants &&
+				has_pipeline_constants &&
 				logical_device->instance.HasWGSLLanguageFeature(
 					wgpu::WGSLLanguageFeatureName::ImmediateAddressSpace
 				);
@@ -377,7 +380,7 @@ namespace fyuu_rhi {
 					}
 					auto source_code = ShaderSource(
 						entry,
-						has_immediate_constants,
+						has_pipeline_constants,
 						native_immediates,
 						constant_group
 					);
@@ -565,7 +568,7 @@ namespace fyuu_rhi {
 			);
 			std::vector<wgpu::BindGroupLayout> bind_group_layouts;
 			auto bind_group_count = BindGroupCount(program.GetInterface()) +
-				(has_immediate_constants && !native_immediates ? 1u : 0u);
+				(has_pipeline_constants && !native_immediates ? 1u : 0u);
 			bind_group_layouts.reserve(bind_group_count);
 			std::ranges::transform(
 				std::views::iota(0u, bind_group_count),
@@ -599,9 +602,9 @@ namespace fyuu_rhi {
 				descriptor.program,
 				"webgpu-wgsl"
 			);
-			bool has_immediate_constants = !program.GetInterface().push_constants.empty();
+			bool has_pipeline_constants = !program.GetInterface().push_constants.empty();
 			bool native_immediates =
-				has_immediate_constants &&
+				has_pipeline_constants &&
 				logical_device->instance.HasWGSLLanguageFeature(
 					wgpu::WGSLLanguageFeatureName::ImmediateAddressSpace
 				);
@@ -619,7 +622,7 @@ namespace fyuu_rhi {
 			auto const& entry = program.GetEntryPoints().front();
 			auto source_code = ShaderSource(
 				entry,
-				has_immediate_constants,
+				has_pipeline_constants,
 				native_immediates,
 				constant_group
 			);
@@ -647,7 +650,7 @@ namespace fyuu_rhi {
 			);
 			std::vector<wgpu::BindGroupLayout> bind_group_layouts;
 			auto bind_group_count = BindGroupCount(program.GetInterface()) +
-				(has_immediate_constants && !native_immediates ? 1u : 0u);
+				(has_pipeline_constants && !native_immediates ? 1u : 0u);
 			bind_group_layouts.reserve(bind_group_count);
 			std::ranges::transform(
 				std::views::iota(0u, bind_group_count),

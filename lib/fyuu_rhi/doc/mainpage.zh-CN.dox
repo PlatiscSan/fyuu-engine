@@ -150,7 +150,7 @@ Node::Record 按顺序追加命令。Access 声明必须真实覆盖节点内的
   和 depth/stencil 必须完整描述。
 - BindPipeline：绑定已注册图形或计算管线。
 - BindResourceGroup：绑定相同 space 的资源组，并可提供动态 buffer 附加偏移。
-- SetPipelineConstants：写入当前管线反射出的立即常量范围；slot/space 选择范围，offset
+- SetPipelineConstants：写入当前管线反射出的管线常量范围；slot/space 选择范围，offset
   相对该范围起点，offset 与 data 长度均按四字节对齐。
 - BindVertexBuffer / BindIndexBuffer：指定 buffer 槽、stride/type 和基础 offset。
 - Viewport / Scissor：设置光栅化范围；Viewport::clip_space 指明应用的 NDC Y 方向。

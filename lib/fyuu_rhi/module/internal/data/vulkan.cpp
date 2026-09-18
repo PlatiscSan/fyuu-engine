@@ -359,8 +359,8 @@ namespace fyuu_rhi::vulkan {
 
 	struct Pipeline {
 		struct ConstantRange {
-			std::uint32_t slot;
-			std::uint32_t space;
+			std::uint32_t abi_slot;
+			std::uint32_t abi_space;
 			std::uint32_t offset;
 			std::uint32_t size;
 			vk::ShaderStageFlags stages;

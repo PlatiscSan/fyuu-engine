@@ -323,26 +323,26 @@ namespace fyuu_rhi::opengl {
 	struct BindingUnits {
 		/// One entry per reflected resource binding, in reflection order.
 		std::vector<BindingUnit> bindings;
-		/// One entry per immediate-constant range, in reflection order.
+		/// One entry per pipeline-constant range, in reflection order.
 		std::vector<BindingUnit> constants;
 	};
 
 	/// Assigns every logical binding a unique GL binding unit.
 	///
 	/// OpenGL numbers uniform buffers, storage buffers, sampled textures, images,
-	/// samplers and immediate-constant blocks in one flat namespace of binding
+	/// samplers and pipeline-constant blocks in one flat namespace of binding
 	/// points, and the generated GLSL can only name that number
 	/// (`layout(binding = N)`, or the matching texture/image unit). The pipeline
 	/// ABI identifies a binding by (space, slot), which GLSL cannot express, so
 	/// using the raw slot as the unit aliases every binding that shares a slot
-	/// across spaces - including an immediate-constant block, which owns a slot
+	/// across spaces - including a pipeline-constant block, which owns a slot
 	/// in every space it may be declared against.
 	///
 	/// This is the single place the (space, slot) -> unit mapping is computed.
 	/// Every key takes the next free unit in order and reserves `count`
 	/// consecutive units (one per array element), so array bindings keep their
 	/// GLSL array-of-units layout and no two logical bindings collide, whatever
-	/// their kind. Immediate-constant ranges are allocated after the resource
+	/// their kind. Pipeline-constant ranges are allocated after the resource
 	/// bindings so they can never land on a resource binding's unit.
 	BindingUnits AssignBindingUnits(
 		std::span<BindingKey const> bindings,
@@ -439,8 +439,8 @@ namespace fyuu_rhi::opengl {
 		};
 
 		struct ConstantRange {
-			std::uint32_t slot;
-			std::uint32_t space;
+			std::uint32_t abi_slot;
+			std::uint32_t abi_space;
 			/// GL binding unit emulating the range as a uniform buffer.
 			std::uint32_t unit;
 			std::uint32_t offset;

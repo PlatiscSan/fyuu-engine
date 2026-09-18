@@ -273,8 +273,8 @@ namespace {
 			std::back_inserter(result),
 			[](auto const& range) {
 				return metal::Pipeline::ConstantRange{
-					.slot = range.slot,
-					.space = range.space,
+					.abi_slot = range.abi_slot,
+					.abi_space = range.abi_space,
 					.offset = range.offset,
 					.size = range.size,
 					.visibility = range.visibility

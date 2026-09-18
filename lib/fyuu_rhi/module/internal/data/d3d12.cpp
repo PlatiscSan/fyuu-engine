@@ -171,8 +171,8 @@ namespace fyuu_rhi::d3d12 {
 
 	struct Pipeline {
 		struct ConstantRange {
-			std::uint32_t slot;
-			std::uint32_t space;
+			std::uint32_t abi_slot;
+			std::uint32_t abi_space;
 			std::uint32_t root_parameter;
 			std::uint32_t size;
 		};

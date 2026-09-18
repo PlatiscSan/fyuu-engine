@@ -21,11 +21,11 @@ endif()
 #   early     resource group and vertex buffer bound before the render scope opens
 #   zeroz     gl_Position.z = 0, the near plane of the engine's [0, 1] depth convention, which a
 #             clip-space fixup re-mapping the range would clip away
-#   pushcolor immediate constants multiplied into the fragment colour, so a backend that drops
+#   pushcolor pipeline constants multiplied into the fragment colour, so a backend that drops
 #             SetPipelineConstants (an aliased OpenGL binding unit, say) draws the wrong pixel
 #   pushcolor_space0
-#             the same immediate-constant check with the user uniform buffer in space 0, where
-#             D3D12 used to declare the emulated immediate-constant range on top of the user's
+#             the same pipeline-constant check with the user uniform buffer in space 0, where
+#             D3D12 used to declare the emulated pipeline-constant range on top of the user's
 #             own CBV register (b0, space0) and fail root signature serialization
 set(draw_probe_modes hello early zeroz pushcolor pushcolor_space0)
 

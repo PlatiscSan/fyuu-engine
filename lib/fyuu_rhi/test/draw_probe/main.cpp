@@ -220,21 +220,21 @@ namespace {
 				return object.color * input.color;
 			}
 		)";
-		// Adds an immediate-constant (push constant) range on top of the two-attribute layout, so
+		// Adds a pipeline-constant (push constant) range on top of the two-attribute layout, so
 		// SetPipelineConstants is exercised in the same command position HelloTriangle uses it.
-		// The uniform buffer sits in space 1, the shape the engine actually uses. The immediate
-		// block is deliberately left unpinned here: Slang assigns an unpinned block the next free
-		// CBV register in space 0, which only avoids a user binding at (b0, space0) because this
-		// shader's user binding is in space 1. The "pushcolor_space0" mode below is the same check
-		// with the uniform buffer in space 0.
+		// The uniform buffer sits in space 1, the shape the engine actually uses. The
+		// pipeline-constant block is deliberately left unpinned here: Slang assigns an unpinned
+		// block the next free CBV register in space 0, which only avoids a user binding at
+		// (b0, space0) because this shader's user binding is in space 1. The "pushcolor_space0"
+		// mode below is the same check with the uniform buffer in space 0.
 		// The fragment output is the product of all three colours, which lets the "pushcolor" mode
 		// pick values whose product is a pixel no other data path (clear, uniform alone, or the
 		// single-colour shaders) can produce.
 		constexpr char push_shader[] = R"(
 			struct Uniform { float4 color; };
 			[[vk::binding(0, 1)]] ConstantBuffer<Uniform> object : register(b0, space1);
-			struct Immediate { float4 color; };
-			[[vk::push_constant]] ConstantBuffer<Immediate> immediate;
+			struct PipelineConstant { float4 color; };
+			[[vk::push_constant]] ConstantBuffer<PipelineConstant> pipeline_constant;
 			struct VertexOutput {
 				float4 position : SV_Position;
 				float4 color : COLOR0;
@@ -248,19 +248,19 @@ namespace {
 			}
 			[shader("fragment")]
 			float4 fragment_main(VertexOutput input) : SV_Target0 {
-				return object.color * immediate.color * input.color;
+				return object.color * pipeline_constant.color * input.color;
 			}
 		)";
-		// The same immediate-constant check with the user uniform buffer in space 0. The user's CBV
-		// then sits at register (b0, space0), the register the emulated immediate-constant range
+		// The same pipeline-constant check with the user uniform buffer in space 0. The user's CBV
+		// then sits at register (b0, space0), the register the emulated pipeline-constant range
 		// used to be declared at, and the block is left unpinned exactly like "pushcolor": the
 		// backend must follow the register Slang actually assigns the block (here cb1, space0)
 		// instead of the shader having to declare it.
 		constexpr char push_space0_shader[] = R"(
 			struct Uniform { float4 color; };
 			[[vk::binding(0, 0)]] ConstantBuffer<Uniform> object : register(b0, space0);
-			struct Immediate { float4 color; };
-			[[vk::push_constant]] ConstantBuffer<Immediate> immediate;
+			struct PipelineConstant { float4 color; };
+			[[vk::push_constant]] ConstantBuffer<PipelineConstant> pipeline_constant;
 			struct VertexOutput {
 				float4 position : SV_Position;
 				float4 color : COLOR0;
@@ -274,7 +274,7 @@ namespace {
 			}
 			[shader("fragment")]
 			float4 fragment_main(VertexOutput input) : SV_Target0 {
-				return object.color * immediate.color * input.color;
+				return object.color * pipeline_constant.color * input.color;
 			}
 		)";
 		auto const& shader = push_constants
@@ -383,7 +383,7 @@ namespace {
 		auto const group_binding = builder.RegisterResourceGroup();
 
 		auto upload = builder.CreateNode(QueueType::Transfer);
-		// "pushcolor" multiplies this uniform colour by the immediate-constant colour, so the two
+		// "pushcolor" multiplies this uniform colour by the pipeline-constant colour, so the two
 		// are deliberately different from every other mode's values.
 		std::array const fragment_color = push_constants
 			? std::array{ 0.8f, 0.4f, 0.0f, 1.0f }
@@ -446,18 +446,18 @@ namespace {
 			.Record(Viewport{ 0.0f, 0.0f, float(TargetWidth), float(TargetHeight) })
 			.Record(Scissor{ 0, 0, TargetWidth, TargetHeight });
 		if (push_constants) {
-			std::array const immediate_color{ 0.5f, 0.5f, 0.5f, 1.0f };
-			auto const* immediate_bytes =
-				reinterpret_cast<std::byte const*>(immediate_color.data());
-			// Both push shaders leave the immediate block unpinned, so it reflects under the same
+			std::array const pipeline_constant_color{ 0.5f, 0.5f, 0.5f, 1.0f };
+			auto const* pipeline_constant_bytes =
+				reinterpret_cast<std::byte const*>(pipeline_constant_color.data());
+			// Both push shaders leave the pipeline-constant block unpinned, so it reflects under the same
 			// backend-neutral ABI identity in every mode and on every backend.
 			draw.Record(SetPipelineConstants{
 				.slot = 0u,
 				.space = 0u,
 				.offset = 0u,
 				.data = std::vector<std::byte>{
-					immediate_bytes,
-					immediate_bytes + sizeof(immediate_color)
+					pipeline_constant_bytes,
+					pipeline_constant_bytes + sizeof(pipeline_constant_color)
 				}
 			});
 		}
@@ -527,15 +527,15 @@ namespace {
 		auto const bytes = mapping.Read();
 		std::size_t red = 0u;
 		std::size_t non_black = 0u;
-		// Product of the uniform colour (0.8, 0.4, 0.0), the immediate-constant colour
+		// Product of the uniform colour (0.8, 0.4, 0.0), the pipeline-constant colour
 		// (0.5, 0.5, 0.5) and the vertex colour (1, 0, 0) after the 8-bit UNORM round trip:
 		// (0.4, 0.0, 0.0) -> (102, 0, 0). Every prefix of that chain is a different pixel — the
-		// uniform alone is (204, 102, 0), uniform times immediate is (102, 51, 0), and uniform
-		// times vertex colour is (204, 0, 0) — so a red channel of exactly 102 cannot be produced
-		// unless the immediate-constant data actually reached the fragment shader.
-		std::size_t immediate = 0u;
+		// uniform alone is (204, 102, 0), uniform times the pipeline constant is (102, 51, 0), and
+		// uniform times vertex colour is (204, 0, 0) — so a red channel of exactly 102 cannot be
+		// produced unless the pipeline-constant data actually reached the fragment shader.
+		std::size_t pipeline_pixels = 0u;
 		// The first shaded pixel, so a failing mode reports what it actually drew instead of only
-		// that it failed to match: the difference between "the immediate constant never arrived"
+		// that it failed to match: the difference between "the pipeline constant never arrived"
 		// and "it arrived mis-scaled" is one glance at this triple.
 		std::array<int, 3> sample{ -1, -1, -1 };
 		for (std::uint32_t y = 0u; y < TargetHeight; ++y) {
@@ -554,7 +554,7 @@ namespace {
 					}
 				}
 				if (r >= 99 && r <= 105 && g <= 6 && b <= 6) {
-					++immediate;
+					++pipeline_pixels;
 				}
 			}
 		}
@@ -563,7 +563,7 @@ namespace {
 			<< " total=" << total
 			<< " (" << (100.0 * static_cast<double>(red) / static_cast<double>(total)) << "%)";
 		if (push_constants) {
-			std::cout << " immediate=" << immediate << " expected=(102, 0, 0)";
+			std::cout << " pipeline=" << pipeline_pixels << " expected=(102, 0, 0)";
 		}
 		std::cout << " sample=(" << sample[0] << ", " << sample[1] << ", " << sample[2] << ")";
 		std::cout << std::endl;
@@ -571,9 +571,9 @@ namespace {
 			if (non_black == 0u) {
 				throw std::runtime_error("the draw produced no shaded pixels");
 			}
-			if (immediate == 0u) {
+			if (pipeline_pixels == 0u) {
 				throw std::runtime_error(
-					"the immediate-constant colour did not reach the fragment shader"
+					"the pipeline-constant colour did not reach the fragment shader"
 				);
 			}
 		}
@@ -594,7 +594,7 @@ namespace {
 int main(int argc, char** argv) try {
 	auto const name = argc > 1 ? std::string_view{ argv[1] } : std::string_view{ "opengl" };
 	auto const mode = argc > 2 ? std::string_view{ argv[2] } : std::string_view{ "simple" };
-	// "pushcolor" is the immediate-constant check: it feeds a meaningful push-constant colour and
+	// "pushcolor" is the pipeline-constant check: it feeds a meaningful push-constant colour and
 	// requires the multiply to reach the fragment shader, so a backend that silently drops
 	// SetPipelineConstants fails instead of reporting the uniform colour.
 	//
@@ -602,8 +602,8 @@ int main(int argc, char** argv) try {
 	// such a mode passes exactly when the constants are dropped, which makes it a trap rather than
 	// a test. Its diagnostic value ("the frame shows the uniform colour, so the constants never
 	// arrived") is reported by "pushcolor" anyway, together with the actual pixel.
-	// "pushcolor_space0" is the same immediate-constant check with the user uniform buffer in
-	// space 0, where the emulated immediate-constant range used to be declared on top of the
+	// "pushcolor_space0" is the same pipeline-constant check with the user uniform buffer in
+	// space 0, where the emulated pipeline-constant range used to be declared on top of the
 	// user's CBV register (b0, space0) and failed root signature serialization on D3D12. It is
 	// the regression test for declaring the range at the register Slang actually assigns.
 	auto const uniform_space_zero = mode == "pushcolor_space0";

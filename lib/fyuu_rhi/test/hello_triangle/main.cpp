@@ -397,11 +397,11 @@ namespace {
 			[[vk::binding(0, 1)]]
 			ConstantBuffer<DynamicConstants> dynamic_constants : register(b0, space1);
 
-			struct ImmediateConstants {
+			struct PipelineConstants {
 				float4 color_scale;
 			};
 			[[vk::push_constant]]
-			ConstantBuffer<ImmediateConstants> immediate_constants;
+			ConstantBuffer<PipelineConstants> pipeline_constants;
 
 			struct VertexOutput {
 				float4 position : SV_Position;
@@ -416,13 +416,13 @@ namespace {
 			}
 			[shader("fragment")]
 			float4 fragment_main(VertexOutput input) : SV_Target0 {
-				return input.color * immediate_constants.color_scale *
+				return input.color * pipeline_constants.color_scale *
 					dynamic_constants.color_scale;
 			}
 		)";
 		static const std::array modules{
 			SlangPipelineProgramDescriptor::Module{
-				"hello_triangle_immediate_constants",
+				"hello_triangle_pipeline_constants",
 				ShaderSource
 			}
 		};

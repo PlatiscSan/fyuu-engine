@@ -738,15 +738,17 @@ namespace {
 					"D3D12 pipeline constants require a bound pipeline"
 				);
 			}
+			// Resolved against the pipeline bound earlier in this command list, not the one
+			// bound at draw time: SetPipelineConstants must follow its BindPipeline.
 			auto range = std::ranges::find_if(
 				pipeline->constant_ranges,
 				[&value](auto const& candidate) {
-					return candidate.slot == value.slot && candidate.space == value.space;
+					return candidate.abi_slot == value.slot && candidate.abi_space == value.space;
 				}
 			);
 			if (range == pipeline->constant_ranges.end()) {
 				throw std::invalid_argument(
-					"D3D12 pipeline has no matching immediate-constant range"
+					"D3D12 pipeline has no matching pipeline-constant range"
 				);
 			}
 			if (
@@ -754,7 +756,7 @@ namespace {
 				value.data.size() > range->size - value.offset
 			) {
 				throw std::out_of_range(
-					"D3D12 immediate-constant write exceeds its reflected range"
+					"D3D12 pipeline-constant write exceeds its reflected range"
 				);
 			}
 

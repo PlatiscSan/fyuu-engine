@@ -165,7 +165,7 @@ synchronization from them.
   depth/stencil attachment.
 - BindPipeline selects a registered graphics or compute pipeline.
 - BindResourceGroup selects a matching space and optional dynamic buffer offsets.
-- SetPipelineConstants writes one reflected immediate-constant range. slot and
+- SetPipelineConstants writes one reflected pipeline-constant range. slot and
   space select the range; offset is relative to its start; offset and data size
   are four-byte aligned.
 - BindVertexBuffer / BindIndexBuffer select buffers and their stride/type and

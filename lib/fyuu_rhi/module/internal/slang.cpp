@@ -75,15 +75,20 @@ namespace fyuu_rhi::pipeline {
 		std::uint32_t location = 0;
 	};
 
+	/// Slang and Vulkan call this block a *push constant*; the engine API calls it
+	/// a *pipeline constant* (`SetPipelineConstants`). Every backend emulates it
+	/// differently: Vulkan natively (`vk::PushConstantRange`), D3D12 as a
+	/// root-signature `32BIT_CONSTANTS` range, OpenGL as a uniform buffer, and
+	/// WebGPU as a bind-group binding.
 	struct SlangPipelinePushConstantRange {
 		std::uint32_t offset = 0;
 		std::uint32_t size = 0;
-		/// Backend-neutral ABI identity of the range. Backends match
-		/// SetPipelineConstants against this and it is deliberately identical
-		/// across targets: the reflection layout reports the immediate-constant
-		/// block's PushConstantBuffer binding, which is not a hardware register.
-		std::uint32_t slot = 0;
-		std::uint32_t space = 0;
+		/// Backend-neutral ABI identity, not a register: a resource binding's
+		/// `slot`/`space` is the register itself, but a pipeline-constant range is
+		/// matched to SetPipelineConstants by this pair alone (the SPIR-V layout's
+		/// PushConstantBuffer binding). The bytecode register is below.
+		std::uint32_t abi_slot = 0;
+		std::uint32_t abi_space = 0;
 		/// The CBV register the compiled bytecode of the active target reads the
 		/// block from. Slang assigns this per target, so it must come from that
 		/// target's own layout; D3D12 declares its root-signature
@@ -177,7 +182,7 @@ namespace fyuu_rhi::shader {
 	private:
 		/// Bumped whenever the on-disk cache format changes; older entries are
 		/// ignored instead of being parsed with a mismatched schema. Version 7
-		/// added the immediate-constant register fields to the interface, so
+		/// added the pipeline-constant register fields to the interface, so
 		/// entries written before that would restore a root signature at the
 		/// placeholder register.
 		static constexpr std::uint32_t CACHE_SCHEMA_VERSION = 7u;
@@ -462,8 +467,8 @@ namespace fyuu_rhi::shader {
 					{
 						{ "offset", range.offset },
 						{ "size", range.size },
-						{ "binding", range.slot },
-						{ "space", range.space },
+						{ "binding", range.abi_slot },
+						{ "space", range.abi_space },
 						{ "register_binding", range.register_slot },
 						{ "register_space", range.register_space },
 						{ "visibility", range.visibility }
@@ -749,8 +754,8 @@ namespace fyuu_rhi::shader {
 				if (std::string_view(candidate->getName()) != std::string_view(name)) {
 					continue;
 				}
-				slot = CheckedUint32(candidate->getBindingIndex(), "immediate-constant register");
-				space = CheckedUint32(candidate->getBindingSpace(), "immediate-constant register space");
+				slot = CheckedUint32(candidate->getBindingIndex(), "pipeline-constant register");
+				space = CheckedUint32(candidate->getBindingSpace(), "pipeline-constant register space");
 				return true;
 			}
 			return false;
@@ -763,7 +768,7 @@ namespace fyuu_rhi::shader {
 		// `layout` is the backend-neutral SPIR-V reflection layout, which is what
 		// defines the ABI. `native_layout` is the layout of the target actually
 		// being compiled; it is only consulted for the register of an
-		// immediate-constant block, because a push constant has no register in the
+		// pipeline-constant block, because a push constant has no register in the
 		// SPIR-V layout and Slang assigns the register per target.
 		static SlangPipelineInterface ReflectInterface(
 			slang::ProgramLayout* layout,
@@ -1207,9 +1212,9 @@ namespace fyuu_rhi::shader {
 			// raw JSON dump preserved for tooling/debugging.
 			// Interface reflection always uses the auxiliary SPIR-V layout. Slang's
 			// DXIL, GLSL, WGSL, and MSL layouts erase Vulkan push-constant categories,
-			// while SPIR-V preserves the backend-independent immediate-constant intent.
+			// while SPIR-V preserves the backend-independent pipeline-constant intent.
 			// The native layout of the compiled target is consulted in addition, for
-			// the register an immediate-constant block is actually read from.
+			// the register a pipeline-constant block is actually read from.
 			auto reflection = linked_program->getLayout(1, diagnostics.writeRef());
 			if (!reflection) {
 				Check(SLANG_FAIL, diagnostics, "Reflecting Slang program");

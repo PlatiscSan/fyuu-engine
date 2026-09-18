@@ -280,18 +280,20 @@ namespace fyuu_rhi::webgpu {
 			if (!pipeline) {
 				throw std::logic_error("WebGPU pipeline constants require a bound pipeline");
 			}
+			// Resolved against the pipeline bound earlier in this command list, not the one
+			// bound at draw time: SetPipelineConstants must follow its BindPipeline.
 			auto range =
 			    std::ranges::find_if(pipeline->constant_ranges, [&value](auto const& candidate) {
-				    return candidate.slot == value.slot && candidate.space == value.space;
+				    return candidate.abi_slot == value.slot && candidate.abi_space == value.space;
 			    });
 			if (range == pipeline->constant_ranges.end()) {
 				throw std::invalid_argument(
-				    "WebGPU pipeline has no matching immediate-constant range"
+				    "WebGPU pipeline has no matching pipeline-constant range"
 				);
 			}
 			if (value.offset > range->size || value.data.size() > range->size - value.offset) {
 				throw std::out_of_range(
-				    "WebGPU immediate-constant write exceeds its reflected range"
+				    "WebGPU pipeline-constant write exceeds its reflected range"
 				);
 			}
 			return *range;
@@ -310,6 +312,8 @@ namespace fyuu_rhi::webgpu {
 					);
 				}
 				std::ranges::copy(value.data, state->data.begin() + value.offset);
+				// Pass-encoder state can only be set on an open pass, so a write recorded
+				// before BeginRendering is replayed by FlushRenderState once the pass exists.
 				if (!render_pass && !compute_pass) {
 					pending_constants.emplace_back(&value);
 					return;

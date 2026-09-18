@@ -47,7 +47,7 @@ export namespace fyuu_rhi::pipeline {
 	 * @brief Source-level Slang program description compiled for the active backend.
 	 *
 	 * All spans are borrowed only for the duration of pipeline creation. Entry-point
-	 * stages, reflected bindings, and immediate-constant ranges form the pipeline ABI.
+	 * stages, reflected bindings, and pipeline-constant ranges form the pipeline ABI.
 	 */
 	struct SlangPipelineProgramDescriptor {
 		struct Module {

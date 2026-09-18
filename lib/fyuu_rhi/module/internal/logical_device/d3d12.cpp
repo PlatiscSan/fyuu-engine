@@ -228,7 +228,7 @@ namespace {
 		// Invalidate root signatures serialized before combined bindings used
 		// independent texture and sampler ranges. Their cache payload can contain
 		// duplicate sampler ranges even though the reflected key fields match.
-		// Schema 5 hashes the immediate-constant register separately from its ABI
+		// Schema 5 hashes the pipeline-constant register separately from its ABI
 		// slot/space: two shaders can share the (0, 0) ABI identity while reading
 		// the block from different registers, and a signature cached for one would
 		// be wrong for the other.
@@ -252,8 +252,8 @@ namespace {
 		for (auto const& range : pipeline_interface.push_constants) {
 			hash.update(&range.offset, sizeof(range.offset));
 			hash.update(&range.size, sizeof(range.size));
-			hash.update(&range.slot, sizeof(range.slot));
-			hash.update(&range.space, sizeof(range.space));
+			hash.update(&range.abi_slot, sizeof(range.abi_slot));
+			hash.update(&range.abi_space, sizeof(range.abi_space));
 			hash.update(&range.register_slot, sizeof(range.register_slot));
 			hash.update(&range.register_space, sizeof(range.register_space));
 			hash.update(&range.visibility, sizeof(range.visibility));
@@ -412,8 +412,8 @@ namespace {
 			std::back_inserter(result),
 			[&root_parameter](auto const& range) {
 				return d3d12::Pipeline::ConstantRange{
-					.slot = range.slot,
-					.space = range.space,
+					.abi_slot = range.abi_slot,
+					.abi_space = range.abi_space,
 					.root_parameter = root_parameter++,
 					.size = range.size
 				};

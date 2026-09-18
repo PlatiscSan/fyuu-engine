@@ -305,14 +305,14 @@ namespace fyuu_rhi::metal {
 					render_encoder->setVertexBytes(
 						constant.data.data(),
 						constant.data.size(),
-						constant.range->slot
+						constant.range->abi_slot
 					);
 				}
 				if (Visible(constant.range->visibility, pipeline::Stage::Fragment)) {
 					render_encoder->setFragmentBytes(
 						constant.data.data(),
 						constant.data.size(),
-						constant.range->slot
+						constant.range->abi_slot
 					);
 				}
 			}
@@ -320,7 +320,7 @@ namespace fyuu_rhi::metal {
 				compute_encoder->setBytes(
 					constant.data.data(),
 					constant.data.size(),
-					constant.range->slot
+					constant.range->abi_slot
 				);
 			}
 		}
@@ -497,15 +497,17 @@ namespace fyuu_rhi::metal {
 					"Metal pipeline constants require a bound pipeline"
 				);
 			}
+			// Resolved against the pipeline bound earlier in this command list, not the one
+			// bound at draw time: SetPipelineConstants must follow its BindPipeline.
 			auto range = std::ranges::find_if(
 				pipeline->constant_ranges,
 				[&value](auto const& candidate) {
-					return candidate.slot == value.slot && candidate.space == value.space;
+					return candidate.abi_slot == value.slot && candidate.abi_space == value.space;
 				}
 			);
 			if (range == pipeline->constant_ranges.end()) {
 				throw std::invalid_argument(
-					"Metal pipeline has no matching immediate-constant range"
+					"Metal pipeline has no matching pipeline-constant range"
 				);
 			}
 			if (
@@ -513,7 +515,7 @@ namespace fyuu_rhi::metal {
 				value.data.size() > range->size - value.offset
 			) {
 				throw std::out_of_range(
-					"Metal immediate-constant write exceeds its reflected range"
+					"Metal pipeline-constant write exceeds its reflected range"
 				);
 			}
 			auto state = std::ranges::find_if(
