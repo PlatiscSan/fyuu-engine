@@ -242,6 +242,8 @@ disable_rtti(${PROJECT_NAME})
 
 if(BUILD_TESTING)
 	add_subdirectory(test/hello_triangle)
+	add_subdirectory(test/completion_pool)
+	add_subdirectory(test/draw_probe)
 endif()
 
 if(FYUU_RHI_BUILD_DOCUMENTATION)

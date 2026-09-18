@@ -78,8 +78,19 @@ namespace fyuu_rhi::pipeline {
 	struct SlangPipelinePushConstantRange {
 		std::uint32_t offset = 0;
 		std::uint32_t size = 0;
+		/// Backend-neutral ABI identity of the range. Backends match
+		/// SetPipelineConstants against this and it is deliberately identical
+		/// across targets: the reflection layout reports the immediate-constant
+		/// block's PushConstantBuffer binding, which is not a hardware register.
 		std::uint32_t slot = 0;
 		std::uint32_t space = 0;
+		/// The CBV register the compiled bytecode of the active target reads the
+		/// block from. Slang assigns this per target, so it must come from that
+		/// target's own layout; D3D12 declares its root-signature
+		/// 32BIT_CONSTANTS range here, because a root constant range is only
+		/// correct when its declared register equals the one the shader reads.
+		std::uint32_t register_slot = 0;
+		std::uint32_t register_space = 0;
 		std::uint32_t visibility = 0;
 	};
 
@@ -165,8 +176,11 @@ namespace fyuu_rhi::shader {
 	class SlangProgram {
 	private:
 		/// Bumped whenever the on-disk cache format changes; older entries are
-		/// ignored instead of being parsed with a mismatched schema.
-		static constexpr std::uint32_t CACHE_SCHEMA_VERSION = 6u;
+		/// ignored instead of being parsed with a mismatched schema. Version 7
+		/// added the immediate-constant register fields to the interface, so
+		/// entries written before that would restore a root signature at the
+		/// placeholder register.
+		static constexpr std::uint32_t CACHE_SCHEMA_VERSION = 7u;
 
 		/// Per-entry-point compiled bytecode, in program order.
 		std::vector<SlangCompiledEntryPoint> m_entry_points;
@@ -450,6 +464,8 @@ namespace fyuu_rhi::shader {
 						{ "size", range.size },
 						{ "binding", range.slot },
 						{ "space", range.space },
+						{ "register_binding", range.register_slot },
+						{ "register_space", range.register_space },
 						{ "visibility", range.visibility }
 					}
 				);
@@ -507,6 +523,8 @@ namespace fyuu_rhi::shader {
 						item.at("size").get<std::uint32_t>(),
 						item.at("binding").get<std::uint32_t>(),
 						item.at("space").get<std::uint32_t>(),
+						item.at("register_binding").get<std::uint32_t>(),
+						item.at("register_space").get<std::uint32_t>(),
 						item.at("visibility").get<std::uint32_t>()
 					}
 				);
@@ -707,10 +725,51 @@ namespace fyuu_rhi::shader {
 			}
 		}
 
+		// The register the native layout assigns to one push-constant block, found
+		// by the name the reflection layout reports for it. The two layouts come
+		// from the same linked program, so a block the shader declares appears in
+		// both; matching by name keeps this correct if the target reorders
+		// parameters, and a block the native layout cannot name simply keeps the
+		// backend-neutral placeholder.
+		static bool NativePushConstantRegister(
+			slang::ProgramLayout* native_layout,
+			slang::VariableLayoutReflection* variable,
+			std::uint32_t& slot,
+			std::uint32_t& space
+		) {
+			auto name = variable->getName();
+			if (!native_layout || !name) {
+				return false;
+			}
+			for (unsigned index = 0; index < native_layout->getParameterCount(); ++index) {
+				auto candidate = native_layout->getParameterByIndex(index);
+				if (!candidate || !candidate->getName()) {
+					continue;
+				}
+				if (std::string_view(candidate->getName()) != std::string_view(name)) {
+					continue;
+				}
+				slot = CheckedUint32(candidate->getBindingIndex(), "immediate-constant register");
+				space = CheckedUint32(candidate->getBindingSpace(), "immediate-constant register space");
+				return true;
+			}
+			return false;
+		}
+
 		// Walks the linked program layout and turns it into the engine's
 		// SlangPipelineInterface: resource parameters (bindings with slot/space/
 		// count/flags/visibility), push-constant ranges, and per-stage varyings.
-		static SlangPipelineInterface ReflectInterface(slang::ProgramLayout* layout, SlangPipelineProgramDescriptor const& desc) {
+		//
+		// `layout` is the backend-neutral SPIR-V reflection layout, which is what
+		// defines the ABI. `native_layout` is the layout of the target actually
+		// being compiled; it is only consulted for the register of an
+		// immediate-constant block, because a push constant has no register in the
+		// SPIR-V layout and Slang assigns the register per target.
+		static SlangPipelineInterface ReflectInterface(
+			slang::ProgramLayout* layout,
+			slang::ProgramLayout* native_layout,
+			SlangPipelineProgramDescriptor const& desc
+		) {
 			SlangPipelineInterface result;
 			auto visibility = StageVisibility(desc);
 
@@ -728,8 +787,29 @@ namespace fyuu_rhi::shader {
 					}
 				);
 				if (push_constant) {
+					// The SPIR-V layout gives the block a PushConstantBuffer
+					// binding, which is an ABI identity, not a register. Slang
+					// assigns the register separately per target: for D3D12 it is
+					// the next free CBV register, chosen so it does not overlap the
+					// other resource bindings. D3D12 emulates the block as a
+					// root-signature 32BIT_CONSTANTS range, and the range's declared
+					// register must equal the one the shader reads, so the register
+					// is taken from the target's own layout while the ABI identity
+					// stays the placeholder every backend agrees on.
 					auto binding_index = variable->getBindingIndex();
 					auto binding_space = variable->getBindingSpace();
+					auto abi_slot = binding_index == ~0u
+						? static_cast<std::uint32_t>(result.push_constants.size())
+						: binding_index;
+					auto abi_space = binding_space == ~0u ? 0u : binding_space;
+					std::uint32_t register_slot = abi_slot;
+					std::uint32_t register_space = abi_space;
+					NativePushConstantRegister(
+						native_layout,
+						variable,
+						register_slot,
+						register_space
+					);
 					auto constant_type = variable->getTypeLayout()->getElementTypeLayout();
 					if (!constant_type) {
 						constant_type = variable->getTypeLayout();
@@ -746,10 +826,10 @@ namespace fyuu_rhi::shader {
 								constant_type->getSize(slang::ParameterCategory::Uniform),
 								"push constant size"
 							),
-							binding_index == ~0u
-								? static_cast<std::uint32_t>(result.push_constants.size())
-								: binding_index,
-							binding_space == ~0u ? 0u : binding_space,
+							abi_slot,
+							abi_space,
+							register_slot,
+							register_space,
 							visibility
 						}
 					);
@@ -1128,11 +1208,15 @@ namespace fyuu_rhi::shader {
 			// Interface reflection always uses the auxiliary SPIR-V layout. Slang's
 			// DXIL, GLSL, WGSL, and MSL layouts erase Vulkan push-constant categories,
 			// while SPIR-V preserves the backend-independent immediate-constant intent.
+			// The native layout of the compiled target is consulted in addition, for
+			// the register an immediate-constant block is actually read from.
 			auto reflection = linked_program->getLayout(1, diagnostics.writeRef());
 			if (!reflection) {
 				Check(SLANG_FAIL, diagnostics, "Reflecting Slang program");
 			}
-			m_interface = ReflectInterface(reflection, desc);
+			Slang::ComPtr<slang::IBlob> native_diagnostics;
+			auto native_layout = linked_program->getLayout(0, native_diagnostics.writeRef());
+			m_interface = ReflectInterface(reflection, native_layout, desc);
 			Slang::ComPtr<ISlangBlob> reflection_blob;
 			result = reflection->toJson(reflection_blob.writeRef());
 			Check(result, nullptr, "Serializing Slang reflection");

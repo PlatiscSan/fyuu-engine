@@ -235,44 +235,9 @@ namespace fyuu_rhi {
 					return result;
 				}
 			);
-			std::vector<opengl::PipelineResourceGroup::Binding> remapped_bindings;
-			for (auto const& binding : native_bindings) {
-				auto declaration = std::ranges::find_if(
-					native->bindings,
-					[&](auto const& candidate) {
-						return candidate.space == space && candidate.slot == binding.slot;
-					}
-				);
-				bool separate_texture =
-					declaration != native->bindings.end() &&
-					declaration->flags.Test(ResourceFlagBits::TextureBinding) &&
-					!declaration->flags.Test(ResourceFlagBits::SamplerBinding) &&
-					!declaration->flags.Test(ResourceFlagBits::StorageBinding);
-				bool separate_sampler =
-					declaration != native->bindings.end() &&
-					declaration->flags.Test(ResourceFlagBits::SamplerBinding) &&
-					!declaration->flags.Test(ResourceFlagBits::TextureBinding);
-				bool remapped = false;
-				for (auto const& combined : native->combined_samplers) {
-					bool texture_match = separate_texture &&
-						combined.texture_space == space &&
-						combined.texture_slot == binding.slot;
-					bool sampler_match = separate_sampler &&
-						combined.sampler_space == space &&
-						combined.sampler_slot == binding.slot;
-					if (!texture_match && !sampler_match) {
-						continue;
-					}
-					auto remapped_binding = binding;
-					remapped_binding.slot = combined.unit;
-					remapped_bindings.emplace_back(std::move(remapped_binding));
-					remapped = true;
-				}
-				if (!remapped) {
-					remapped_bindings.emplace_back(binding);
-				}
-			}
-			native_bindings = std::move(remapped_bindings);
+			// Bindings keep their logical slots: the scheduler resolves the GL
+			// binding unit from the pipeline's (space, slot) -> unit table, so a
+			// combined image sampler's unit is shared by both of its halves there.
 			std::ranges::sort(
 				native_bindings,
 				{},

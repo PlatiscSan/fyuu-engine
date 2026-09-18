@@ -453,6 +453,27 @@ namespace fyuu_rhi::d3d12 {
 		event.impl.wait();
 	}
 
+	/**
+	 * @brief Blocks until the queue timeline reaches value, up to a bounded delay.
+	 *
+	 * Returns true when the fence reached @p value, false when the delay elapsed first.
+	 * A removed device reports UINT64_MAX from GetCompletedValue(), which reads as reached,
+	 * so callers must still consult the token's own error reporting rather than assume the
+	 * GPU finished the work.
+	 */
+	bool WaitForFenceFor(
+		Microsoft::WRL::ComPtr<ID3D12Fence> const& fence,
+		std::uint64_t value,
+		std::uint32_t timeout_milliseconds
+	) {
+		if (fence->GetCompletedValue() >= value) {
+			return true;
+		}
+		auto event = CreateManagedEvent();
+		ThrowIfFailed(fence->SetEventOnCompletion(value, event.impl.get()));
+		return event.impl.wait(timeout_milliseconds);
+	}
+
 	/// Recovers the device that owns a native queue without exposing a borrowed pointer.
 	Microsoft::WRL::ComPtr<ID3D12Device> GetLogicalDevice(Microsoft::WRL::ComPtr<ID3D12CommandQueue> const& queue) {
 		Microsoft::WRL::ComPtr<ID3D12Device> result;

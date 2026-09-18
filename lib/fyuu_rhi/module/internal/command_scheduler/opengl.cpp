@@ -867,6 +867,10 @@ namespace {
 			glDeleteVertexArrays(1u, &vertex_array);
 		}
 		scheduler->vertex_arrays.clear();
+		if (scheduler->present_read_framebuffer != 0u) {
+			glDeleteFramebuffers(1u, &scheduler->present_read_framebuffer);
+			scheduler->present_read_framebuffer = 0u;
+		}
 #if defined(_WIN32)
 		for (auto const& target : scheduler->present_targets) {
 			if (target.device_context) {
@@ -903,6 +907,22 @@ namespace fyuu_rhi::opengl {
 	using namespace fyuu_rhi::pipeline;
 	using Submission = opengl::Submission;
 
+	/// Publishes a terminal state and wakes anyone waiting on it.
+	///
+	/// `complete` is stored while holding the state's mutex, and the notification follows the
+	/// release, so a waiter that has already tested the flag but not yet blocked cannot miss
+	/// the wake-up. A lock-free store here would let it sleep until its next timeout.
+	void PublishCompletion(std::shared_ptr<CompletionState> const& state, bool stopped) {
+		{
+			std::unique_lock lock(state->mutex);
+			if (stopped) {
+				state->stopped.store(true, std::memory_order_release);
+			}
+			state->complete.store(true, std::memory_order_release);
+		}
+		state->condition.notify_all();
+	}
+
 	void opengl::CommandSchedulerContext::ReapSignaled() {
 		while (!pending.empty()) {
 			PendingSync current;
@@ -911,14 +931,17 @@ namespace fyuu_rhi::opengl {
 			}
 			current = std::move(pending.front());
 			pending.pop_front();
-			current.state->complete.store(true, std::memory_order_release);
+			PublishCompletion(current.state, false);
 			glDeleteSync(current.sync);
 		}
 	}
 
 	void opengl::CommandSchedulerContext::DrainPendingOnShutdown() {
 		for (auto& pending_sync : pending) {
-			pending_sync.state->complete.store(true, std::memory_order_release);
+			// These fences were never observed as signaled, so the work is being abandoned
+			// rather than finished. Reporting success would hand the receiver resources that
+			// may still be in flight; cancellation is the accurate terminal state.
+			PublishCompletion(pending_sync.state, true);
 			glDeleteSync(pending_sync.sync);
 		}
 		pending.clear();
@@ -1008,7 +1031,7 @@ namespace fyuu_rhi::opengl {
 			);
 			glBindBufferBase(
 				constant.range->target,
-				constant.range->slot,
+				constant.range->unit,
 				constant.buffer
 			);
 		}
@@ -1317,8 +1340,11 @@ namespace fyuu_rhi::opengl {
 			if (!pipeline) {
 				throw std::logic_error("OpenGL resource group requires a bound pipeline");
 			}
-			// Contract: slang emits GLSL with layout(binding = slot + array_element),
-			// matching the binding units/uniform/texture/image indices used here.
+			// Contract: the generated GLSL and this scheduler both resolve a logical
+			// (space, slot) through the pipeline's binding-unit table, so
+			// `layout(binding = unit)` and the uniform/texture/image/sampler indices
+			// below are the same number. GL numbers all of those in one namespace, so
+			// the unit is unique across kinds and spaces, not per kind.
 			auto const& group = submission.groups.at(value.group);
 			if (group.space != value.space) {
 				throw std::invalid_argument("OpenGL resource group space mismatch");
@@ -1339,11 +1365,18 @@ namespace fyuu_rhi::opengl {
 			}
 			std::size_t dynamic_index = 0u;
 			for (auto const& binding : group.bindings) {
-				GLenum unit = binding.slot + binding.array_element;
+				GLenum unit = BindingUnitOf(
+					pipeline->binding_units,
+					group.space,
+					binding.slot
+				) + binding.array_element;
 				if (binding.buffer != 0u) {
 					auto target = GL_UNIFORM_BUFFER;
 					for (auto const& metadata : pipeline->bindings) {
-						if (metadata.slot == binding.slot) {
+						if (
+							metadata.space == group.space &&
+							metadata.slot == binding.slot
+						) {
 							target = BufferTarget(metadata.flags);
 							break;
 						}
@@ -1390,10 +1423,13 @@ namespace fyuu_rhi::opengl {
 					continue;
 				}
 				// Distinguish a storage image from a sampled texture through the
-				// pipeline's reflected binding flags for this slot.
+				// pipeline's reflected binding flags for this space and slot.
 				bool storage = false;
 				for (auto const& metadata : pipeline->bindings) {
-					if (metadata.slot == binding.slot) {
+					if (
+						metadata.space == group.space &&
+						metadata.slot == binding.slot
+					) {
 						storage = metadata.flags.Test(ResourceFlagBits::StorageBinding);
 						break;
 					}
@@ -1809,9 +1845,12 @@ namespace fyuu_rhi::opengl {
 			MakeCurrentTarget(scheduler, target, handles);
 			ContextRestore restore{ scheduler, handles };
 			auto [width, height] = TargetFramebufferSize(instance, target);
-			GLuint read_framebuffer = 0u;
-			glGenFramebuffers(1u, &read_framebuffer);
-			glBindFramebuffer(GL_READ_FRAMEBUFFER, read_framebuffer);
+			// One read framebuffer is reused for the lifetime of the context instead of a
+			// create/destroy pair per present. The GL thread is the only thread that touches it.
+			if (scheduler->present_read_framebuffer == 0u) {
+				glGenFramebuffers(1u, &scheduler->present_read_framebuffer);
+			}
+			glBindFramebuffer(GL_READ_FRAMEBUFFER, scheduler->present_read_framebuffer);
 			glFramebufferTexture2D(
 				GL_READ_FRAMEBUFFER,
 				GL_COLOR_ATTACHMENT0,
@@ -1836,15 +1875,22 @@ namespace fyuu_rhi::opengl {
 				GL_COLOR_BUFFER_BIT,
 				GL_LINEAR
 			);
-			glDeleteFramebuffers(1u, &read_framebuffer);
 			glBindFramebuffer(GL_FRAMEBUFFER, 0u);
 			SetSwapInterval(instance, value.vertical_sync);
-			// Finish the blit before presenting: the blit runs on this window context
-			// and SwapBuffers presents whatever is in the back buffer, so swapping an
-			// incomplete blit would flash partial frames. GL also does not order
-			// commands across contexts in a share group, so this stall both fixes the
-			// present and keeps the next frame's clear from racing the texture read.
-			glFinish();
+			// Wait for the blit before presenting: the blit runs on this window context and
+			// SwapBuffers presents whatever is in the back buffer, so swapping an incomplete
+			// blit would flash partial frames. GL also does not order commands across contexts
+			// in a share group, so this stall both fixes the present and keeps the next frame's
+			// clear from racing the texture read.
+			//
+			// A fence scoped to this command stream rather than glFinish(): the ordered stream
+			// makes the wait cover the same commands, but a fence does not force the driver to
+			// drain work belonging to other contexts in the share group.
+			GLsync present_sync = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0u);
+			if (present_sync) {
+				glClientWaitSync(present_sync, GL_SYNC_FLUSH_COMMANDS_BIT, GL_TIMEOUT_IGNORED);
+				glDeleteSync(present_sync);
+			}
 			SwapTarget(instance, target);
 			// ContextRestore re-establishes the render drawable on scope exit.
 		}
@@ -2218,6 +2264,7 @@ namespace fyuu_rhi::execution {
 							? pipeline::ColorWriteMask::All
 							: native->color_targets.front().write_mask,
 						.bindings = native->bindings,
+						.binding_units = native->binding_units,
 						.constant_ranges = native->constant_ranges
 					}
 				);
@@ -2260,8 +2307,7 @@ namespace fyuu_rhi::execution {
 				submission.groups.emplace_back(std::move(snapshot));
 			}
 			if (stop_token.stop_requested()) {
-				state->stopped.store(true, std::memory_order_release);
-				state->complete.store(true, std::memory_order_release);
+				PublishCompletion(state, true);
 				return MakeCompletionToken(opengl::CompletionToken{ std::move(state) });
 			}
 			if (context->fatal_error) {

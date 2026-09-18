@@ -3,9 +3,14 @@ module;
 #if !defined(__cpp_lib_modules)
 #include <cstddef>
 #include <exception>
+#include <memory>
 #include <vector>
 
 #include <cstdint>
+
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
 
 #include <optional>
 #include <variant>
@@ -34,10 +39,24 @@ namespace fyuu_rhi::metal {
 		NS::SharedPtr<MTL::Device> impl;
 	};
 
-	struct CompletionToken {
-		std::vector<NS::SharedPtr<MTL::CommandBuffer>> command_buffers;
+	/// Completion published by the command buffers' completed handlers.
+	///
+	/// Shared between the token and every handler the scheduler registers, so a handler
+	/// can report completion without keeping the token (or its command buffers) alive.
+	struct CompletionState {
+		std::atomic_bool complete = false;
+		std::atomic_bool stopped = false;
+		std::mutex mutex;
+		/// Wakes the completion wait: the completed handlers run on a Metal-owned thread,
+		/// so a waiting thread cannot poll them itself and must be notified instead.
+		std::condition_variable condition;
 		std::exception_ptr error;
-		bool stopped = false;
+	};
+
+	struct CompletionToken {
+		/// Still owned by the token: status polling reads `status()` off these.
+		std::vector<NS::SharedPtr<MTL::CommandBuffer>> command_buffers;
+		std::shared_ptr<CompletionState> state;
 	};
 
 	struct CommandSchedulerContext {

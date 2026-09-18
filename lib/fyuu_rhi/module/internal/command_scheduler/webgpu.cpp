@@ -15,10 +15,16 @@ module;
 
 #include <string>
 
+#include <limits>
+
 #include <cstdint>
 
+#include <chrono>
+
 #include <atomic>
+#include <condition_variable>
 #include <mutex>
+#include <thread>
 
 #include <optional>
 #include <variant>
@@ -27,6 +33,8 @@ module;
 #include <span>
 
 #include <format>
+
+#include <stop_token>
 #endif // !defined(__cpp_lib_modules)
 #if defined(_WIN32)
 #include <Windows.h>
@@ -788,41 +796,20 @@ namespace fyuu_rhi::webgpu {
 				throw std::out_of_range("WebGPU write exceeds the buffer size");
 			}
 			if (buffer.GetUsage() & wgpu::BufferUsage::MapWrite) {
+				// This operator runs inside the parallel recording pass, so it must not
+				// block: the serial pre-map pass has already mapped every buffer a
+				// WriteBuffer targets and the unmapping pass releases them once every
+				// batch has finished recording.
 				if (buffer.GetMapState() != wgpu::BufferMapState::Mapped) {
-					auto status = wgpu::MapAsyncStatus::Error;
-					std::string error;
-					auto future = buffer.MapAsync(
-					    wgpu::MapMode::Write,
-					    0u,
-					    wgpu::kWholeMapSize,
-					    wgpu::CallbackMode::AllowProcessEvents,
-					    [&](wgpu::MapAsyncStatus result, wgpu::StringView message) {
-						    status = result;
-						    if (message.data && message.length != 0u) {
-							    error.assign(message.data, message.length);
-						    }
-					    }
+					throw std::logic_error(
+					    "WebGPU upload buffer was not mapped before recording"
 					);
-					auto wait_status =
-					    instance.WaitAny(future, (std::numeric_limits<std::uint64_t>::max)());
-					if (wait_status != wgpu::WaitStatus::Success) {
-						throw std::runtime_error(
-						    "Failed to wait for a WebGPU upload buffer mapping"
-						);
-					}
-					if (status != wgpu::MapAsyncStatus::Success) {
-						throw std::runtime_error(
-						    error.empty() ? "Failed to map a WebGPU upload buffer" : error
-						);
-					}
 				}
 				auto destination = static_cast<std::byte*>(buffer.GetMappedRange());
 				if (!destination) {
-					buffer.Unmap();
 					throw std::runtime_error("WebGPU returned an empty mapped upload range");
 				}
 				std::ranges::copy(value.data, destination + value.offset);
-				buffer.Unmap();
 				return;
 			}
 			encoder.WriteBuffer(
@@ -857,6 +844,161 @@ namespace fyuu_rhi::webgpu {
 			encoder.CopyTextureToTexture(&source, &destination, &extent);
 		}
 	};
+
+} // namespace fyuu_rhi::webgpu
+
+namespace fyuu_rhi::webgpu {
+
+	namespace {
+
+		/// Publishes one completion under the state's own mutex and then notifies.
+		///
+		/// A waiting thread re-tests the flag while holding that same mutex, so storing it
+		/// before the notify cannot be missed between that test and the wait. An already
+		/// recorded error is kept, so a failure Dawn reported for the token is not replaced
+		/// by the device-loss error published for the same token.
+		void PublishCompletion(
+			std::shared_ptr<CompletionState> const& state,
+			std::exception_ptr error = {}
+		) {
+			{
+				std::unique_lock lock(state->mutex);
+				if (error && !state->error) {
+					state->error = std::move(error);
+				}
+				state->complete.store(true, std::memory_order_release);
+			}
+			state->condition.notify_all();
+		}
+
+	} // namespace
+
+	void CommandSchedulerContext::Watch(
+		wgpu::Future future,
+		std::shared_ptr<CompletionState> const& state
+	) {
+		if (!state || future.id == 0u) {
+			return;
+		}
+		std::unique_lock lock(pump_mutex);
+		if (pump_device_lost) {
+			auto error = pump_device_lost_error;
+			lock.unlock();
+			PublishCompletion(state, error);
+			return;
+		}
+		pump_futures.push_back(WatchedFuture{future, state});
+		lock.unlock();
+		pump_condition.notify_all();
+	}
+
+	void CommandSchedulerContext::Run(std::stop_token stop) {
+		// Device loss is only observable through this future: it is a plain wait-list
+		// event, so it can be waited on together with queue futures at a zero timeout, and
+		// Dawn untracks it once it fires, from which point on every wait reports it as
+		// already complete.
+		auto lost_future = device.GetLostFuture();
+
+		context_ready.store(true, std::memory_order_release);
+		context_ready.notify_all();
+
+		bool device_lost = false;
+		std::exception_ptr device_lost_error;
+
+		while (!stop.stop_requested()) {
+			std::vector<WatchedFuture> pending;
+			std::vector<wgpu::FutureWaitInfo> waits;
+			try {
+				{
+					std::unique_lock lock(pump_mutex);
+					// Bounded sleep between rounds, not a wait for completion. The wait
+					// below is a zero-timeout poll because that is the only timeout that
+					// does not hold the device-wide lock for its whole duration on the
+					// D3D12 backend, and zero is legal across queues and event kinds. The
+					// destructor notifies this condition after requesting the stop, so the
+					// join does not have to wait the interval out.
+					(void)pump_condition.wait_for(lock, std::chrono::milliseconds(1));
+					if (stop.stop_requested()) {
+						break;
+					}
+					pending = pump_futures;
+				}
+
+				waits.reserve(pending.size() + 1u);
+				std::ranges::for_each(pending, [&waits](WatchedFuture const& watched) {
+					waits.emplace_back(wgpu::FutureWaitInfo{watched.future});
+				});
+				waits.emplace_back(wgpu::FutureWaitInfo{lost_future});
+				(void)instance.WaitAny(waits.size(), waits.data(), 0u);
+
+				if (waits.back().completed && !device_lost) {
+					device_lost = true;
+					device_lost_error = std::make_exception_ptr(
+						std::runtime_error("WebGPU device was lost with work outstanding")
+					);
+					std::unique_lock lock(pump_mutex);
+					pump_device_lost = true;
+					pump_device_lost_error = device_lost_error;
+				}
+				for (std::size_t index = 0u; index < pending.size(); ++index) {
+					// Once the device is gone, every outstanding token is reported as
+					// failed: its work can never finish.
+					if (device_lost || waits[index].completed) {
+						PublishCompletion(pending[index].state, device_lost_error);
+					}
+				}
+				// Drop everything terminal. The pump is the only publisher of completion
+				// for a published future, so anything still incomplete stays watched.
+				std::unique_lock lock(pump_mutex);
+				std::erase_if(pump_futures, [](WatchedFuture const& watched) {
+					return watched.state->complete.load(std::memory_order_acquire);
+				});
+			}
+			catch (...) {
+				// The pump is the only publisher of completion, so a failure here has to be
+				// reported to everything outstanding instead of unwinding out of the
+				// thread, which would terminate the process.
+				auto failure = std::current_exception();
+				std::unique_lock lock(pump_mutex);
+				std::ranges::for_each(pump_futures, [failure](WatchedFuture const& watched) {
+					PublishCompletion(watched.state, failure);
+				});
+				pump_futures.clear();
+				break;
+			}
+		}
+
+		// The pump has stopped, so nothing can complete a future any more. Report what is
+		// still outstanding as cancelled rather than leaving a waiter blocked forever.
+		std::unique_lock lock(pump_mutex);
+		std::ranges::for_each(pump_futures, [](WatchedFuture& watched) {
+			{
+				std::unique_lock state_lock(watched.state->mutex);
+				watched.state->stopped.store(true, std::memory_order_release);
+			}
+			PublishCompletion(watched.state, {});
+		});
+		pump_futures.clear();
+	}
+
+	CommandSchedulerContext::CommandSchedulerContext(CommandSchedulerContext&& other) noexcept
+		: instance(std::move(other.instance)),
+		device(std::move(other.device)),
+		surfaces(std::move(other.surfaces)),
+		pump_thread(
+			[this](std::stop_token stop_token) {
+				Run(stop_token);
+			}
+		) {
+		context_ready.wait(false, std::memory_order_acquire);
+	}
+
+	CommandSchedulerContext::~CommandSchedulerContext() noexcept {
+		pump_thread.request_stop();
+		// jthread::request_stop does not wake a condition variable, so without this the
+		// join would block until the pump's own bounded wait elapsed.
+		pump_condition.notify_all();
+	}
 
 } // namespace fyuu_rhi::webgpu
 
@@ -1089,6 +1231,10 @@ namespace fyuu_rhi::execution {
 									surface_state->format = format;
 								}
 								surface = surface_state->surface;
+								// Blocking here is inherent to acquiring a surface image:
+								// the texture is only handed out once the presentation
+								// engine frees one, and there is no asynchronous form of
+								// this call.
 								surface.GetCurrentTexture(&current);
 							}
 							if (!current.texture) {
@@ -1103,6 +1249,96 @@ namespace fyuu_rhi::execution {
 					}
 				}
 				presentation_offsets.back() = presentations.size();
+
+				// Phase 1b: map every upload buffer the plan writes through a host
+				// mapping. Mapping waits for the buffer's earlier GPU use, so issuing it
+				// from inside a batch would both block the parallel recording pass and let
+				// two batches sharing one upload buffer map, write, and unmap it
+				// concurrently. Mapping once here leaves the recording pass with nothing
+				// but plain memory writes.
+				std::vector<wgpu::Buffer> upload_mappings;
+				auto release_upload_mappings = [&upload_mappings]() {
+					std::ranges::for_each(upload_mappings, [](wgpu::Buffer const& buffer) {
+						buffer.Unmap();
+					});
+					upload_mappings.clear();
+				};
+				try {
+					for (auto const& batch : plan.batches) {
+						for (auto const& node : batch.nodes) {
+							for (auto const& command : node.commands) {
+								auto const* write = std::get_if<WriteBuffer>(&command);
+								if (!write) {
+									continue;
+								}
+								auto const* buffer = std::get_if<wgpu::Buffer>(
+								    &resources[write->resource].get().impl
+								);
+								if (!buffer) {
+									throw std::invalid_argument(
+									    "WebGPU command requires a buffer resource"
+									);
+								}
+								if (!(buffer->GetUsage() & wgpu::BufferUsage::MapWrite)) {
+									continue;
+								}
+								if (buffer->GetMapState() == wgpu::BufferMapState::Mapped) {
+									// Already mapped by the caller: leave it mapped, and
+									// leave unmapping it to the caller as well.
+									continue;
+								}
+								auto const mapped = std::ranges::any_of(
+								    upload_mappings,
+								    [buffer](wgpu::Buffer const& candidate) {
+									    return candidate.Get() == buffer->Get();
+								    }
+								);
+								if (mapped) {
+									continue;
+								}
+								auto status = wgpu::MapAsyncStatus::Error;
+								std::string error;
+								auto future = buffer->MapAsync(
+								    wgpu::MapMode::Write,
+								    0u,
+								    wgpu::kWholeMapSize,
+								    wgpu::CallbackMode::AllowProcessEvents,
+								    [&](wgpu::MapAsyncStatus result, wgpu::StringView message) {
+									    status = result;
+									    if (message.data && message.length != 0u) {
+										    error.assign(message.data, message.length);
+									    }
+								    }
+								);
+								// A mapping is a wait-list event, not a queue-serial one, so
+								// waiting for it here does not take the device-wide lock that
+								// a long queue-serial wait would. It is also serial: this is
+								// the preparation phase, before any batch records.
+								auto wait_status = context->instance.WaitAny(
+								    future,
+								    (std::numeric_limits<std::uint64_t>::max)()
+								);
+								if (wait_status != wgpu::WaitStatus::Success) {
+									throw std::runtime_error(
+									    "Failed to wait for a WebGPU upload buffer mapping"
+									);
+								}
+								if (status != wgpu::MapAsyncStatus::Success) {
+									throw std::runtime_error(
+									    error.empty()
+									        ? "Failed to map a WebGPU upload buffer"
+									        : error
+									);
+								}
+								upload_mappings.emplace_back(*buffer);
+							}
+						}
+					}
+				}
+				catch (...) {
+					release_upload_mappings();
+					throw;
+				}
 
 				// Phase 2: every batch owns its encoder, command buffer, presentation
 				// cursor, and exception slot. The resulting array retains plan order for
@@ -1148,14 +1384,22 @@ namespace fyuu_rhi::execution {
 						recording_errors[batch_index] = std::current_exception();
 					}
 				});
+				// Every batch has finished recording, so the upload buffers can be
+				// flushed and released. They must be unmapped before the queue is asked to
+				// execute the recorded work, which is why this is not left to scope exit.
+				release_upload_mappings();
 				for (auto const& error : recording_errors) {
 					if (error) {
 						std::rethrow_exception(error);
 					}
 				}
 				if (cancelled.load(std::memory_order_acquire) || stop_token.stop_requested()) {
-					token_state->stopped.store(true, std::memory_order_release);
-					token_state->complete.store(true, std::memory_order_release);
+					{
+						std::unique_lock<std::mutex> state_lock(token_state->mutex);
+						token_state->stopped.store(true, std::memory_order_release);
+						token_state->complete.store(true, std::memory_order_release);
+					}
+					token_state->condition.notify_all();
 					return MakeCompletionToken(
 					    webgpu::CompletionToken{context->instance, std::move(token_state), {}}
 					);
@@ -1189,13 +1433,25 @@ namespace fyuu_rhi::execution {
 						        )
 						    );
 					    }
-					    token_state->complete.store(true, std::memory_order_release);
+					    {
+						    std::unique_lock<std::mutex> state_lock(token_state->mutex);
+						    token_state->complete.store(true, std::memory_order_release);
+					    }
+					    token_state->condition.notify_all();
 				    }
 				);
+				// The pump thread is what drives this future: a WaitAnyOnly future only
+				// runs its callback inside WaitAny, and the scheduler must never park a
+				// thread in a non-zero-timeout wait (that would hold the device-wide lock
+				// on the D3D12 backend and stall the next Submit/Present).
+				context->Watch(completion_future, token_state);
 			} catch (...) {
-				std::unique_lock<std::mutex> state_lock(token_state->mutex);
-				token_state->error = std::current_exception();
-				token_state->complete.store(true, std::memory_order_release);
+				{
+					std::unique_lock<std::mutex> state_lock(token_state->mutex);
+					token_state->error = std::current_exception();
+					token_state->complete.store(true, std::memory_order_release);
+				}
+				token_state->condition.notify_all();
 			}
 			return MakeCompletionToken(
 			    webgpu::CompletionToken{

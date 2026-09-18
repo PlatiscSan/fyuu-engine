@@ -4,9 +4,12 @@ module;
 #include <cstddef>
 #include <exception>
 #include <memory>
+#include <stdexcept>
 
 #include <deque>
 #include <vector>
+
+#include <algorithm>
 
 #include <cstdint>
 #include <unordered_map>
@@ -19,6 +22,7 @@ module;
 #include <optional>
 #include <variant>
 
+#include <span>
 #include <stop_token>
 #endif // !defined(__cpp_lib_modules)
 #if defined(_WIN32)
@@ -162,6 +166,9 @@ namespace fyuu_rhi::opengl {
 		std::atomic_bool complete = false;
 		std::atomic_bool stopped = false;
 		std::mutex mutex;
+		/// Wakes the completion wait. The GL thread owns completion, so a waiting thread
+		/// cannot poll the fence itself and must be notified instead.
+		std::condition_variable condition;
 		std::exception_ptr error;
 	};
 
@@ -192,6 +199,9 @@ namespace fyuu_rhi::opengl {
 		std::atomic<std::deque<Submission>*> submissions = nullptr;
 		std::deque<PendingSync> pending;
 		std::unordered_map<GLuint, GLuint> vertex_arrays;
+		/// Read framebuffer reused by Present for its blit source, created on first use and
+		/// released with the rest of the scheduler objects.
+		GLuint present_read_framebuffer = 0u;
 		std::vector<PresentTarget> present_targets;
 		std::exception_ptr fatal_error;
 		std::atomic_bool context_ready = false;
@@ -294,18 +304,145 @@ namespace fyuu_rhi::opengl {
 
 	using ManagedPipeline = boost::scope::unique_resource<GLuint, PipelineDeleter>;
 
+	/// One logical binding of the pipeline ABI: the pair (space, slot), plus the
+	/// number of consecutive GL units a resource array occupies.
+	struct BindingKey {
+		std::uint32_t space;
+		std::uint32_t slot;
+		std::uint32_t count;
+	};
+
+	/// The GL binding unit one logical binding is addressed through.
+	struct BindingUnit {
+		std::uint32_t space;
+		std::uint32_t slot;
+		std::uint32_t unit;
+	};
+
+	/// The complete GL binding-unit table of one pipeline.
+	struct BindingUnits {
+		/// One entry per reflected resource binding, in reflection order.
+		std::vector<BindingUnit> bindings;
+		/// One entry per immediate-constant range, in reflection order.
+		std::vector<BindingUnit> constants;
+	};
+
+	/// Assigns every logical binding a unique GL binding unit.
+	///
+	/// OpenGL numbers uniform buffers, storage buffers, sampled textures, images,
+	/// samplers and immediate-constant blocks in one flat namespace of binding
+	/// points, and the generated GLSL can only name that number
+	/// (`layout(binding = N)`, or the matching texture/image unit). The pipeline
+	/// ABI identifies a binding by (space, slot), which GLSL cannot express, so
+	/// using the raw slot as the unit aliases every binding that shares a slot
+	/// across spaces - including an immediate-constant block, which owns a slot
+	/// in every space it may be declared against.
+	///
+	/// This is the single place the (space, slot) -> unit mapping is computed.
+	/// Every key takes the next free unit in order and reserves `count`
+	/// consecutive units (one per array element), so array bindings keep their
+	/// GLSL array-of-units layout and no two logical bindings collide, whatever
+	/// their kind. Immediate-constant ranges are allocated after the resource
+	/// bindings so they can never land on a resource binding's unit.
+	BindingUnits AssignBindingUnits(
+		std::span<BindingKey const> bindings,
+		std::span<BindingKey const> constants
+	) {
+		BindingUnits result;
+		result.bindings.reserve(bindings.size());
+		result.constants.reserve(constants.size());
+		std::uint32_t next = 0u;
+		for (auto const& key : bindings) {
+			if (key.count == 0u) {
+				throw std::invalid_argument(
+					"An OpenGL binding must reserve at least one unit"
+				);
+			}
+			result.bindings.push_back(BindingUnit{ key.space, key.slot, next });
+			next += key.count;
+		}
+		for (auto const& key : constants) {
+			result.constants.push_back(BindingUnit{ key.space, key.slot, next });
+			++next;
+		}
+		return result;
+	}
+
+	/// Looks up the unit assigned to one logical binding, or null when the
+	/// pipeline never assigned one (e.g. the separate halves of a combined image
+	/// sampler, which GLSL never emits as resources of their own).
+	BindingUnit const* FindBindingUnit(
+		std::span<BindingUnit const> units,
+		std::uint32_t space,
+		std::uint32_t slot
+	) noexcept {
+		auto found = std::ranges::find_if(
+			units,
+			[space, slot](auto const& candidate) {
+				return candidate.space == space && candidate.slot == slot;
+			}
+		);
+		return found == units.end() ? nullptr : &*found;
+	}
+
+	/// Resolves one logical binding to the GL unit assigned to it; throws when
+	/// the pipeline assigned none, since every binding the pipeline reflects and
+	/// the resource groups are built from must have one.
+	std::uint32_t BindingUnitOf(
+		std::span<BindingUnit const> units,
+		std::uint32_t space,
+		std::uint32_t slot
+	) {
+		auto found = FindBindingUnit(units, space, slot);
+		if (!found) {
+			throw std::invalid_argument(
+				"An OpenGL pipeline has no binding unit for the requested space and slot"
+			);
+		}
+		return found->unit;
+	}
+
+	/// Records that one logical binding is addressed through another's unit.
+	/// GLSL combines a texture and a separately declared sampler into one sampled
+	/// image, so the shader's binding, the bound texture unit and the bound
+	/// sampler unit are all the same number and both halves must resolve to it.
+	void ShareBindingUnit(
+		std::vector<BindingUnit>& units,
+		std::uint32_t space,
+		std::uint32_t slot,
+		std::uint32_t source_space,
+		std::uint32_t source_slot
+	) {
+		auto unit = BindingUnitOf(units, source_space, source_slot);
+		auto existing = std::ranges::find_if(
+			units,
+			[space, slot](auto const& candidate) {
+				return candidate.space == space && candidate.slot == slot;
+			}
+		);
+		if (existing != units.end()) {
+			existing->unit = unit;
+			return;
+		}
+		units.push_back(BindingUnit{ space, slot, unit });
+	}
+
 	struct Pipeline {
+		/// One texture/sampler pair the GLSL combines into a single sampled image,
+		/// in the pipeline's logical (space, slot) coordinates. Only used while the
+		/// pipeline's binding units are being assigned.
 		struct CombinedSampler {
 			std::uint32_t texture_slot;
 			std::uint32_t texture_space;
 			std::uint32_t sampler_slot;
 			std::uint32_t sampler_space;
-			std::uint32_t unit;
 		};
 
 		struct ConstantRange {
 			std::uint32_t slot;
 			std::uint32_t space;
+			/// GL binding unit emulating the range as a uniform buffer.
+			std::uint32_t unit;
 			std::uint32_t offset;
 			std::uint32_t size;
 			GLenum target;
@@ -321,7 +458,9 @@ namespace fyuu_rhi::opengl {
 		std::optional<pipeline::DepthStencilState> depth_stencil;
 		std::vector<pipeline::ColorTargetState> color_targets;
 		std::vector<pipeline::BindingMetadata> bindings;
-		std::vector<CombinedSampler> combined_samplers;
+		/// Logical (space, slot) -> GL unit map for `bindings`; the generated
+		/// GLSL and the scheduler both resolve through it.
+		std::vector<BindingUnit> binding_units;
 		std::vector<ConstantRange> constant_ranges;
 	};
 
@@ -381,6 +520,7 @@ namespace fyuu_rhi::opengl {
 			std::optional<pipeline::BlendState> blend;
 			pipeline::ColorWriteMask write_mask;
 			std::vector<pipeline::BindingMetadata> bindings;
+			std::vector<BindingUnit> binding_units;
 			std::vector<Pipeline::ConstantRange> constant_ranges;
 		};
 

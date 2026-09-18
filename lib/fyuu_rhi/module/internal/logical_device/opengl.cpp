@@ -332,25 +332,14 @@ namespace {
 		return result;
 	}
 
+	/// Reports every texture/sampler pair spirv-cross merges into one GLSL
+	/// sampled image, in the pipeline's logical (space, slot) coordinates. The
+	/// texture half names the pair; the sampler half shares its unit when it is a
+	/// separately declared sampler. The unit itself is assigned by
+	/// `MakeBindingUnits`, so this only identifies what belongs together.
 	std::vector<opengl::Pipeline::CombinedSampler> MakeCombinedSamplers(
-		std::span<shader::SlangCompiledEntryPoint const> entries,
-		SlangPipelineInterface const& interface
+		std::span<shader::SlangCompiledEntryPoint const> entries
 	) {
-		std::vector<std::uint32_t> occupied_units;
-		std::ranges::for_each(
-			interface.bindings,
-			[&](auto const& binding) {
-				if (
-					binding.flags.Test(ResourceFlagBits::TextureBinding) &&
-					binding.flags.Test(ResourceFlagBits::SamplerBinding)
-				) {
-					for (std::uint32_t element = 0u; element < binding.count; ++element) {
-						occupied_units.emplace_back(binding.slot + element);
-					}
-				}
-			}
-		);
-
 		std::vector<opengl::Pipeline::CombinedSampler> result;
 		for (auto const& entry : entries) {
 			if (entry.code.empty() || entry.code.size() % sizeof(std::uint32_t) != 0u) {
@@ -382,8 +371,7 @@ namespace {
 					.sampler_space = compiler.get_decoration(
 						combined.sampler_id,
 						spv::DecorationDescriptorSet
-					),
-					.unit = 0u
+					)
 				};
 				auto duplicate = std::ranges::find_if(
 					result,
@@ -395,65 +383,85 @@ namespace {
 							candidate.sampler_space == mapping.sampler_space;
 					}
 				);
-				if (duplicate != result.end()) {
-					continue;
-				}
-				auto combined_binding = std::ranges::find_if(
-					interface.bindings,
-					[&](auto const& binding) {
-						return
-							binding.flags.Test(ResourceFlagBits::TextureBinding) &&
-							binding.flags.Test(ResourceFlagBits::SamplerBinding) &&
-							binding.resource_slot == mapping.texture_slot &&
-							binding.resource_space == mapping.texture_space &&
-							binding.sampler_slot == mapping.sampler_slot &&
-							binding.sampler_space == mapping.sampler_space;
-					}
-				);
-				if (combined_binding != interface.bindings.end()) {
-					mapping.unit = combined_binding->slot;
+				if (duplicate == result.end()) {
 					result.emplace_back(mapping);
-					continue;
 				}
-				auto texture = std::ranges::find_if(
-					interface.bindings,
-					[&](auto const& binding) {
-						return
-							binding.slot == mapping.texture_slot &&
-							binding.space == mapping.texture_space;
-					}
-				);
-				auto unit_count = texture == interface.bindings.end()
-					? 1u
-					: texture->count;
-				auto available = [&]() {
-					return std::ranges::none_of(
-						std::views::iota(0u, unit_count),
-						[&](std::uint32_t element) {
-							return std::ranges::contains(
-								occupied_units,
-								mapping.unit + element
-							);
-						}
-					);
-				};
-				while (!available()) {
-					++mapping.unit;
-				}
-				std::ranges::copy(
-					std::views::iota(mapping.unit, mapping.unit + unit_count),
-					std::back_inserter(occupied_units)
-				);
-				result.emplace_back(mapping);
 			}
 		}
 		return result;
+	}
+
+	/// Builds the pipeline's GL binding-unit table: one unit per reflected
+	/// resource binding and one per immediate-constant range, all drawn from the
+	/// same counter so a logical (space, slot) pair is unique across every kind
+	/// of binding. OpenGL is a single flat binding namespace, so this table is
+	/// the single source of truth the generated GLSL and the command scheduler
+	/// both resolve through.
+	opengl::BindingUnits MakeBindingUnits(
+		SlangPipelineInterface const& interface,
+		std::span<opengl::Pipeline::CombinedSampler const> combined_samplers
+	) {
+		std::vector<opengl::BindingKey> keys;
+		std::vector<opengl::BindingKey> constants;
+		keys.reserve(interface.bindings.size());
+		std::vector<opengl::Pipeline::CombinedSampler> separate_samplers;
+		std::ranges::for_each(
+			interface.bindings,
+			[&](auto const& binding) {
+				bool sampler_only =
+					binding.flags.Test(ResourceFlagBits::SamplerBinding) &&
+					!binding.flags.Test(ResourceFlagBits::TextureBinding);
+				// A separately declared sampler is sampled through the unit of the
+				// texture GLSL combines it with, so it must not reserve one itself.
+				auto pair = combined_samplers.end();
+				if (sampler_only) {
+					pair = std::ranges::find_if(
+						combined_samplers,
+						[&](auto const& candidate) {
+							return candidate.sampler_space == binding.space &&
+								candidate.sampler_slot == binding.slot;
+						}
+					);
+				}
+				if (pair != combined_samplers.end()) {
+					separate_samplers.emplace_back(*pair);
+					return;
+				}
+				keys.push_back(
+					opengl::BindingKey{ binding.space, binding.slot, binding.count }
+				);
+			}
+		);
+		constants.reserve(interface.push_constants.size());
+		std::ranges::for_each(
+			interface.push_constants,
+			[&](auto const& range) {
+				constants.push_back(
+					opengl::BindingKey{ range.space, range.slot, 1u }
+				);
+			}
+		);
+		auto units = opengl::AssignBindingUnits(keys, constants);
+		std::ranges::for_each(
+			separate_samplers,
+			[&](auto const& pair) {
+				opengl::ShareBindingUnit(
+					units.bindings,
+					pair.sampler_space,
+					pair.sampler_slot,
+					pair.texture_space,
+					pair.texture_slot
+				);
+			}
+		);
+		return units;
 	}
 
 	std::string ConvertSPIRVToGLSL(
 		shader::SlangCompiledEntryPoint const& entry,
 		ShaderTarget const& target,
 		std::span<opengl::Pipeline::CombinedSampler const> combined_samplers,
+		std::span<opengl::BindingUnit const> binding_units,
 		std::span<opengl::Pipeline::ConstantRange const> constant_ranges
 	) {
 		if (entry.code.empty() || entry.code.size() % sizeof(std::uint32_t) != 0u) {
@@ -470,7 +478,14 @@ namespace {
 		auto options = compiler.get_common_options();
 		options.version = target.GLSL_version;
 		options.es = target.embedded;
-		options.vertex.fixup_clipspace = true;
+		// The engine authors shaders in the Vulkan [0, 1] depth convention (D3D12, WebGPU,
+		// Metal and Vulkan all consume it unchanged), and the scheduler keeps OpenGL in that
+		// same convention with glClipControl(GL_UPPER_LEFT, GL_ZERO_TO_ONE). spirv-cross's
+		// clip-space fixup would re-map the shader's z from [0, 1] to GL's [-1, 1], which
+		// under a zero-to-one clip volume puts the near plane (z = 0) at z = -1, entirely
+		// outside the clip volume: every vertex is clipped and the draw silently produces no
+		// fragments. Leave the fixup off so the shader's depth passes through untouched.
+		options.vertex.fixup_clipspace = false;
 		options.vertex.flip_vert_y = false;
 		options.fragment.default_float_precision =
 			spirv_cross::CompilerGLSL::Options::Mediump;
@@ -479,49 +494,94 @@ namespace {
 		options.emit_push_constant_as_uniform_buffer = !constant_ranges.empty();
 		compiler.set_common_options(options);
 		compiler.build_combined_image_samplers();
-		for (auto const& combined : compiler.get_combined_image_samplers()) {
-			auto texture_slot = compiler.get_decoration(
-				combined.image_id,
-				spv::DecorationBinding
-			);
-			auto texture_space = compiler.get_decoration(
-				combined.image_id,
-				spv::DecorationDescriptorSet
-			);
-			auto sampler_slot = compiler.get_decoration(
-				combined.sampler_id,
-				spv::DecorationBinding
-			);
-			auto sampler_space = compiler.get_decoration(
-				combined.sampler_id,
-				spv::DecorationDescriptorSet
-			);
-			auto mapping = std::ranges::find_if(
-				combined_samplers,
-				[&](auto const& candidate) {
-					return
-						candidate.texture_slot == texture_slot &&
-						candidate.texture_space == texture_space &&
-						candidate.sampler_slot == sampler_slot &&
-						candidate.sampler_space == sampler_space;
+		// The GLSL binding number and the GL binding unit are the same number:
+		// both sides resolve a logical (space, slot) through the pipeline's
+		// binding-unit table, so the shader and the scheduler cannot disagree.
+		std::vector<std::uint32_t> combined_ids;
+		std::ranges::for_each(
+			compiler.get_combined_image_samplers(),
+			[&](auto const& combined) {
+				auto texture_slot = compiler.get_decoration(
+					combined.image_id,
+					spv::DecorationBinding
+				);
+				auto texture_space = compiler.get_decoration(
+					combined.image_id,
+					spv::DecorationDescriptorSet
+				);
+				auto sampler_slot = compiler.get_decoration(
+					combined.sampler_id,
+					spv::DecorationBinding
+				);
+				auto sampler_space = compiler.get_decoration(
+					combined.sampler_id,
+					spv::DecorationDescriptorSet
+				);
+				auto unit = std::ranges::find_if(
+					combined_samplers,
+					[&](auto const& candidate) {
+						return
+							candidate.texture_slot == texture_slot &&
+							candidate.texture_space == texture_space &&
+							candidate.sampler_slot == sampler_slot &&
+							candidate.sampler_space == sampler_space;
+					}
+				);
+				if (unit == combined_samplers.end()) {
+					throw std::logic_error(
+						"OpenGL combined sampler was not reflected as one pair"
+					);
 				}
-			);
-			if (mapping == combined_samplers.end()) {
-				throw std::logic_error(
-					"OpenGL combined sampler was not assigned a texture unit"
+				compiler.set_decoration(
+					combined.combined_id,
+					spv::DecorationBinding,
+					opengl::BindingUnitOf(
+						binding_units,
+						texture_space,
+						texture_slot
+					)
+				);
+				compiler.unset_decoration(
+					combined.combined_id,
+					spv::DecorationDescriptorSet
+				);
+				combined_ids.emplace_back(
+					static_cast<std::uint32_t>(combined.combined_id)
 				);
 			}
-			compiler.set_decoration(
-				combined.combined_id,
-				spv::DecorationBinding,
-				mapping->unit
-			);
-			compiler.unset_decoration(
-				combined.combined_id,
-				spv::DecorationDescriptorSet
-			);
-		}
+		);
 		auto resources = compiler.get_shader_resources();
+		// Give every resource the pipeline assigned a unit its unique binding.
+		// Resources GLSL never emits on their own (the separate halves of a
+		// combined image sampler) have no unit and are skipped: the combined id
+		// carries the pair's unit and is the only expression in the output.
+		auto remap = [&](spirv_cross::Resource const& resource) {
+			if (std::ranges::contains(
+				combined_ids,
+				static_cast<std::uint32_t>(resource.id)
+			)) {
+				return;
+			}
+			auto unit = opengl::FindBindingUnit(
+				binding_units,
+				compiler.get_decoration(resource.id, spv::DecorationDescriptorSet),
+				compiler.get_decoration(resource.id, spv::DecorationBinding)
+			);
+			if (unit) {
+				compiler.set_decoration(
+					resource.id,
+					spv::DecorationBinding,
+					unit->unit
+				);
+			}
+		};
+		std::ranges::for_each(resources.uniform_buffers, remap);
+		std::ranges::for_each(resources.storage_buffers, remap);
+		std::ranges::for_each(resources.sampled_images, remap);
+		std::ranges::for_each(resources.separate_images, remap);
+		std::ranges::for_each(resources.separate_samplers, remap);
+		std::ranges::for_each(resources.storage_images, remap);
+		std::ranges::for_each(resources.atomic_counters, remap);
 		if (resources.push_constant_buffers.size() > constant_ranges.size()) {
 			throw std::runtime_error(
 				"OpenGL shader exposes an unmatched immediate-constant block"
@@ -533,7 +593,7 @@ namespace {
 				compiler.set_decoration(
 					resources.push_constant_buffers[index].id,
 					spv::DecorationBinding,
-					constant_ranges[index].slot
+					constant_ranges[index].unit
 				);
 			}
 		);
@@ -544,6 +604,7 @@ namespace {
 		shader::SlangCompiledEntryPoint const& entry,
 		ShaderTarget const& target,
 		std::span<opengl::Pipeline::CombinedSampler const> combined_samplers,
+		std::span<opengl::BindingUnit const> binding_units,
 		std::span<opengl::Pipeline::ConstantRange const> constant_ranges
 	) {
 		auto shader_type = ShaderStage(entry.stage);
@@ -558,6 +619,7 @@ namespace {
 			entry,
 			target,
 			combined_samplers,
+			binding_units,
 			constant_ranges
 		);
 		source = converted_source.data();
@@ -605,12 +667,22 @@ namespace {
 		);
 	}
 
+	/// Identifies the SPIR-V -> GLSL translation that produced a cached program binary.
+	/// The driver's binary cache is keyed on the SPIR-V, which is byte-identical however it
+	/// is translated, so a translation change must also change this tag: otherwise a driver
+	/// keeps reloading a binary built from the previous settings and the change looks
+	/// inactive. Bump it whenever the options in ConvertSPIRVToGLSL change, including the
+	/// binding units it writes: the renumbered `layout(binding = N)` only reaches the
+	/// driver through a freshly translated (and therefore cache-missed) program.
+	constexpr std::string_view PipelineTranslationTag = "opengl-glsl-3";
+
 	std::filesystem::path PipelineCachePath(
 		shader::SlangProgram const& program,
 		std::string_view profile
 	) {
 		boost::hash2::xxhash_64 hash;
 		HashString(hash, profile);
+		HashString(hash, PipelineTranslationTag);
 		HashDriver(hash);
 		std::ranges::for_each(
 			program.GetEntryPoints(),
@@ -635,17 +707,25 @@ namespace {
 
 	std::vector<opengl::Pipeline::ConstantRange> MakeConstantRanges(
 		SlangPipelineInterface const& interface,
+		std::span<opengl::BindingUnit const> units,
 		GLenum target
 	) {
+		if (interface.push_constants.size() != units.size()) {
+			throw std::logic_error(
+				"OpenGL immediate constants were not assigned binding units"
+			);
+		}
 		std::vector<opengl::Pipeline::ConstantRange> result;
 		result.reserve(interface.push_constants.size());
 		std::ranges::transform(
-			interface.push_constants,
+			std::views::iota(std::size_t{ 0u }, interface.push_constants.size()),
 			std::back_inserter(result),
-			[target](auto const& range) {
+			[&](std::size_t index) {
+				auto const& range = interface.push_constants[index];
 				return opengl::Pipeline::ConstantRange{
 					.slot = range.slot,
 					.space = range.space,
+					.unit = units[index].unit,
 					.offset = range.offset,
 					.size = range.size,
 					.target = target
@@ -715,6 +795,7 @@ namespace {
 		ShaderTarget const& target,
 		bool compute,
 		std::span<opengl::Pipeline::CombinedSampler const> combined_samplers,
+		std::span<opengl::BindingUnit const> binding_units,
 		std::span<opengl::Pipeline::ConstantRange const> constant_ranges
 	) {
 		auto cache_path = PipelineCachePath(program, target.cache_name);
@@ -740,6 +821,7 @@ namespace {
 						entry,
 						target,
 						combined_samplers,
+						binding_units,
 						constant_ranges
 					);
 				}
@@ -1043,13 +1125,17 @@ namespace fyuu_rhi {
 				descriptor.program,
 				CacheTag(shader_target.cache_name)
 			);
+			auto combined_samplers = MakeCombinedSamplers(
+				program.GetEntryPoints()
+			);
+			auto binding_units = MakeBindingUnits(
+				program.GetInterface(),
+				combined_samplers
+			);
 			auto constant_ranges = MakeConstantRanges(
 				program.GetInterface(),
+				binding_units.constants,
 				GL_UNIFORM_BUFFER
-			);
-			auto combined_samplers = MakeCombinedSamplers(
-				program.GetEntryPoints(),
-				program.GetInterface()
 			);
 			if (
 				!constant_ranges.empty() &&
@@ -1104,6 +1190,7 @@ namespace fyuu_rhi {
 				shader_target,
 				false,
 				combined_samplers,
+				binding_units.bindings,
 				constant_ranges
 			);
 			return MakePipeline(
@@ -1130,7 +1217,7 @@ namespace fyuu_rhi {
 						descriptor.color_targets.end()
 					),
 					pipeline::MakePipelineBindingMetadata(program.GetInterface()),
-					std::move(combined_samplers),
+					std::move(binding_units.bindings),
 					std::move(constant_ranges)
 				}
 			);
@@ -1164,13 +1251,17 @@ namespace fyuu_rhi {
 				descriptor.program,
 				CacheTag(shader_target.cache_name)
 			);
+			auto combined_samplers = MakeCombinedSamplers(
+				program.GetEntryPoints()
+			);
+			auto binding_units = MakeBindingUnits(
+				program.GetInterface(),
+				combined_samplers
+			);
 			auto constant_ranges = MakeConstantRanges(
 				program.GetInterface(),
+				binding_units.constants,
 				GL_UNIFORM_BUFFER
-			);
-			auto combined_samplers = MakeCombinedSamplers(
-				program.GetEntryPoints(),
-				program.GetInterface()
 			);
 			if (
 				program.GetEntryPoints().size() != 1u ||
@@ -1186,6 +1277,7 @@ namespace fyuu_rhi {
 				shader_target,
 				true,
 				combined_samplers,
+				binding_units.bindings,
 				constant_ranges
 			);
 			return MakePipeline(
@@ -1203,7 +1295,7 @@ namespace fyuu_rhi {
 					std::nullopt,
 					{},
 					pipeline::MakePipelineBindingMetadata(program.GetInterface()),
-					std::move(combined_samplers),
+					std::move(binding_units.bindings),
 					std::move(constant_ranges)
 				}
 			);

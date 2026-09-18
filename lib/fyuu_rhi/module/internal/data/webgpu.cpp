@@ -2,16 +2,20 @@ module;
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <atomic>
+#include <condition_variable>
 #include <cstddef>
 #include <exception>
 #include <memory>
 #include <mutex>
+#include <thread>
 #include <utility>
 #include <vector>
 
 #include <cstdint>
 
 #include <variant>
+
+#include <stop_token>
 #endif // !defined(__cpp_lib_modules)
 #include <dawn/webgpu_cpp.h>
 
@@ -43,6 +47,9 @@ namespace fyuu_rhi::webgpu {
 		std::atomic_bool complete = false;
 		std::atomic_bool stopped = false;
 		std::mutex mutex;
+		/// Wakes the completion wait. The scheduler's pump thread owns completion, so a
+		/// waiting thread cannot drive the Dawn future itself and must be notified instead.
+		std::condition_variable condition;
 		std::exception_ptr error;
 	};
 
@@ -61,10 +68,37 @@ namespace fyuu_rhi::webgpu {
 			wgpu::TextureFormat format = wgpu::TextureFormat::Undefined;
 		};
 
+		/// One Dawn future the pump thread waits on, together with the completion state
+		/// observing it completes. The state is shared rather than owned so the pump can
+		/// finish a token whose caller is already gone, or one published after the pump
+		/// finished another round.
+		struct WatchedFuture {
+			wgpu::Future future;
+			std::shared_ptr<CompletionState> state;
+		};
+
 		wgpu::Instance instance;
 		wgpu::Device device;
 		std::vector<SurfaceState> surfaces;
 		std::mutex surfaces_mutex;
+
+		/// Outstanding completion futures, published by `Watch` and consumed by the pump
+		/// thread. The pump copies this list out instead of holding the lock across a wait.
+		std::mutex pump_mutex;
+		/// Bounds the pump's sleep between rounds and lets the destructor wake it, since
+		/// jthread::request_stop does not wake a condition variable on its own.
+		std::condition_variable pump_condition;
+		std::vector<WatchedFuture> pump_futures;
+		/// Set by the pump thread once Dawn reported the device lost, so every later
+		/// future is completed as an error instead of being waited on forever.
+		bool pump_device_lost = false;
+		std::exception_ptr pump_device_lost_error;
+		/// Set by the pump thread once it has published its state, so the move constructor
+		/// does not return before the thread is running against this object.
+		std::atomic_bool context_ready = false;
+		/// The completion pump. Declared last so it is joined while the instance and device
+		/// handles it waits on are still alive.
+		std::jthread pump_thread;
 
 		CommandSchedulerContext(
 			wgpu::Instance const& instance,
@@ -77,11 +111,15 @@ namespace fyuu_rhi::webgpu {
 		CommandSchedulerContext(CommandSchedulerContext const&) = delete;
 		CommandSchedulerContext& operator=(CommandSchedulerContext const&) = delete;
 
-		CommandSchedulerContext(CommandSchedulerContext&& other) noexcept
-			: instance(std::move(other.instance)),
-			device(std::move(other.device)),
-			surfaces(std::move(other.surfaces)) {
-		}
+		CommandSchedulerContext(CommandSchedulerContext&& other) noexcept;
+		~CommandSchedulerContext() noexcept;
+
+		/// Publishes one outstanding Dawn future to the pump thread.
+		void Watch(wgpu::Future future, std::shared_ptr<CompletionState> const& state);
+
+		/// The pump thread: waits on every published future plus the device-loss future
+		/// with a zero timeout, and publishes each completion it observes.
+		void Run(std::stop_token stop_token);
 	};
 
 	struct Resource {

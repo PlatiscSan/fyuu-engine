@@ -9,6 +9,7 @@ module;
 #include <ranges>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -16,6 +17,10 @@ module;
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
 #endif // !defined(__cpp_lib_modules)
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
@@ -1039,21 +1044,27 @@ namespace fyuu_rhi::execution {
 				}
 			}
 
+			// Cancellation before anything is committed is reported through the shared
+			// state rather than by an unset token, so the wait has a terminal flag to see.
+			auto stopped_token = []() {
+				auto state = std::make_shared<metal::CompletionState>();
+				state->stopped.store(true, std::memory_order_release);
+				state->complete.store(true, std::memory_order_release);
+				return metal::CompletionToken{ {}, std::move(state) };
+			};
 			if (stop_token.stop_requested()) {
-				return MakeCompletionToken(
-					metal::CompletionToken{ {}, {}, true }
-				);
+				return MakeCompletionToken(stopped_token());
 			}
 
+			// The state every command buffer's completed handler publishes into. It is
+			// created before any handler is registered so a handler can never outlive it.
+			auto token_state = std::make_shared<metal::CompletionState>();
 			std::vector<NS::SharedPtr<MTL::CommandBuffer>> command_buffers;
-			std::exception_ptr error;
 			try {
 				command_buffers.reserve(plan.batches.size());
 				for (std::size_t batch_index = 0u; batch_index < plan.batches.size(); ++batch_index) {
 					if (stop_token.stop_requested()) {
-						return MakeCompletionToken(
-							metal::CompletionToken{ {}, {}, true }
-						);
+						return MakeCompletionToken(stopped_token());
 					}
 					auto command_buffer = NS::RetainPtr(context->queue->commandBuffer());
 					if (!command_buffer) {
@@ -1081,6 +1092,48 @@ namespace fyuu_rhi::execution {
 					command_buffers.emplace_back(std::move(command_buffer));
 				}
 
+				// Register every handler before the first commit: a committed command
+				// buffer can reach a terminal state immediately, and a handler added
+				// afterwards would never run, leaving the token incomplete forever.
+				//
+				// NOTE: unverified. Metal is excluded on this machine, so this handler
+				// cannot be compiled or exercised here. It captures only the shared state
+				// (never the token, and never a command buffer of its own), it never lets
+				// an exception escape into Metal's own thread, and it publishes completion
+				// through the state's mutex before notifying.
+				for (auto const& command_buffer : command_buffers) {
+					command_buffer->addCompletedHandler(
+						[token_state](MTL::CommandBuffer* completed) {
+							try {
+								if (completed->status() == MTL::CommandBufferStatusError) {
+									auto* failure = completed->error();
+									std::string message = "Metal command buffer failed";
+									if (failure && failure->localizedDescription()) {
+										message = failure->localizedDescription()->utf8String();
+									}
+									std::unique_lock<std::mutex> state_lock(token_state->mutex);
+									if (!token_state->error) {
+										token_state->error = std::make_exception_ptr(
+											std::runtime_error(message)
+										);
+									}
+								}
+							}
+							catch (...) {
+								std::unique_lock<std::mutex> state_lock(token_state->mutex);
+								if (!token_state->error) {
+									token_state->error = std::current_exception();
+								}
+							}
+							{
+								std::unique_lock<std::mutex> state_lock(token_state->mutex);
+								token_state->complete.store(true, std::memory_order_release);
+							}
+							token_state->condition.notify_all();
+						}
+					);
+				}
+
 				std::ranges::for_each(
 					command_buffers,
 					[](auto const& command_buffer) {
@@ -1089,14 +1142,21 @@ namespace fyuu_rhi::execution {
 				);
 			}
 			catch (...) {
-				error = std::current_exception();
+				// Nothing was committed, or nothing can be observed any more. The command
+				// buffers are released and the failure is published here, because no
+				// completed handler will report it.
+				{
+					std::unique_lock<std::mutex> state_lock(token_state->mutex);
+					token_state->error = std::current_exception();
+					token_state->complete.store(true, std::memory_order_release);
+				}
+				token_state->condition.notify_all();
 				command_buffers.clear();
 			}
 			return MakeCompletionToken(
 				metal::CompletionToken{
 					std::move(command_buffers),
-					std::move(error),
-					false
+					std::move(token_state)
 				}
 			);
 		}

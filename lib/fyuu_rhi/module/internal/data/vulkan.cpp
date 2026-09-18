@@ -75,14 +75,12 @@ namespace fyuu_rhi::vulkan {
 		std::uint64_t value;
 	};
 
-	struct BinaryCompletion {
-		vk::SharedFence fence;
-	};
-
+	/// Either a timeline wait (semaphore and value) or a plain fence. The fence alternative is
+	/// the fence itself rather than a single-field wrapper around it.
 	using CompletionPoint = std::variant<
 		std::monostate,
 		TimelineCompletion,
-		BinaryCompletion
+		vk::SharedFence
 	>;
 
 	class BinaryCompletionPointAllocator final : public std::enable_shared_from_this<BinaryCompletionPointAllocator> {
@@ -150,12 +148,28 @@ namespace fyuu_rhi::vulkan {
 	};
 
 	struct CommandSchedulerContext;
-	struct CommandPoolContext;
+
+	/// One native command pool and the buffers recycled from it.
+	///
+	/// A batch leases a whole pool, so two batches recording concurrently always use different
+	/// pools; Vulkan only requires that two buffers from *one* pool not be recorded at the same
+	/// time. A pool is free to lease again once its in-flight buffer has been recycled.
+	struct CommandPoolContext {
+		vk::SharedCommandPool impl;
+		/// Buffers this pool has finished with, ready to be handed out again.
+		std::deque<vk::CommandBuffer> command_buffers;
+	};
 
 	struct CompletionToken {
 		struct ManagedCommandBuffer {
 			std::shared_ptr<execution::CommandSchedulerContext> owner;
 			CommandSchedulerContext* context;
+			/// The pool this buffer came out of, held by value while the batch owns it: a pool is
+			/// taken out of its family's idle deque on lease and put back when the buffer is
+			/// recycled. Owning it here is what makes "in the deque" mean "idle" structurally,
+			/// with no in-use flag to scan and no address into the container to keep valid.
+			CommandPoolContext pool;
+			/// The family whose idle deque the pool returns to.
 			std::uint32_t family;
 			vk::CommandBuffer impl;
 			CompletionPoint completion;
@@ -164,10 +178,12 @@ namespace fyuu_rhi::vulkan {
 				std::shared_ptr<execution::CommandSchedulerContext> const& owner,
 				CommandSchedulerContext* context,
 				std::uint32_t family,
+				CommandPoolContext&& pool,
 				vk::CommandBuffer impl
 			) noexcept
 				: owner(owner),
 				context(context),
+				pool(std::move(pool)),
 				family(family),
 				impl(impl) {
 			}
@@ -221,12 +237,11 @@ namespace fyuu_rhi::vulkan {
 		~CompletionToken() noexcept;
 	};
 
-	struct CommandPoolContext {
-		vk::SharedCommandPool impl;
-		std::deque<vk::CommandBuffer> command_buffers;
-		std::mutex mutex;
-	};
-
+	/// One native command pool and the buffers recycled from it.
+	///
+	/// A batch leases a whole pool, so two batches recording concurrently always use different
+	/// pools; Vulkan only requires that two buffers from *one* pool not be recorded at the same
+	/// time. A pool is free to lease again once its in-flight buffer has been recycled.
 	struct PresentationContext {
 		struct BackBufferSynchronization {
 			vk::SharedSemaphore acquire_semaphore;
@@ -275,7 +290,11 @@ namespace fyuu_rhi::vulkan {
 		vk::SharedDevice device;
 		std::shared_ptr<vk::detail::DispatchLoaderDynamic> dispatcher;
 		QueueAllocator queue_allocator;
-		std::unordered_map<std::uint32_t, CommandPoolContext> command_pools;
+		/// Per queue family, the IDLE pools. A batch takes one out on lease and the command buffer
+		/// puts it back when recycled, so membership of this deque is the whole free/leased state.
+		/// std::deque because both ends move constantly and the front is the reuse end: an O(1)
+		/// pop_front, where a vector would shift the rest on every lease.
+		std::unordered_map<std::uint32_t, std::deque<CommandPoolContext>> command_pools;
 		std::mutex command_pools_mutex;
 		std::variant<
 			std::monostate,

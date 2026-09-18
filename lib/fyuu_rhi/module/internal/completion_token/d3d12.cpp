@@ -122,5 +122,60 @@ namespace fyuu_rhi::execution {
 			return token->is_cancelled;
 		}
 	};
+
+	template <>
+	struct WaitCompletionToken<d3d12::CompletionToken> {
+		d3d12::CompletionToken* token;
+
+		/// Longest one fence wait blocks. It only bounds how promptly a stop request is
+		/// noticed; a fence that reaches its value sooner releases the wait immediately.
+		static constexpr std::uint32_t WaitTimeoutMilliseconds = 50u;
+
+		bool operator()(std::stop_token stop_token) const noexcept {
+			// The loop lives here rather than at the call site so that this returns false
+			// only for a stop request: a bounded wait that merely elapsed must never be
+			// reported as incomplete, because the caller reads false as "abandon, do not
+			// hand the bindings to the receiver".
+			for (;;) {
+				if (PollCompletionToken<d3d12::CompletionToken>{ token }()) {
+					return true;
+				}
+				if (stop_token.stop_requested()) {
+					return false;
+				}
+				// One token can span several queues, so a single reached fence is not enough
+				// to report completion: block on the first entry Poll() still considers
+				// outstanding and let the next iteration re-decide. Poll() skips the same
+				// entries skipped here, so at least one wait always happens and this cannot
+				// spin.
+				for (auto const& commands : token->command_lists) {
+					if (
+						!commands.impl ||
+						!commands.owner ||
+						commands.fence_value == 0u
+					) {
+						continue;
+					}
+					if (commands.owner->fence->GetCompletedValue() >= commands.fence_value) {
+						continue;
+					}
+					try {
+						// Unlike the destructor path this must never wait forever, so the
+						// event timeout is finite.
+						(void)fyuu_rhi::d3d12::WaitForFenceFor(
+							commands.owner->fence,
+							commands.fence_value,
+							WaitTimeoutMilliseconds
+						);
+					}
+					catch (...) {
+						// SetEventOnCompletion fails once the device is gone; Poll() below
+						// records the removal reason and reports terminal.
+					}
+					break;
+				}
+			}
+		}
+	};
 }
 #endif // defined(_WIN32)

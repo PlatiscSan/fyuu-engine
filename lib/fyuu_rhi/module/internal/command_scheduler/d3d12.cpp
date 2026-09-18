@@ -1541,116 +1541,123 @@ namespace fyuu_rhi::execution {
 			[&](std::size_t queue_index) {
 				auto& submission = queue_submissions[queue_index];
 				auto const& queue = submission.queue;
-				for (std::size_t position = 0u; position < submission.batches.size(); ++position) {
-					auto batch_index = submission.batches[position];
-					auto& batch = prepared[batch_index];
-					std::unique_lock<std::mutex> submission_lock(
-						queue->submission_mutex,
-						std::defer_lock
-					);
-					try {
-						// Dependency publication is CPU-side bookkeeping. Never wait for it
-						// while owning a native queue lock: concurrent graphs may reach the
-						// same pair of queues in opposite orders.
-						for (auto dependency : batch.plan->dependencies) {
-							auto& source = prepared[dependency];
-							auto source_state = source.submission_state.load(
-								std::memory_order_acquire
-							);
-							while (source_state == PreparedBatch::SubmissionState::Pending) {
-								source.submission_state.wait(
-									source_state,
-									std::memory_order_acquire
-								);
-								source_state = source.submission_state.load(
-									std::memory_order_acquire
-								);
-							}
-							if (source_state == PreparedBatch::SubmissionState::Failed) {
-								throw std::runtime_error(
-									"D3D12 batch dependency was not submitted"
-								);
-							}
+				// A merged submission publishes all of its batches at once, so every batch
+				// from the first one without a completed Signal onwards is marked Failed
+				// together: none of their fences will ever be signaled.
+				auto fail_batches = [&](std::size_t first_failed, std::exception_ptr error) {
+					for (; first_failed < submission.batches.size(); ++first_failed) {
+						auto& failed = prepared[submission.batches[first_failed]];
+						if (!failed.submission_error) {
+							failed.submission_error = error;
 						}
-						// D3D12 queue calls are thread-safe individually, but this batch's
-						// Wait/Execute/Signal sequence must not interleave with another
-						// ExecuteCommands call targeting the same native queue. Fence values
-						// are allocated under the same lock so signal order stays monotonic.
-						submission_lock.lock();
-						auto fence_count = batch.presentations.empty() ? 1u : 2u;
-						batch.reserved_fence = queue->next_fence_value;
-						queue->next_fence_value += fence_count;
-						if (!batch.presentations.empty()) {
-							batch.presentation_fence = batch.reserved_fence + 1u;
-						}
-						for (auto dependency : batch.plan->dependencies) {
-							auto& source = prepared[dependency];
-							if (source.commands.owner == queue) {
-								// Submission order already satisfies dependencies within one queue.
-								continue;
-							}
-							ThrowIfFailed(
-								queue->impl->Wait(
-									source.commands.owner->fence.Get(),
-									source.reserved_fence
-								)
-							);
-						}
-						ID3D12CommandList* lists[] = { batch.commands.impl.Get() };
-						queue->impl->ExecuteCommandLists(1u, lists);
-						batch.execution_started = true;
-						ThrowIfFailed(
-							queue->impl->Signal(
-								queue->fence.Get(),
-								batch.reserved_fence
-							)
-						);
-						batch.commands.fence_value = batch.reserved_fence;
-						batch.submission_state.store(
-							PreparedBatch::SubmissionState::Signaled,
-							std::memory_order_release
-						);
-						batch.submission_state.notify_all();
-					}
-					catch (...) {
-						batch.submission_error = std::current_exception();
-						batch.submission_state.store(
+						failed.submission_state.store(
 							PreparedBatch::SubmissionState::Failed,
 							std::memory_order_release
 						);
-						batch.submission_state.notify_all();
-						for (++position; position < submission.batches.size(); ++position) {
-							auto& skipped = prepared[submission.batches[position]];
-							skipped.submission_error = batch.submission_error;
-							skipped.submission_state.store(
-								PreparedBatch::SubmissionState::Failed,
-								std::memory_order_release
-							);
-							skipped.submission_state.notify_all();
-						}
-						break;
+						failed.submission_state.notify_all();
 					}
-
-					for (auto const& presentation : batch.presentations) {
-						try {
-							ThrowIfFailed(
-								presentation.swapchain->Present(
-									presentation.vertical_sync ? 1u : 0u,
-									!presentation.vertical_sync && presentation.tearing_supported ?
-										DXGI_PRESENT_ALLOW_TEARING : 0u
-								)
-							);
+				};
+				// Submits batches [begin, end) of this queue as one ExecuteCommandLists,
+				// then signals and presents them in batch order. Returns false when the
+				// submission failed, after fail_batches published the failure.
+				auto flush = [&](std::size_t begin, std::size_t end) -> bool {
+					if (begin == end) {
+						return true;
+					}
+					// One lock hold covers fence reservation, submission, and presentation,
+					// so fence values are signaled in the order they were reserved even
+					// when several executions submit to this queue at the same time.
+					std::unique_lock<std::mutex> submission_lock(queue->submission_mutex);
+					auto next_fence = queue->next_fence_value;
+					// Every batch of the merged call is signaled before any Present, so the
+					// batch fences are reserved first and the presentation fences follow.
+					auto next_presentation_fence = next_fence + (end - begin);
+					for (std::size_t position = begin; position < end; ++position) {
+						auto& batch = prepared[submission.batches[position]];
+						batch.reserved_fence = next_fence++;
+						if (!batch.presentations.empty()) {
+							batch.presentation_fence = next_presentation_fence++;
 						}
-						catch (...) {
-							if (!batch.submission_error) {
-								batch.submission_error = std::current_exception();
+					}
+					queue->next_fence_value = next_presentation_fence;
+					// Only batches whose Signal completed may Present.
+					std::size_t signaled = begin;
+					try {
+						for (std::size_t position = begin; position < end; ++position) {
+							auto& batch = prepared[submission.batches[position]];
+							for (auto dependency : batch.plan->dependencies) {
+								auto& source = prepared[dependency];
+								if (source.commands.owner == queue) {
+									// Submission order already satisfies dependencies within one queue.
+									continue;
+								}
+								ThrowIfFailed(
+									queue->impl->Wait(
+										source.commands.owner->fence.Get(),
+										source.reserved_fence
+									)
+								);
 							}
 						}
+						std::vector<ID3D12CommandList*> lists;
+						lists.reserve(end - begin);
+						for (std::size_t position = begin; position < end; ++position) {
+							lists.emplace_back(
+								prepared[submission.batches[position]].commands.impl.Get()
+							);
+						}
+						queue->impl->ExecuteCommandLists(
+							static_cast<UINT>(lists.size()),
+							lists.data()
+						);
+						for (std::size_t position = begin; position < end; ++position) {
+							auto& batch = prepared[submission.batches[position]];
+							batch.execution_started = true;
+							ThrowIfFailed(
+								queue->impl->Signal(
+									queue->fence.Get(),
+									batch.reserved_fence
+								)
+							);
+							batch.commands.fence_value = batch.reserved_fence;
+							batch.submission_state.store(
+								PreparedBatch::SubmissionState::Signaled,
+								std::memory_order_release
+							);
+							batch.submission_state.notify_all();
+							signaled = position + 1u;
+						}
 					}
-					if (!batch.presentations.empty()) {
-						// Signal after every Present so both token completion and frame reuse cover
-						// DXGI's references to the back buffer, not merely the preceding copy list.
-
+					catch (...) {
+						fail_batches(signaled, std::current_exception());
+					}
+					// Present runs after the merged ExecuteCommandLists, per batch in
+					// order. A batch whose fence was signaled still presents when a later
+					// batch failed, matching the per-batch submission path.
+					for (std::size_t position = begin; position < signaled; ++position) {
+						auto& batch = prepared[submission.batches[position]];
+						for (auto const& presentation : batch.presentations) {
+							try {
+								ThrowIfFailed(
+									presentation.swapchain->Present(
+										presentation.vertical_sync ? 1u : 0u,
+										!presentation.vertical_sync && presentation.tearing_supported ?
+											DXGI_PRESENT_ALLOW_TEARING : 0u
+									)
+								);
+							}
+							catch (...) {
+								if (!batch.submission_error) {
+									batch.submission_error = std::current_exception();
+								}
+							}
+						}
+						if (batch.presentations.empty()) {
+							continue;
+						}
+						// Signal after every Present so both token completion and frame reuse
+						// cover DXGI's references to the back buffer, not merely the preceding
+						// copy list.
 						try {
 							ThrowIfFailed(
 								queue->impl->Signal(
@@ -1683,7 +1690,83 @@ namespace fyuu_rhi::execution {
 							}
 						}
 					}
+					return signaled == end;
+				};
+				// Batches reach the queue in plan order, and dependency publication is
+				// CPU-side bookkeeping. Waiting for it happens only once everything
+				// prepared so far is on the queue, and never while owning the native queue
+				// lock: the producer may itself be waiting for one of these batches, and
+				// concurrent graphs may reach the same pair of queues in opposite orders.
+				std::size_t run_begin = 0u;
+				for (std::size_t position = 0u; position < submission.batches.size(); ++position) {
+					auto& batch = prepared[submission.batches[position]];
+					bool blocked = false;
+					bool dependency_failed = false;
+					for (auto dependency : batch.plan->dependencies) {
+						auto& source = prepared[dependency];
+						auto source_state = source.submission_state.load(
+							std::memory_order_acquire
+						);
+						if (source_state == PreparedBatch::SubmissionState::Failed) {
+							dependency_failed = true;
+							break;
+						}
+						if (source.commands.owner == queue) {
+							// Submission order inside the merged call satisfies same-queue
+							// dependencies; a failed producer already stopped this loop.
+							continue;
+						}
+						if (source_state != PreparedBatch::SubmissionState::Pending || blocked) {
+							continue;
+						}
+						blocked = true;
+						// Publishing this queue's earlier batches can unblock the source.
+						if (!flush(run_begin, position)) {
+							return;
+						}
+						run_begin = position;
+					}
+					if (dependency_failed) {
+						fail_batches(
+							position,
+							std::make_exception_ptr(std::runtime_error(
+								"D3D12 batch dependency was not submitted"
+							))
+						);
+						return;
+					}
+					if (!blocked) {
+						continue;
+					}
+					for (auto dependency : batch.plan->dependencies) {
+						auto& source = prepared[dependency];
+						if (source.commands.owner == queue) {
+							continue;
+						}
+						auto source_state = source.submission_state.load(
+							std::memory_order_acquire
+						);
+						while (source_state == PreparedBatch::SubmissionState::Pending) {
+							source.submission_state.wait(
+								source_state,
+								std::memory_order_acquire
+							);
+							source_state = source.submission_state.load(
+								std::memory_order_acquire
+							);
+						}
+						if (source_state == PreparedBatch::SubmissionState::Failed) {
+							fail_batches(
+								position,
+								std::make_exception_ptr(std::runtime_error(
+									"D3D12 batch dependency was not submitted"
+								))
+							);
+							return;
+						}
+					}
 				}
+				flush(run_begin, submission.batches.size());
 			}
 		);
 		for (auto const& batch : prepared) {

@@ -8,8 +8,8 @@ module;
 
 #include <cstdint>
 
-#include <mutex>
 #include <condition_variable>
+#include <mutex>
 
 #include <variant>
 #endif // !defined(__cpp_lib_modules)
@@ -36,41 +36,48 @@ namespace fyuu_rhi {
 
 		ResourceMapScope operator()(ResourceDataRange range, bool writable) const {
 			auto const& buffer = std::get<wgpu::Buffer>(resource->impl);
-			std::mutex mutex;
-			std::condition_variable condition;
-			bool completed = false;
-			auto status = wgpu::MapAsyncStatus::Error;
-			std::string error;
-			buffer.MapAsync(
-				writable ? wgpu::MapMode::Write : wgpu::MapMode::Read,
-				range.offset,
-				range.size,
-				wgpu::CallbackMode::AllowSpontaneous,
-				[&](wgpu::MapAsyncStatus result, wgpu::StringView message) {
-					{
-						std::unique_lock lock(mutex);
-						status = result;
-						error.assign(message.data, message.length);
-						completed = true;
+			// A HostVisible buffer maps to BufferUsage::MapWrite, and CreateBuffer passes
+			// mappedAtCreation for it, so it is already mapped on arrival. Dawn rejects a
+			// second MapAsync on a mapped buffer, so only an unmapped buffer -- the
+			// MapRead readback case -- is mapped here. Either way the returned scope
+			// unmaps on release, which is what lets the next Map() map it again.
+			if (buffer.GetMapState() != wgpu::BufferMapState::Mapped) {
+				std::mutex mutex;
+				std::condition_variable condition;
+				bool completed = false;
+				auto status = wgpu::MapAsyncStatus::Error;
+				std::string error;
+				buffer.MapAsync(
+					writable ? wgpu::MapMode::Write : wgpu::MapMode::Read,
+					range.offset,
+					range.size,
+					wgpu::CallbackMode::AllowSpontaneous,
+					[&](wgpu::MapAsyncStatus result, wgpu::StringView message) {
+						{
+							std::unique_lock lock(mutex);
+							status = result;
+							error.assign(message.data, message.length);
+							completed = true;
+						}
+						condition.notify_one();
 					}
-					condition.notify_one();
+				);
+				{
+					std::unique_lock lock(mutex);
+					condition.wait(
+						lock,
+						[&]() {
+							return completed;
+						}
+					);
 				}
-			);
-			{
-				std::unique_lock lock(mutex);
-				condition.wait(
-					lock,
-					[&]() {
-						return completed;
-					}
-				);
-			}
-			if (status != wgpu::MapAsyncStatus::Success) {
-				throw std::runtime_error(
-					error.empty()
-						? "Failed to map a WebGPU readback buffer"
-						: error
-				);
+				if (status != wgpu::MapAsyncStatus::Success) {
+					throw std::runtime_error(
+						error.empty()
+							? "Failed to map a WebGPU readback buffer"
+							: error
+					);
+				}
 			}
 			void* data = writable
 				? buffer.GetMappedRange(range.offset, range.size)

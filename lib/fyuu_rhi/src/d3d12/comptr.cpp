@@ -17,12 +17,30 @@
 #include <dxgi1_6.h>
 #include <wrl.h>
 
+// The list below is derived from the d3d12 types that appear as alternatives in
+// the front-end variants (Resource, View, Sampler, Pipeline, PipelineResourceGroup,
+// PhysicalDevice, LogicalDevice, CommandSchedulerContext, CompletionToken) plus
+// the ComPtr members of the helpers those types embed by value
+// (DescriptorAllocator, DeviceRemovalTracker). Destroying one of those variants
+// from any backend partition instantiates every alternative's destructor, so
+// adding a ComPtr member to any of those types means adding it here too.
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdtor-name"
 template void Microsoft::WRL::ComPtr<D3D12MA::Allocation>::~ComPtr();
-template void Microsoft::WRL::ComPtr<ID3D12PipelineState>::~ComPtr();
-template void Microsoft::WRL::ComPtr<ID3D12RootSignature>::~ComPtr();
-template void Microsoft::WRL::ComPtr<ID3D12CommandSignature>::~ComPtr();
 template void Microsoft::WRL::ComPtr<D3D12MA::Allocator>::~ComPtr();
+template void Microsoft::WRL::ComPtr<ID3D12CommandAllocator>::~ComPtr();
+template void Microsoft::WRL::ComPtr<ID3D12CommandQueue>::~ComPtr();
+template void Microsoft::WRL::ComPtr<ID3D12CommandSignature>::~ComPtr();
+template void Microsoft::WRL::ComPtr<ID3D12Device>::~ComPtr();
+template void Microsoft::WRL::ComPtr<ID3D12DeviceRemovedExtendedData>::~ComPtr();
+template void Microsoft::WRL::ComPtr<ID3D12Fence>::~ComPtr();
+template void Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList>::~ComPtr();
+template void Microsoft::WRL::ComPtr<ID3D12InfoQueue1>::~ComPtr();
+template void Microsoft::WRL::ComPtr<ID3D12PipelineState>::~ComPtr();
+template void Microsoft::WRL::ComPtr<ID3D12Resource>::~ComPtr();
+template void Microsoft::WRL::ComPtr<ID3D12RootSignature>::~ComPtr();
+template void Microsoft::WRL::ComPtr<IDXGIAdapter1>::~ComPtr();
+template void Microsoft::WRL::ComPtr<IDXGIFactory2>::~ComPtr();
+template void Microsoft::WRL::ComPtr<IDXGIFactory5>::~ComPtr();
 #pragma clang diagnostic pop
 #endif // defined(_WIN32) && defined(__clang__)

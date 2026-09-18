@@ -228,7 +228,11 @@ namespace {
 		// Invalidate root signatures serialized before combined bindings used
 		// independent texture and sampler ranges. Their cache payload can contain
 		// duplicate sampler ranges even though the reflected key fields match.
-		constexpr std::uint32_t schema = 4;
+		// Schema 5 hashes the immediate-constant register separately from its ABI
+		// slot/space: two shaders can share the (0, 0) ABI identity while reading
+		// the block from different registers, and a signature cached for one would
+		// be wrong for the other.
+		constexpr std::uint32_t schema = 5;
 		hash.update(&schema, sizeof(schema));
 		for (auto const& entry : pipeline_interface.bindings) {
 			auto name_size = entry.name.size();
@@ -250,6 +254,8 @@ namespace {
 			hash.update(&range.size, sizeof(range.size));
 			hash.update(&range.slot, sizeof(range.slot));
 			hash.update(&range.space, sizeof(range.space));
+			hash.update(&range.register_slot, sizeof(range.register_slot));
+			hash.update(&range.register_space, sizeof(range.register_space));
 			hash.update(&range.visibility, sizeof(range.visibility));
 		}
 		return std::format("d3d12-root-signature-{:016x}.bin", hash.result());
@@ -332,9 +338,15 @@ namespace {
 				}
 				parameters.push_back(
 				    {.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
+				     // The register the shader reads the block from, which is
+				     // Slang's per-target choice, not the ABI slot/space. An
+				     // unannotated block lands on the next CBV register free of the
+				     // descriptor tables, so it can never overlap one; declaring the
+				     // placeholder register here instead is what made a user CBV at
+				     // (b0, space0) collide with the emulated range.
 				     .Constants =
-				         {.ShaderRegister = range.slot,
-				          .RegisterSpace = range.space,
+				         {.ShaderRegister = range.register_slot,
+				          .RegisterSpace = range.register_space,
 				          .Num32BitValues = static_cast<UINT>(range.size / sizeof(std::uint32_t))},
 				     .ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL}
 				);
