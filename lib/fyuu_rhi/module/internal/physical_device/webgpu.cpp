@@ -155,6 +155,10 @@ namespace fyuu_rhi {
 			};
 			static constexpr FeatureRequest requests[] = {
 				{ wgpu::FeatureName::TextureCompressionBC, "TextureCompressionBC" },
+				{ wgpu::FeatureName::Unorm16TextureFormats, "Unorm16TextureFormats" },
+				{ wgpu::FeatureName::TextureFormatsTier1, "TextureFormatsTier1" },
+				{ wgpu::FeatureName::Unorm16Filterable, "Unorm16Filterable" },
+				{ wgpu::FeatureName::TextureFormatsTier2, "TextureFormatsTier2" },
 				{ wgpu::FeatureName::Depth32FloatStencil8, "Depth32FloatStencil8" },
 				{ wgpu::FeatureName::TimestampQuery, "TimestampQuery" },
 				{ wgpu::FeatureName::IndirectFirstInstance, "IndirectFirstInstance" },

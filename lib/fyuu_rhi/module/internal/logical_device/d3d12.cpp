@@ -225,7 +225,10 @@ namespace {
 
 	std::string RootSignatureCacheKey(SlangPipelineInterface const& pipeline_interface) {
 		boost::hash2::xxhash_64 hash;
-		constexpr std::uint32_t schema = 2;
+		// Invalidate root signatures serialized before combined bindings used
+		// independent texture and sampler ranges. Their cache payload can contain
+		// duplicate sampler ranges even though the reflected key fields match.
+		constexpr std::uint32_t schema = 4;
 		hash.update(&schema, sizeof(schema));
 		for (auto const& entry : pipeline_interface.bindings) {
 			auto name_size = entry.name.size();
@@ -262,15 +265,18 @@ namespace {
 		if (serialized.empty()) {
 			std::vector<D3D12_DESCRIPTOR_RANGE1> ranges;
 			std::vector<D3D12_ROOT_PARAMETER1> parameters;
+			std::unordered_map<std::uint32_t, std::uint32_t> combined_sampler_slots;
 			ranges.reserve(pipeline_interface.bindings.size() * 2u);
 			parameters.reserve(
 			    pipeline_interface.bindings.size() * 2u + pipeline_interface.push_constants.size()
 			);
 
 			for (auto const& entry : pipeline_interface.bindings) {
-				// A combined texture+sampler binding (Sampler2D) decomposes into two
-				// independently reflected D3D12 register ranges. The numeric t and s
-				// registers are not required to match the RHI's logical binding slot.
+				// Slang preserves an explicit register(tN) for the texture half of a
+				// Sampler2D, but DXIL assigns the implicit sampler halves densely from
+				// s0 in each register space. Slang's generic layout reflection reports
+				// the logical binding for both categories, so it cannot be used for the
+				// native sampler register here.
 				bool combined = entry.flags.Test(ResourceFlagBits::TextureBinding) &&
 				    entry.flags.Test(ResourceFlagBits::SamplerBinding);
 				auto AddRangeAndParameter = [&ranges, &parameters, &entry](
@@ -294,6 +300,7 @@ namespace {
 					);
 				};
 				if (combined) {
+					auto& sampler_slot = combined_sampler_slots[entry.sampler_space];
 					AddRangeAndParameter(
 					    D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
 					    entry.resource_slot,
@@ -301,9 +308,10 @@ namespace {
 					);
 					AddRangeAndParameter(
 					    D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER,
-					    entry.sampler_slot,
+					    sampler_slot,
 					    entry.sampler_space
 					);
+					sampler_slot += entry.count;
 				} else {
 					auto type = DescriptorRangeType(entry);
 					bool sampler = type == D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;

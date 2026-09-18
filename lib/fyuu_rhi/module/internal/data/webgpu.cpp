@@ -49,6 +49,7 @@ namespace fyuu_rhi::webgpu {
 	struct CompletionToken {
 		wgpu::Instance instance;
 		std::shared_ptr<CompletionState> state;
+		wgpu::Future future;
 	};
 
 	struct CommandSchedulerContext {

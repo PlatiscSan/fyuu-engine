@@ -250,45 +250,46 @@ namespace {
 		SlangCompileTarget format;
 		std::string_view profile;
 		std::string_view cache_name;
-		std::uint32_t essl_version = 0u;
+		std::uint32_t GLSL_version;
+		bool embedded;
 	};
 
 	ShaderTarget SelectShaderTarget() {
 		if (GLAD_GL_ES_VERSION_3_2) {
-			return { SLANG_SPIRV, "spirv_1_0", "essl_320", 320u };
+			return { SLANG_SPIRV, "spirv_1_0", "essl_320", 320u, true };
 		}
 		if (GLAD_GL_ES_VERSION_3_1) {
-			return { SLANG_SPIRV, "spirv_1_0", "essl_310", 310u };
+			return { SLANG_SPIRV, "spirv_1_0", "essl_310", 310u, true };
 		}
 		if (GLAD_GL_ES_VERSION_3_0) {
-			return { SLANG_SPIRV, "spirv_1_0", "essl_300", 300u };
+			return { SLANG_SPIRV, "spirv_1_0", "essl_300", 300u, true };
 		}
 		if (GLAD_GL_ES_VERSION_2_0) {
 			throw std::runtime_error("Graphics pipelines require OpenGL ES 3.0 or newer");
 		}
 		if (GLAD_GL_VERSION_4_6) {
-			return { SLANG_GLSL, "glsl_460", "glsl_460" };
+			return { SLANG_SPIRV, "spirv_1_0", "glsl_460", 460u, false };
 		}
 		if (GLAD_GL_VERSION_4_5) {
-			return { SLANG_GLSL, "glsl_450", "glsl_450" };
+			return { SLANG_SPIRV, "spirv_1_0", "glsl_450", 450u, false };
 		}
 		if (GLAD_GL_VERSION_4_4) {
-			return { SLANG_GLSL, "glsl_440", "glsl_440" };
+			return { SLANG_SPIRV, "spirv_1_0", "glsl_440", 440u, false };
 		}
 		if (GLAD_GL_VERSION_4_3) {
-			return { SLANG_GLSL, "glsl_430", "glsl_430" };
+			return { SLANG_SPIRV, "spirv_1_0", "glsl_430", 430u, false };
 		}
 		if (GLAD_GL_VERSION_4_2) {
-			return { SLANG_GLSL, "glsl_420", "glsl_420" };
+			return { SLANG_SPIRV, "spirv_1_0", "glsl_420", 420u, false };
 		}
 		if (GLAD_GL_VERSION_4_1) {
-			return { SLANG_GLSL, "glsl_410", "glsl_410" };
+			return { SLANG_SPIRV, "spirv_1_0", "glsl_410", 410u, false };
 		}
 		if (GLAD_GL_VERSION_4_0) {
-			return { SLANG_GLSL, "glsl_400", "glsl_400" };
+			return { SLANG_SPIRV, "spirv_1_0", "glsl_400", 400u, false };
 		}
 		if (GLAD_GL_VERSION_3_3) {
-			return { SLANG_GLSL, "glsl_330", "glsl_330" };
+			return { SLANG_SPIRV, "spirv_1_0", "glsl_330", 330u, false };
 		}
 		throw std::runtime_error("OpenGL graphics pipelines require OpenGL 3.3 or newer");
 	}
@@ -331,15 +332,134 @@ namespace {
 		return result;
 	}
 
-	std::string ConvertSPIRVToESSL(
+	std::vector<opengl::Pipeline::CombinedSampler> MakeCombinedSamplers(
+		std::span<shader::SlangCompiledEntryPoint const> entries,
+		SlangPipelineInterface const& interface
+	) {
+		std::vector<std::uint32_t> occupied_units;
+		std::ranges::for_each(
+			interface.bindings,
+			[&](auto const& binding) {
+				if (
+					binding.flags.Test(ResourceFlagBits::TextureBinding) &&
+					binding.flags.Test(ResourceFlagBits::SamplerBinding)
+				) {
+					for (std::uint32_t element = 0u; element < binding.count; ++element) {
+						occupied_units.emplace_back(binding.slot + element);
+					}
+				}
+			}
+		);
+
+		std::vector<opengl::Pipeline::CombinedSampler> result;
+		for (auto const& entry : entries) {
+			if (entry.code.empty() || entry.code.size() % sizeof(std::uint32_t) != 0u) {
+				throw std::runtime_error(
+					std::format(
+						"Slang produced invalid SPIR-V for OpenGL entry point '{}'",
+						entry.name
+					)
+				);
+			}
+			std::vector<std::uint32_t> spirv(entry.code.size() / sizeof(std::uint32_t));
+			std::memcpy(spirv.data(), entry.code.data(), entry.code.size());
+			spirv_cross::CompilerGLSL compiler(std::move(spirv));
+			compiler.build_combined_image_samplers();
+			for (auto const& combined : compiler.get_combined_image_samplers()) {
+				opengl::Pipeline::CombinedSampler mapping{
+					.texture_slot = compiler.get_decoration(
+						combined.image_id,
+						spv::DecorationBinding
+					),
+					.texture_space = compiler.get_decoration(
+						combined.image_id,
+						spv::DecorationDescriptorSet
+					),
+					.sampler_slot = compiler.get_decoration(
+						combined.sampler_id,
+						spv::DecorationBinding
+					),
+					.sampler_space = compiler.get_decoration(
+						combined.sampler_id,
+						spv::DecorationDescriptorSet
+					),
+					.unit = 0u
+				};
+				auto duplicate = std::ranges::find_if(
+					result,
+					[&](auto const& candidate) {
+						return
+							candidate.texture_slot == mapping.texture_slot &&
+							candidate.texture_space == mapping.texture_space &&
+							candidate.sampler_slot == mapping.sampler_slot &&
+							candidate.sampler_space == mapping.sampler_space;
+					}
+				);
+				if (duplicate != result.end()) {
+					continue;
+				}
+				auto combined_binding = std::ranges::find_if(
+					interface.bindings,
+					[&](auto const& binding) {
+						return
+							binding.flags.Test(ResourceFlagBits::TextureBinding) &&
+							binding.flags.Test(ResourceFlagBits::SamplerBinding) &&
+							binding.resource_slot == mapping.texture_slot &&
+							binding.resource_space == mapping.texture_space &&
+							binding.sampler_slot == mapping.sampler_slot &&
+							binding.sampler_space == mapping.sampler_space;
+					}
+				);
+				if (combined_binding != interface.bindings.end()) {
+					mapping.unit = combined_binding->slot;
+					result.emplace_back(mapping);
+					continue;
+				}
+				auto texture = std::ranges::find_if(
+					interface.bindings,
+					[&](auto const& binding) {
+						return
+							binding.slot == mapping.texture_slot &&
+							binding.space == mapping.texture_space;
+					}
+				);
+				auto unit_count = texture == interface.bindings.end()
+					? 1u
+					: texture->count;
+				auto available = [&]() {
+					return std::ranges::none_of(
+						std::views::iota(0u, unit_count),
+						[&](std::uint32_t element) {
+							return std::ranges::contains(
+								occupied_units,
+								mapping.unit + element
+							);
+						}
+					);
+				};
+				while (!available()) {
+					++mapping.unit;
+				}
+				std::ranges::copy(
+					std::views::iota(mapping.unit, mapping.unit + unit_count),
+					std::back_inserter(occupied_units)
+				);
+				result.emplace_back(mapping);
+			}
+		}
+		return result;
+	}
+
+	std::string ConvertSPIRVToGLSL(
 		shader::SlangCompiledEntryPoint const& entry,
-		std::uint32_t version,
+		ShaderTarget const& target,
+		std::span<opengl::Pipeline::CombinedSampler const> combined_samplers,
 		std::span<opengl::Pipeline::ConstantRange const> constant_ranges
 	) {
 		if (entry.code.empty() || entry.code.size() % sizeof(std::uint32_t) != 0u) {
 			throw std::runtime_error(
 				std::format(
-					"Slang produced invalid SPIR-V for OpenGL ES entry point '{}'",
+					"Slang produced invalid SPIR-V for OpenGL entry point '{}'",
 					entry.name
 				)
 			);
@@ -348,8 +468,8 @@ namespace {
 		std::memcpy(spirv.data(), entry.code.data(), entry.code.size());
 		spirv_cross::CompilerGLSL compiler(std::move(spirv));
 		auto options = compiler.get_common_options();
-		options.version = version;
-		options.es = true;
+		options.version = target.GLSL_version;
+		options.es = target.embedded;
 		options.vertex.fixup_clipspace = true;
 		options.vertex.flip_vert_y = false;
 		options.fragment.default_float_precision =
@@ -358,10 +478,53 @@ namespace {
 			spirv_cross::CompilerGLSL::Options::Highp;
 		options.emit_push_constant_as_uniform_buffer = !constant_ranges.empty();
 		compiler.set_common_options(options);
+		compiler.build_combined_image_samplers();
+		for (auto const& combined : compiler.get_combined_image_samplers()) {
+			auto texture_slot = compiler.get_decoration(
+				combined.image_id,
+				spv::DecorationBinding
+			);
+			auto texture_space = compiler.get_decoration(
+				combined.image_id,
+				spv::DecorationDescriptorSet
+			);
+			auto sampler_slot = compiler.get_decoration(
+				combined.sampler_id,
+				spv::DecorationBinding
+			);
+			auto sampler_space = compiler.get_decoration(
+				combined.sampler_id,
+				spv::DecorationDescriptorSet
+			);
+			auto mapping = std::ranges::find_if(
+				combined_samplers,
+				[&](auto const& candidate) {
+					return
+						candidate.texture_slot == texture_slot &&
+						candidate.texture_space == texture_space &&
+						candidate.sampler_slot == sampler_slot &&
+						candidate.sampler_space == sampler_space;
+				}
+			);
+			if (mapping == combined_samplers.end()) {
+				throw std::logic_error(
+					"OpenGL combined sampler was not assigned a texture unit"
+				);
+			}
+			compiler.set_decoration(
+				combined.combined_id,
+				spv::DecorationBinding,
+				mapping->unit
+			);
+			compiler.unset_decoration(
+				combined.combined_id,
+				spv::DecorationDescriptorSet
+			);
+		}
 		auto resources = compiler.get_shader_resources();
 		if (resources.push_constant_buffers.size() > constant_ranges.size()) {
 			throw std::runtime_error(
-				"OpenGL ES shader exposes an unmatched immediate-constant block"
+				"OpenGL shader exposes an unmatched immediate-constant block"
 			);
 		}
 		std::ranges::for_each(
@@ -377,38 +540,10 @@ namespace {
 		return compiler.compile();
 	}
 
-	std::string ConvertGLSLImmediateConstants(
-		shader::SlangCompiledEntryPoint const& entry,
-		std::span<opengl::Pipeline::ConstantRange const> constant_ranges
-	) {
-		std::string result(
-			reinterpret_cast<char const*>(entry.code.data()),
-			entry.code.size()
-		);
-		constexpr std::string_view declaration =
-			"layout(push_constant)\nlayout(std430) uniform";
-		std::size_t position = 0u;
-		std::size_t range_index = 0u;
-		while ((position = result.find(declaration, position)) != std::string::npos) {
-			if (range_index == constant_ranges.size()) {
-				throw std::runtime_error(
-					"OpenGL shader exposes an unmatched immediate-constant block"
-				);
-			}
-			auto replacement = std::format(
-				"layout(std430, binding = {}) readonly buffer",
-				constant_ranges[range_index].slot
-			);
-			result.replace(position, declaration.size(), replacement);
-			position += replacement.size();
-			++range_index;
-		}
-		return result;
-	}
-
 	GLuint CompileShader(
 		shader::SlangCompiledEntryPoint const& entry,
-		std::uint32_t essl_version,
+		ShaderTarget const& target,
+		std::span<opengl::Pipeline::CombinedSampler const> combined_samplers,
 		std::span<opengl::Pipeline::ConstantRange const> constant_ranges
 	) {
 		auto shader_type = ShaderStage(entry.stage);
@@ -419,27 +554,14 @@ namespace {
 		std::string converted_source;
 		GLchar const* source = nullptr;
 		GLint length = 0;
-		if (essl_version != 0u) {
-			converted_source = ConvertSPIRVToESSL(
-				entry,
-				essl_version,
-				constant_ranges
-			);
-			source = converted_source.data();
-			length = static_cast<GLint>(converted_source.size());
-		}
-		else if (!constant_ranges.empty()) {
-			converted_source = ConvertGLSLImmediateConstants(
-				entry,
-				constant_ranges
-			);
-			source = converted_source.data();
-			length = static_cast<GLint>(converted_source.size());
-		}
-		else {
-			source = reinterpret_cast<GLchar const*>(entry.code.data());
-			length = static_cast<GLint>(entry.code.size());
-		}
+		converted_source = ConvertSPIRVToGLSL(
+			entry,
+			target,
+			combined_samplers,
+			constant_ranges
+		);
+		source = converted_source.data();
+		length = static_cast<GLint>(converted_source.size());
 		glShaderSource(shader, 1, &source, &length);
 		glCompileShader(shader);
 		GLint compiled = GL_FALSE;
@@ -592,6 +714,7 @@ namespace {
 		shader::SlangProgram const& program,
 		ShaderTarget const& target,
 		bool compute,
+		std::span<opengl::Pipeline::CombinedSampler const> combined_samplers,
 		std::span<opengl::Pipeline::ConstantRange const> constant_ranges
 	) {
 		auto cache_path = PipelineCachePath(program, target.cache_name);
@@ -615,7 +738,8 @@ namespace {
 				[&](auto const& entry) {
 					return CompileShader(
 						entry,
-						target.essl_version,
+						target,
+						combined_samplers,
 						constant_ranges
 					);
 				}
@@ -921,9 +1045,11 @@ namespace fyuu_rhi {
 			);
 			auto constant_ranges = MakeConstantRanges(
 				program.GetInterface(),
-				shader_target.essl_version == 0u
-					? GL_SHADER_STORAGE_BUFFER
-					: GL_UNIFORM_BUFFER
+				GL_UNIFORM_BUFFER
+			);
+			auto combined_samplers = MakeCombinedSamplers(
+				program.GetEntryPoints(),
+				program.GetInterface()
 			);
 			if (
 				!constant_ranges.empty() &&
@@ -948,8 +1074,8 @@ namespace fyuu_rhi {
 					}
 					(void)ShaderStage(entry.stage);
 					if (
-						shader_target.essl_version != 0u &&
-						shader_target.essl_version < 320u &&
+						shader_target.embedded &&
+						shader_target.GLSL_version < 320u &&
 						entry.stage != pipeline::Stage::Vertex &&
 						entry.stage != pipeline::Stage::Fragment
 					) {
@@ -977,6 +1103,7 @@ namespace fyuu_rhi {
 				program,
 				shader_target,
 				false,
+				combined_samplers,
 				constant_ranges
 			);
 			return MakePipeline(
@@ -1003,6 +1130,7 @@ namespace fyuu_rhi {
 						descriptor.color_targets.end()
 					),
 					pipeline::MakePipelineBindingMetadata(program.GetInterface()),
+					std::move(combined_samplers),
 					std::move(constant_ranges)
 				}
 			);
@@ -1038,9 +1166,11 @@ namespace fyuu_rhi {
 			);
 			auto constant_ranges = MakeConstantRanges(
 				program.GetInterface(),
-				shader_target.essl_version == 0u
-					? GL_SHADER_STORAGE_BUFFER
-					: GL_UNIFORM_BUFFER
+				GL_UNIFORM_BUFFER
+			);
+			auto combined_samplers = MakeCombinedSamplers(
+				program.GetEntryPoints(),
+				program.GetInterface()
 			);
 			if (
 				program.GetEntryPoints().size() != 1u ||
@@ -1055,6 +1185,7 @@ namespace fyuu_rhi {
 				program,
 				shader_target,
 				true,
+				combined_samplers,
 				constant_ranges
 			);
 			return MakePipeline(
@@ -1072,6 +1203,7 @@ namespace fyuu_rhi {
 					std::nullopt,
 					{},
 					pipeline::MakePipelineBindingMetadata(program.GetInterface()),
+					std::move(combined_samplers),
 					std::move(constant_ranges)
 				}
 			);

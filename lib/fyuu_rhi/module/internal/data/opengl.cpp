@@ -295,6 +295,14 @@ namespace fyuu_rhi::opengl {
 	using ManagedPipeline = boost::scope::unique_resource<GLuint, PipelineDeleter>;
 
 	struct Pipeline {
+		struct CombinedSampler {
+			std::uint32_t texture_slot;
+			std::uint32_t texture_space;
+			std::uint32_t sampler_slot;
+			std::uint32_t sampler_space;
+			std::uint32_t unit;
+		};
+
 		struct ConstantRange {
 			std::uint32_t slot;
 			std::uint32_t space;
@@ -313,6 +321,7 @@ namespace fyuu_rhi::opengl {
 		std::optional<pipeline::DepthStencilState> depth_stencil;
 		std::vector<pipeline::ColorTargetState> color_targets;
 		std::vector<pipeline::BindingMetadata> bindings;
+		std::vector<CombinedSampler> combined_samplers;
 		std::vector<ConstantRange> constant_ranges;
 	};
 

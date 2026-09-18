@@ -48,8 +48,11 @@ namespace {
 
 	template <fyuu_rhi::Backend backend, class Native>
 	fyuu_rhi::Instance& Request() {
-		static Native native = fyuu_rhi::CreateInstance<Native>{}();
-		static fyuu_rhi::InstanceImplementation impl{ backend, &native };
+		// Backend instances are process services. Deliberately retain the native
+		// instance until process termination: Vulkan dispatchers and loader state
+		// have no defined cross-translation-unit static destruction order.
+		static Native* native = new Native(fyuu_rhi::CreateInstance<Native>{}());
+		static fyuu_rhi::InstanceImplementation impl{ backend, native };
 		static fyuu_rhi::Instance instance{ &impl };
 		return instance;
 	}

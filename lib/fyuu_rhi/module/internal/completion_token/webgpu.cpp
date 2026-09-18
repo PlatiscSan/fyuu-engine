@@ -25,7 +25,12 @@ namespace fyuu_rhi::execution {
 			if (!token->state) {
 				return true;
 			}
-			token->instance.ProcessEvents();
+			if (token->state->complete.load(std::memory_order_acquire)) {
+				return true;
+			}
+			if (token->future.id != 0u) {
+				(void)token->instance.WaitAny(token->future, 0u);
+			}
 			return token->state->complete.load(std::memory_order_acquire);
 		}
 	};

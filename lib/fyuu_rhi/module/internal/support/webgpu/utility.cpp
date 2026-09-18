@@ -48,6 +48,13 @@ namespace fyuu_rhi::webgpu {
 		if (flags.Test(Bits::IndirectBuffer)) {
 			result |= wgpu::BufferUsage::Indirect;
 		}
+		// WriteBuffer is part of the backend-neutral command set and does not
+		// require callers to describe an implementation-specific transfer path.
+		// Dawn implements that command as a buffer upload and therefore requires
+		// CopyDst on every GPU-consumable destination buffer.
+		if (!flags.Test(Bits::DeviceReadback)) {
+			result |= wgpu::BufferUsage::CopyDst;
+		}
 		if (flags.TestMultipleInRange(Bits::DeviceLocal, Bits::DeviceReadback)) {
 			throw std::invalid_argument("A WebGPU buffer cannot request multiple memory access policies");
 		}

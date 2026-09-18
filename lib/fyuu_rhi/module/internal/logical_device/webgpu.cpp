@@ -261,12 +261,13 @@ namespace fyuu_rhi {
 		webgpu::LogicalDevice* logical_device;
 
 		Resource operator()(std::size_t size_in_bytes, ResourceFlags const& flags) const {
+			auto usage = webgpu::BufferUsage(flags);
 			wgpu::BufferDescriptor descriptor{
 				nullptr,
 				{},
-				webgpu::BufferUsage(flags),
+				usage,
 				size_in_bytes,
-				false
+				static_cast<bool>(usage & wgpu::BufferUsage::MapWrite)
 			};
 			return MakeResource(
 				webgpu::Resource{ logical_device->impl.CreateBuffer(&descriptor) },
