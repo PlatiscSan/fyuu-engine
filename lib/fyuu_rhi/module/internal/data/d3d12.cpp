@@ -126,6 +126,13 @@ namespace fyuu_rhi::d3d12 {
 		std::deque<Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList>> command_lists;
 		std::mutex command_lists_mutex;
 		std::mutex submission_mutex;
+		/// The removal reporter of the logical device this queue came from. That device
+		/// is required to outlive its schedulers; a queue without one reports nothing.
+		DeviceRemovalTracker* removal_tracker = nullptr;
+
+		/// Reports a removal the caller already detected. One tracker serves every queue
+		/// of a device, so several tokens observing the same removal report it once.
+		void ReportRemoval() noexcept;
 	};
 
 	struct CompletionToken {
@@ -210,6 +217,12 @@ namespace fyuu_rhi::d3d12 {
 		std::vector<Table> tables;
 		std::vector<DynamicBuffer> dynamic_buffers;
 	};
+
+	void QueueContext::ReportRemoval() noexcept {
+		if (removal_tracker) {
+			removal_tracker->ReportRemoval();
+		}
+	}
 
 } // namespace fyuu_rhi::d3d12::data
 #endif // defined(_WIN32)

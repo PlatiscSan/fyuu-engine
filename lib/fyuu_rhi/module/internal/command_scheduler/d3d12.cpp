@@ -1640,13 +1640,19 @@ namespace fyuu_rhi::execution {
 						auto& batch = prepared[submission.batches[position]];
 						for (auto const& presentation : batch.presentations) {
 							try {
-								ThrowIfFailed(
-									presentation.swapchain->Present(
-										presentation.vertical_sync ? 1u : 0u,
-										!presentation.vertical_sync && presentation.tearing_supported ?
-											DXGI_PRESENT_ALLOW_TEARING : 0u
-									)
+								auto const present_result = presentation.swapchain->Present(
+									presentation.vertical_sync ? 1u : 0u,
+									!presentation.vertical_sync && presentation.tearing_supported ?
+										DXGI_PRESENT_ALLOW_TEARING : 0u
 								);
+								if (FAILED(present_result)) {
+									// A lost device announces itself here, and the reason it reports
+									// is what tells an application to rebuild rather than retry.
+									ThrowIfDeviceLost(
+										present_result,
+										GetLogicalDevice(queue->impl)
+									);
+								}
 							}
 							catch (...) {
 								if (!batch.submission_error) {

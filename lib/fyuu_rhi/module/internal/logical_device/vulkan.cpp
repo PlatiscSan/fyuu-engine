@@ -34,6 +34,7 @@ import std;
 import vulkan;
 #endif // !defined(FYUU_RHI_USE_VULKAN_HEADER)
 import :cache;
+import :log;
 import :logical_device_dispatch;
 import :pipeline;
 import :pipeline_factory;
@@ -457,6 +458,26 @@ namespace fyuu_rhi {
 		vulkan::LogicalDevice* logical_device;
 
 		Sampler operator()(SamplerDescriptor const& descriptor) const {
+			// VUID-VkSamplerCreateInfo-anisotropyEnable-01070 only allows an enabled
+			// anisotropy when the device was created with the samplerAnisotropy
+			// feature, and 01071 caps maxAnisotropy at the device limit. The feature is
+			// requested together with the other core 1.0 features, so a device that
+			// supports it has it enabled here; one that does not keeps isotropic
+			// filtering and says so, rather than issuing an invalid sampler.
+			bool const anisotropy_available = logical_device->core_features.samplerAnisotropy == vk::True;
+			bool const anisotropy_requested = descriptor.max_anisotropy > 1u;
+			if (anisotropy_requested && !anisotropy_available) {
+				log::Warning(
+					"The Vulkan device does not enable samplerAnisotropy; the sampler falls back to isotropic filtering"
+				);
+			}
+			bool const anisotropic = anisotropy_requested && anisotropy_available;
+			float const max_anisotropy = anisotropic ?
+				(std::min)(
+					static_cast<float>(descriptor.max_anisotropy),
+					logical_device->max_sampler_anisotropy
+				) :
+				1.0f;
 			vk::Sampler raw = logical_device->impl->createSampler(
 				{
 					{},
@@ -467,8 +488,8 @@ namespace fyuu_rhi {
 					vulkan::SamplerAddressMode(descriptor.address_mode_v),
 					vulkan::SamplerAddressMode(descriptor.address_mode_w),
 					0.0f,
-					descriptor.max_anisotropy > 1u ? vk::True : vk::False,
-					static_cast<float>(descriptor.max_anisotropy),
+					anisotropic ? vk::True : vk::False,
+					max_anisotropy,
 					descriptor.compare_function != CompareFunction::Unknown ? vk::True : vk::False,
 					vulkan::ComparisonOperation(descriptor.compare_function),
 					descriptor.min_lod,

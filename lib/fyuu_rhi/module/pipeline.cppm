@@ -394,6 +394,11 @@ export namespace fyuu_rhi::pipeline {
 		std::uint32_t slot = 0;
 		std::uint32_t space = 0;
 		std::uint32_t count = 1;
+		/// Native binding index of the sampler half of a combined texture/sampler
+		/// binding, as the target's own layout reports it. It equals @c slot when
+		/// that layout does not distinguish the two halves, which is the case for
+		/// every target whose native ABI has no combined sampler.
+		std::uint32_t sampler_slot = 0;
 	};
 
 } // namespace fyuu_rhi::pipeline

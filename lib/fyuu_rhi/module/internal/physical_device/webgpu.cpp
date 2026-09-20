@@ -59,14 +59,22 @@ namespace {
 		}
 	}
 
-	void OnDeviceLost(wgpu::Device const&, wgpu::DeviceLostReason reason, wgpu::StringView message) noexcept {
-		std::string_view message_view(message.data, message.length);
+	/// The text both the log line and the device's failure latch carry for a lost device.
+	std::string DeviceLostText(wgpu::DeviceLostReason reason, wgpu::StringView message) {
+		return std::format(
+			"[WebGPU] Device lost! Reason: {}\nAdditional message: {}",
+			DeviceLostReasonName(reason),
+			std::string_view(message.data, message.length)
+		);
+	}
+
+	void OnDeviceLost(
+		wgpu::Device const&,
+		wgpu::DeviceLostReason reason,
+		wgpu::StringView message
+	) noexcept {
 		try {
-			fyuu_rhi::log::Fatal(std::format(
-				"[WebGPU] Device lost! Reason: {}\nAdditional message: {}",
-				DeviceLostReasonName(reason),
-				message_view
-			));
+			fyuu_rhi::log::Fatal(DeviceLostText(reason, message));
 		}
 		catch (...) {
 			fyuu_rhi::log::Fatal("[WebGPU] Device lost");
@@ -83,14 +91,29 @@ namespace {
 		}
 	}
 
-	void OnUncapturedError(wgpu::Device const&,	wgpu::ErrorType type, wgpu::StringView message) noexcept {
-		std::string_view message_view(message.data, message.length);
+	/// The text both the log line and the device's failure latch carry for an uncaptured error.
+	std::string UncapturedErrorText(wgpu::ErrorType type, wgpu::StringView message) {
+		return std::format(
+			"[WebGPU] Uncaptured error ({}): {}",
+			ErrorTypeName(type),
+			std::string_view(message.data, message.length)
+		);
+	}
+
+	/// Whether an uncaptured error means the work the device was given is no longer trustworthy.
+	///
+	/// A rejected command buffer is reported this way and nothing else observes it: Dawn does not
+	/// fail the queue-work future and a mapping of a resource that work would have produced never
+	/// completes. Latching it is what turns both into a reported error.
+	bool IsDeviceFailure(wgpu::ErrorType type) noexcept {
+		return type == wgpu::ErrorType::Validation ||
+			type == wgpu::ErrorType::Internal ||
+			type == wgpu::ErrorType::OutOfMemory;
+	}
+
+	void OnUncapturedError(wgpu::ErrorType type, wgpu::StringView message) noexcept {
 		try {
-			auto text = std::format(
-				"[WebGPU] Uncaptured error ({}): {}",
-				ErrorTypeName(type),
-				message_view
-			);
+			auto text = UncapturedErrorText(type, message);
 			if (type == wgpu::ErrorType::Validation || type == wgpu::ErrorType::Internal) {
 				fyuu_rhi::log::Error(text);
 			}
@@ -100,6 +123,28 @@ namespace {
 		}
 		catch (...) {
 			fyuu_rhi::log::Error("[WebGPU] Uncaptured error");
+		}
+	}
+
+	/// Dawn's uncaptured-error callback carrying the device's failure latch as user data.
+	///
+	/// The C++ wrapper refuses a capturing lambda for this callback ("Uncaptured error callback
+	/// cannot be a binding lambda"), so the latch travels through the API's own user data
+	/// parameter instead of through the closure.
+	void OnUncapturedErrorWithLatch(
+		wgpu::Device const&,
+		wgpu::ErrorType type,
+		wgpu::StringView message,
+		fyuu_rhi::webgpu::DeviceError* errors
+	) noexcept {
+		OnUncapturedError(type, message);
+		if (!IsDeviceFailure(type)) {
+			return;
+		}
+		try {
+			errors->Fail(UncapturedErrorText(type, message));
+		}
+		catch (...) {
 		}
 	}
 
@@ -139,10 +184,14 @@ namespace fyuu_rhi {
 		webgpu::PhysicalDevice const* physical_device;
 
 		LogicalDevice operator()() const {
+			// One latch per device, shared with every resource it creates and with its
+			// command scheduler, so a failure reported here reaches both the submit that
+			// produced it and a later host mapping.
+			auto errors = std::make_shared<webgpu::DeviceError>();
 			wgpu::DeviceDescriptor descriptor;
 			descriptor.label = "fyuu-rhi";
 			descriptor.SetDeviceLostCallback(wgpu::CallbackMode::AllowProcessEvents, OnDeviceLost);
-			descriptor.SetUncapturedErrorCallback(OnUncapturedError);
+			descriptor.SetUncapturedErrorCallback(OnUncapturedErrorWithLatch, errors.get());
 
 			// A device request may only name features the adapter advertises;
 			// naming an unsupported feature is a hard creation failure, so each
@@ -205,6 +254,7 @@ namespace fyuu_rhi {
 				webgpu::LogicalDevice{
 					physical_device->instance,
 					physical_device->adapter,
+					std::move(errors),
 					std::move(device)
 				}
 			);

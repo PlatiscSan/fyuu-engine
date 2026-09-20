@@ -85,6 +85,10 @@ namespace fyuu_rhi::execution {
 				}
 				auto completed = commands.owner->fence->GetCompletedValue();
 				if (completed == FailedFence) {
+					// Detection happened here; the tracker names the reason and dumps the
+					// DRED data the debug settings captured. DRED detects nothing by
+					// itself, so this order is what the D3D12 documentation prescribes.
+					commands.owner->ReportRemoval();
 					try {
 						auto device = d3d12::GetLogicalDevice(commands.owner->impl);
 						d3d12::ThrowIfFailed(device->GetDeviceRemovedReason());

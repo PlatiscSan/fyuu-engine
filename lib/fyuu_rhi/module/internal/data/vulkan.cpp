@@ -68,6 +68,11 @@ namespace fyuu_rhi::vulkan {
 		MemoryAllocator memory_allocator;
 		/// Feature structs that actually got enabled; runtime code branches on these.
 		std::unordered_set<vk::StructureType> enabled_features;
+		/// Core 1.0 features the created device asked for. getFeatures2 leaves only the
+		/// supported ones set, so these are exactly the enabled capabilities.
+		vk::PhysicalDeviceFeatures core_features{};
+		/// Device limit for VkSamplerCreateInfo::maxAnisotropy.
+		float max_sampler_anisotropy = 1.0f;
 	};
 
 	struct TimelineCompletion {

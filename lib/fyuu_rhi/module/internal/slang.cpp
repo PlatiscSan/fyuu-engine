@@ -127,7 +127,8 @@ namespace fyuu_rhi::pipeline {
 					.flags = entry.flags,
 					.slot = entry.slot,
 					.space = entry.space,
-					.count = entry.count
+					.count = entry.count,
+					.sampler_slot = entry.sampler_slot
 				};
 			}
 		);
@@ -184,8 +185,10 @@ namespace fyuu_rhi::shader {
 		/// ignored instead of being parsed with a mismatched schema. Version 7
 		/// added the pipeline-constant register fields to the interface, so
 		/// entries written before that would restore a root signature at the
-		/// placeholder register.
-		static constexpr std::uint32_t CACHE_SCHEMA_VERSION = 7u;
+		/// placeholder register. Version 8 takes the sampler register and space of
+		/// a combined binding from the target's own layout, so entries written
+		/// before that carry the logical binding instead.
+		static constexpr std::uint32_t CACHE_SCHEMA_VERSION = 8u;
 
 		/// Per-entry-point compiled bytecode, in program order.
 		std::vector<SlangCompiledEntryPoint> m_entry_points;
@@ -736,29 +739,41 @@ namespace fyuu_rhi::shader {
 		// both; matching by name keeps this correct if the target reorders
 		// parameters, and a block the native layout cannot name simply keeps the
 		// backend-neutral placeholder.
-		static bool NativePushConstantRegister(
+		// The native (target-specific) layout's variable for one parameter, matched by name
+		// because the target may reorder parameters. Null when the target does not name it, or
+		// when there is no native layout at all.
+		static slang::VariableLayoutReflection* FindNativeParameter(
 			slang::ProgramLayout* native_layout,
-			slang::VariableLayoutReflection* variable,
-			std::uint32_t& slot,
-			std::uint32_t& space
+			char const* name
 		) {
-			auto name = variable->getName();
 			if (!native_layout || !name) {
-				return false;
+				return nullptr;
 			}
 			for (unsigned index = 0; index < native_layout->getParameterCount(); ++index) {
 				auto candidate = native_layout->getParameterByIndex(index);
 				if (!candidate || !candidate->getName()) {
 					continue;
 				}
-				if (std::string_view(candidate->getName()) != std::string_view(name)) {
-					continue;
+				if (std::string_view(candidate->getName()) == std::string_view(name)) {
+					return candidate;
 				}
-				slot = CheckedUint32(candidate->getBindingIndex(), "pipeline-constant register");
-				space = CheckedUint32(candidate->getBindingSpace(), "pipeline-constant register space");
-				return true;
 			}
-			return false;
+			return nullptr;
+		}
+
+		static bool NativePushConstantRegister(
+			slang::ProgramLayout* native_layout,
+			slang::VariableLayoutReflection* variable,
+			std::uint32_t& slot,
+			std::uint32_t& space
+		) {
+			auto candidate = FindNativeParameter(native_layout, variable->getName());
+			if (!candidate) {
+				return false;
+			}
+			slot = CheckedUint32(candidate->getBindingIndex(), "pipeline-constant register");
+			space = CheckedUint32(candidate->getBindingSpace(), "pipeline-constant register space");
+			return true;
 		}
 
 		// Walks the linked program layout and turns it into the engine's
@@ -767,9 +782,9 @@ namespace fyuu_rhi::shader {
 		//
 		// `layout` is the backend-neutral SPIR-V reflection layout, which is what
 		// defines the ABI. `native_layout` is the layout of the target actually
-		// being compiled; it is only consulted for the register of an
-		// pipeline-constant block, because a push constant has no register in the
-		// SPIR-V layout and Slang assigns the register per target.
+		// being compiled; it supplies the registers the SPIR-V layout cannot name:
+		// the register of a pipeline-constant block, and the sampler register and
+		// space of a combined binding.
 		static SlangPipelineInterface ReflectInterface(
 			slang::ProgramLayout* layout,
 			slang::ProgramLayout* native_layout,
@@ -864,13 +879,30 @@ namespace fyuu_rhi::shader {
 					resource_category,
 					space
 				);
+				// A combined binding is one binding in the source, so the generic layout reports
+				// the logical identity for its sampler half as well. Where the sampler actually
+				// lands is the target compiler's decision - DXIL places the implicit sampler
+				// densely from s0 in register space 0, whatever space its texture was declared in -
+				// so the combined case asks the target's own layout, the same way the
+				// pipeline-constant register is resolved above. A separate sampler keeps the
+				// generic value: the source declared its register explicitly, and both layouts
+				// agree on it.
+				auto const combined_binding =
+					flags.Test(ResourceFlagBits::TextureBinding) &&
+					flags.Test(ResourceFlagBits::SamplerBinding);
+				auto* sampler_variable = combined_binding
+					? FindNativeParameter(native_layout, variable->getName())
+					: nullptr;
+				if (!sampler_variable) {
+					sampler_variable = variable;
+				}
 				auto sampler_slot = BindingSlot(
-					variable,
+					sampler_variable,
 					slang::ParameterCategory::SamplerState,
 					slot
 				);
 				auto sampler_space = BindingSpace(
-					variable,
+					sampler_variable,
 					slang::ParameterCategory::SamplerState,
 					space
 				);

@@ -5,6 +5,7 @@ module;
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <format>
 #include <ranges>
 #include <stdexcept>
 #include <utility>
@@ -62,6 +63,71 @@ namespace fyuu_rhi {
 				return vk::DescriptorType::eSampler;
 			}
 			throw std::invalid_argument("Unsupported Vulkan pipeline binding type");
+		}
+
+		/// Names, in words, the value kind a descriptor type accepts.
+		static constexpr char const* ExpectedBindingValue(vk::DescriptorType type) noexcept {
+			switch (type) {
+			case vk::DescriptorType::eUniformBufferDynamic:
+			case vk::DescriptorType::eStorageBufferDynamic:
+				return "a buffer";
+			case vk::DescriptorType::eSampledImage:
+			case vk::DescriptorType::eStorageImage:
+				return "an image view";
+			case vk::DescriptorType::eSampler:
+				return "a sampler";
+			case vk::DescriptorType::eCombinedImageSampler:
+				return "an image view and a sampler";
+			default:
+				return "a value this backend does not support";
+			}
+		}
+
+		/// Rejects a value whose kind does not belong in the slot the pipeline declared.
+		///
+		/// The check is derived from the descriptor type the write below uses, so it
+		/// cannot disagree with what reaches vkUpdateDescriptorSets. Without it a
+		/// mismatched value is written anyway: a uniform-buffer slot filled with an image
+		/// view writes pImageInfo under eUniformBufferDynamic, and a combined slot given
+		/// only a view writes a combined descriptor with no sampler.
+		///
+		/// The layout side keeps its own copy of the flags-to-type mapping (see
+		/// DescriptorType in the Vulkan logical device); the two agree on every
+		/// combination the reflection produces today.
+		static void ValidateBindingValue(
+			vk::DescriptorType type,
+			pipeline::ResourceBinding const& binding
+		) {
+			bool const has_buffer = binding.value.Buffer() != nullptr;
+			bool const has_view = binding.value.BoundView() != nullptr;
+			bool const has_sampler = binding.value.BoundSampler() != nullptr;
+			bool matches = false;
+			switch (type) {
+			case vk::DescriptorType::eUniformBufferDynamic:
+			case vk::DescriptorType::eStorageBufferDynamic:
+				matches = has_buffer && !has_view && !has_sampler;
+				break;
+			case vk::DescriptorType::eSampledImage:
+			case vk::DescriptorType::eStorageImage:
+				matches = has_view && !has_sampler;
+				break;
+			case vk::DescriptorType::eSampler:
+				matches = has_sampler && !has_view;
+				break;
+			case vk::DescriptorType::eCombinedImageSampler:
+				matches = has_view && has_sampler;
+				break;
+			default:
+				break;
+			}
+			if (!matches) {
+				throw std::invalid_argument(
+					std::format(
+						"A resource does not match the Vulkan pipeline slot: it expects {}",
+						ExpectedBindingValue(type)
+					)
+				);
+			}
 		}
 
 		static vulkan::Resource const& NativeResource(Resource const* resource) {
@@ -133,6 +199,9 @@ namespace fyuu_rhi {
 				) {
 					throw std::invalid_argument("A Vulkan pipeline binding is specified more than once");
 				}
+				// The layout decides which value kinds this slot accepts, so a mismatch is
+				// rejected here, before any descriptor is allocated or written.
+				ValidateBindingValue(DescriptorType(metadata->flags), binding);
 			}
 			for (auto const& metadata : native->bindings) {
 				if (metadata.space != space) {

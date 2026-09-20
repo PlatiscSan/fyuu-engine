@@ -111,6 +111,18 @@ namespace fyuu_rhi::webgpu {
 		return result;
 	}
 
+	/// Whether the requested depth format carries a stencil aspect in WebGPU's format set.
+	///
+	/// Of the depth formats this backend maps, only D24UnormS8Uint (Depth24PlusStencil8) and
+	/// D32FloatS8X24Uint (Depth32FloatStencil8) have one. It matters because Dawn rejects a
+	/// render pass that sets a stencil load/store pair on an attachment with no stencil aspect,
+	/// and the RHI's defaults for an unused stencil are Discard, which its load-op mapping turns
+	/// into Clear - exactly the combination Dawn refuses.
+	bool HasStencilAspect(fyuu_rhi::ResourceFlags const& flags) noexcept {
+		using Bits = fyuu_rhi::ResourceFlagBits;
+		return flags.Test(Bits::D24UnormS8Uint) || flags.Test(Bits::D32FloatS8X24Uint);
+	}
+
 	wgpu::TextureDimension TextureDimension(fyuu_rhi::ResourceFlags const& flags) {
 		using Bits = fyuu_rhi::ResourceFlagBits;
 		static constexpr std::array dimensions{

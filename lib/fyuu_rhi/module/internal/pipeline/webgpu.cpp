@@ -239,9 +239,21 @@ namespace fyuu_rhi {
 						}
 						entries.emplace_back(std::move(entry));
 						if (binding.value.BoundSampler()) {
+							// WGSL has no combined sampler, so Slang emits the pair as a texture at
+							// one binding and a sampler at another, and the layout Dawn derives from
+							// that same source is the authority the entry has to match. Slang's WGSL
+							// layout reports the logical index for both halves - the texture's - so
+							// the reflection only names a usable binding when it differs from it.
+							// Otherwise the pairing the WGSL backend emits applies: a Sampler2D at
+							// register(t1, space1) becomes @binding(1) texture_2d plus @binding(2)
+							// sampler, which is the shape verified against the generated source.
+							auto sampler_binding = declaration->sampler_slot;
+							if (sampler_binding == declaration->slot) {
+								sampler_binding = declaration->slot + 1u;
+							}
 							entries.emplace_back(
 								wgpu::BindGroupEntry{
-									.binding = declaration->slot + 1u,
+									.binding = sampler_binding,
 									.sampler = NativeSampler(
 										binding.value.BoundSampler()
 									).impl

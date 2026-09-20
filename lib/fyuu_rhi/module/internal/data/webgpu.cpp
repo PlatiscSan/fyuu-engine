@@ -16,6 +16,8 @@ module;
 #include <variant>
 
 #include <stop_token>
+#include <string>
+#include <string_view>
 #endif // !defined(__cpp_lib_modules)
 #include <dawn/webgpu_cpp.h>
 
@@ -37,9 +39,48 @@ namespace fyuu_rhi::webgpu {
 		wgpu::Adapter adapter;
 	};
 
+	/// One device's first reported failure.
+	///
+	/// Dawn delivers a validation error only to the device's uncaptured-error callback, and
+	/// neither the queue-work future nor a buffer mapping ever completes because of it, so the
+	/// first failure is latched here: the submit that produced it fails the completion token,
+	/// and a mapping that will never complete reports it instead of waiting forever.
+	struct DeviceError {
+		std::atomic_bool failed = false;
+		/// Mutable because Message() reads the recorded text from a const device or resource.
+		mutable std::mutex mutex;
+		std::string message;
+
+		/// Records the first failure. Runs inside a Dawn callback, so it must not throw.
+		void Fail(std::string_view text) noexcept {
+			try {
+				bool expected = false;
+				if (!failed.compare_exchange_strong(expected, true)) {
+					return;
+				}
+				std::lock_guard lock(mutex);
+				message.assign(text);
+			}
+			catch (...) {
+			}
+		}
+
+		[[nodiscard]] bool Failed() const noexcept {
+			return failed.load(std::memory_order_acquire);
+		}
+
+		[[nodiscard]] std::string Message() const {
+			std::lock_guard lock(mutex);
+			return message;
+		}
+	};
+
 	struct LogicalDevice {
 		wgpu::Instance instance;
 		wgpu::Adapter adapter;
+		/// Declared before the device so the latch it is handed to as user data outlives the
+		/// device: members are destroyed in reverse order.
+		std::shared_ptr<DeviceError> errors;
 		wgpu::Device impl;
 	};
 
@@ -79,6 +120,7 @@ namespace fyuu_rhi::webgpu {
 
 		wgpu::Instance instance;
 		wgpu::Device device;
+		std::shared_ptr<DeviceError> errors;
 		std::vector<SurfaceState> surfaces;
 		std::mutex surfaces_mutex;
 
@@ -102,10 +144,12 @@ namespace fyuu_rhi::webgpu {
 
 		CommandSchedulerContext(
 			wgpu::Instance const& instance,
-			wgpu::Device const& device
+			wgpu::Device const& device,
+			std::shared_ptr<DeviceError> errors
 		) noexcept
 			: instance(instance),
-			device(device) {
+			device(device),
+			errors(std::move(errors)) {
 		}
 
 		CommandSchedulerContext(CommandSchedulerContext const&) = delete;
@@ -124,6 +168,9 @@ namespace fyuu_rhi::webgpu {
 
 	struct Resource {
 		std::variant<wgpu::Buffer, wgpu::Texture> impl;
+		/// The owning device's failure latch, so Map() can fail instead of blocking on a
+		/// device that already reported that the work referencing this resource was rejected.
+		std::shared_ptr<DeviceError> errors;
 	};
 
 	struct View {

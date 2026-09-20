@@ -63,6 +63,7 @@ import :resource_factory;
 import :sampler_factory;
 import :view_factory;
 import :webgpu_data;
+import :webgpu_utility;
 
 extern "C" void ParallelFor(
     std::size_t first,
@@ -174,6 +175,10 @@ namespace fyuu_rhi::webgpu {
 	/// auto-synchronizes, so the plan's barrier/access machinery is ignored.
 	struct Replayer {
 		std::span<std::reference_wrapper<webgpu::Resource const> const> resources;
+		/// The flags of those resources, by the same index. Dawn only tells an attachment's
+		/// format through the texture its view was made from, which its C++ view type does not
+		/// expose, so the depth format is read from the RHI's own description instead.
+		std::span<ResourceFlags const> resource_flags;
 		std::span<std::reference_wrapper<webgpu::View const> const> views;
 		std::span<std::reference_wrapper<webgpu::Pipeline const> const> pipelines;
 		std::span<std::reference_wrapper<webgpu::PipelineResourceGroup const> const> groups;
@@ -509,8 +514,15 @@ namespace fyuu_rhi::webgpu {
 				ds.view = TextureViewAt(attachment.view);
 				ds.depthLoadOp = NativeLoadOp(attachment.depth_load);
 				ds.depthStoreOp = NativeStoreOp(attachment.depth_store);
-				ds.stencilLoadOp = NativeLoadOp(attachment.stencil_load);
-				ds.stencilStoreOp = NativeStoreOp(attachment.stencil_store);
+				// A depth-only attachment must leave the stencil operations at their undefined
+				// default. Dawn rejects a stencil load/store pair on a texture with no stencil
+				// aspect ("Both stencilLoadOp ... and stencilStoreOp ... must not be set if the
+				// attachment ... has no stencil aspect"), and the RHI's Discard defaults map to
+				// Clear/Discard, which is exactly the rejected combination.
+				if (webgpu::HasStencilAspect(resource_flags[attachment.resource])) {
+					ds.stencilLoadOp = NativeLoadOp(attachment.stencil_load);
+					ds.stencilStoreOp = NativeStoreOp(attachment.stencil_store);
+				}
 				ds.depthClearValue = attachment.clear_depth;
 				ds.stencilClearValue = attachment.clear_stencil;
 				depth = ds;
@@ -988,6 +1000,7 @@ namespace fyuu_rhi::webgpu {
 	CommandSchedulerContext::CommandSchedulerContext(CommandSchedulerContext&& other) noexcept
 		: instance(std::move(other.instance)),
 		device(std::move(other.device)),
+		errors(std::move(other.errors)),
 		surfaces(std::move(other.surfaces)),
 		pump_thread(
 			[this](std::stop_token stop_token) {
@@ -1013,7 +1026,11 @@ namespace fyuu_rhi {
 
 		execution::CommandScheduler operator()() const {
 			return execution::MakeCommandScheduler(
-			    webgpu::CommandSchedulerContext{logical_device->instance, logical_device->impl}
+			    webgpu::CommandSchedulerContext{
+			        logical_device->instance,
+			        logical_device->impl,
+			        logical_device->errors
+			    }
 			);
 		}
 	};
@@ -1036,12 +1053,14 @@ namespace fyuu_rhi::execution {
 		    StopTokenView stop_token
 		) const {
 			std::vector<std::reference_wrapper<webgpu::Resource const>> resources;
+			std::vector<ResourceFlags> resource_flags;
 			std::vector<std::reference_wrapper<webgpu::View const>> views;
 			std::vector<std::reference_wrapper<webgpu::Sampler const>> samplers;
 			std::vector<std::reference_wrapper<webgpu::Pipeline const>> pipelines;
 			std::vector<std::reference_wrapper<webgpu::PipelineResourceGroup const>>
 			    resource_groups;
 			resources.reserve(bound_resources.size());
+			resource_flags.reserve(bound_resources.size());
 			views.reserve(bound_views.size());
 			samplers.reserve(bound_samplers.size());
 			pipelines.reserve(bound_pipelines.size());
@@ -1061,6 +1080,13 @@ namespace fyuu_rhi::execution {
 					    );
 				    }
 				    return *native;
+			    }
+			);
+			std::ranges::transform(
+			    bound_resources,
+			    std::back_inserter(resource_flags),
+			    [](Resource const& resource) {
+				    return resource.GetFlags();
 			    }
 			);
 			std::ranges::transform(
@@ -1360,6 +1386,7 @@ namespace fyuu_rhi::execution {
 						auto encoder = context->device.CreateCommandEncoder();
 						webgpu::Replayer replayer{
 						    resources,
+						    resource_flags,
 						    views,
 						    pipelines,
 						    resource_groups,
@@ -1411,6 +1438,15 @@ namespace fyuu_rhi::execution {
 
 				auto queue = context->device.GetQueue();
 				queue.Submit(command_buffers.size(), command_buffers.data());
+				// A submit Dawn rejects is reported only through the device's uncaptured-error
+				// callback, which the queue-work future below does not observe: without this the
+				// graph would be reported as done even though its work never ran, and the next
+				// readback would wait for that work forever.
+				if (context->errors && context->errors->Failed()) {
+					throw std::runtime_error(
+					    std::format("WebGPU submit failed: {}", context->errors->Message())
+					);
+				}
 				for (auto const& work : presentations) {
 					auto status = work.surface.Present();
 					if (!status) {

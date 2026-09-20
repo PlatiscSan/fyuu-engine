@@ -232,7 +232,10 @@ namespace {
 		// slot/space: two shaders can share the (0, 0) ABI identity while reading
 		// the block from different registers, and a signature cached for one would
 		// be wrong for the other.
-		constexpr std::uint32_t schema = 5;
+		// Schema 6 declares the sampler half of a combined binding at the register
+		// and space the target's own layout reports for it, instead of the logical
+		// binding the generic reflection reports.
+		constexpr std::uint32_t schema = 6;
 		hash.update(&schema, sizeof(schema));
 		for (auto const& entry : pipeline_interface.bindings) {
 			auto name_size = entry.name.size();
@@ -271,7 +274,6 @@ namespace {
 		if (serialized.empty()) {
 			std::vector<D3D12_DESCRIPTOR_RANGE1> ranges;
 			std::vector<D3D12_ROOT_PARAMETER1> parameters;
-			std::unordered_map<std::uint32_t, std::uint32_t> combined_sampler_slots;
 			ranges.reserve(pipeline_interface.bindings.size() * 2u);
 			parameters.reserve(
 			    pipeline_interface.bindings.size() * 2u + pipeline_interface.push_constants.size()
@@ -306,7 +308,13 @@ namespace {
 					);
 				};
 				if (combined) {
-					auto& sampler_slot = combined_sampler_slots[entry.sampler_space];
+					// A combined binding is two native bindings here: the texture's SRV and the
+					// sampler the target compiler paired with it. Both registers come from the
+					// reflection, which resolves the sampler's from the target's own layout. The
+					// logical identity would put the sampler range in a space the shader never
+					// reads - DXIL places the implicit sampler densely from s0 in register space 0,
+					// whatever space its texture was declared in - and CreateGraphicsPipelineState
+					// rejects that pipeline with E_INVALIDARG.
 					AddRangeAndParameter(
 					    D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
 					    entry.resource_slot,
@@ -314,10 +322,9 @@ namespace {
 					);
 					AddRangeAndParameter(
 					    D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER,
-					    sampler_slot,
+					    entry.sampler_slot,
 					    entry.sampler_space
 					);
-					sampler_slot += entry.count;
 				} else {
 					auto type = DescriptorRangeType(entry);
 					bool sampler = type == D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
@@ -1249,6 +1256,7 @@ namespace fyuu_rhi {
 			d3d12::CommandSchedulerContext::Queues queues;
 			auto CreateQueue = [&](D3D12_COMMAND_LIST_TYPE type) {
 				auto context = std::make_shared<d3d12::QueueContext>();
+				context->removal_tracker = &logical_device->rm_tracker;
 				auto device = logical_device->rm_tracker.GetDevice();
 				D3D12_COMMAND_QUEUE_DESC descriptor{.Type = type};
 				d3d12::ThrowIfFailed(

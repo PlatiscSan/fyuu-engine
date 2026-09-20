@@ -52,32 +52,35 @@ import :vulkan_queue_allocator;
 #if !defined(__APPLE__)
 namespace {
 
-	fyuu_rhi::PhysicalDevice::Info::Type GetPhysicalDeviceType(vk::PhysicalDeviceType type) noexcept {
+	fyuu_rhi::PhysicalDevice::Info::Type GetPhysicalDeviceType(
+	    vk::PhysicalDeviceType type
+	) noexcept {
 		using Type = fyuu_rhi::PhysicalDevice::Info::Type;
 		switch (type) {
-		case vk::PhysicalDeviceType::eDiscreteGpu:
-			return Type::DiscreteGPU;
-		case vk::PhysicalDeviceType::eIntegratedGpu:
-			return Type::IntegratedGPU;
-		case vk::PhysicalDeviceType::eVirtualGpu:
-			return Type::Virtual;
-		case vk::PhysicalDeviceType::eCpu:
-			return Type::CPU;
-		default:
-			return Type::Unknown;
+			case vk::PhysicalDeviceType::eDiscreteGpu:
+				return Type::DiscreteGPU;
+			case vk::PhysicalDeviceType::eIntegratedGpu:
+				return Type::IntegratedGPU;
+			case vk::PhysicalDeviceType::eVirtualGpu:
+				return Type::Virtual;
+			case vk::PhysicalDeviceType::eCpu:
+				return Type::CPU;
+			default:
+				return Type::Unknown;
 		}
 	}
 
 	/// Enumerates every non-empty queue family of the physical device so the
 	/// immutable queue pool can be built before device creation (Vulkan freezes
 	/// queue counts and priorities at that point).
-	std::vector<fyuu_rhi::vulkan::CommandQueueInfo> QueryQueueInfo(fyuu_rhi::vulkan::PhysicalDevice const* phys_dev) {
+	std::vector<fyuu_rhi::vulkan::CommandQueueInfo> QueryQueueInfo(
+	    fyuu_rhi::vulkan::PhysicalDevice const* phys_dev
+	) {
 		auto queue_families = phys_dev->impl->getQueueFamilyProperties(*(phys_dev->dispatcher));
 		std::vector<fyuu_rhi::vulkan::CommandQueueInfo> queue_infos;
 		for (std::uint32_t family = 0u; family < queue_families.size(); ++family) {
 			auto const& properties = queue_families[family];
-			fyuu_rhi::vulkan::CommandQueueType type =
-				fyuu_rhi::vulkan::CommandQueueType::None;
+			fyuu_rhi::vulkan::CommandQueueType type = fyuu_rhi::vulkan::CommandQueueType::None;
 			if (properties.queueFlags & vk::QueueFlagBits::eGraphics) {
 				type |= fyuu_rhi::vulkan::CommandQueueType::Graphics;
 			}
@@ -89,11 +92,7 @@ namespace {
 			}
 			if (properties.queueCount != 0u) {
 				queue_infos.emplace_back(
-					fyuu_rhi::vulkan::CommandQueueInfo{
-						type,
-						family,
-						properties.queueCount
-					}
+				    fyuu_rhi::vulkan::CommandQueueInfo{type, family, properties.queueCount}
 				);
 			}
 		}
@@ -105,21 +104,18 @@ namespace {
 	/// warning rather than failing device creation; extensions are added on
 	/// demand and the engine degrades gracefully without them.
 	void AddOptionalExtension(
-		std::uint32_t device_api_version,
-		std::unordered_set<std::string_view> const& available_extensions,
-		std::vector<char const*>& enabled_extensions,
-		std::string_view ext_name,
-		std::uint32_t core_version
+	    std::uint32_t device_api_version,
+	    std::unordered_set<std::string_view> const& available_extensions,
+	    std::vector<char const*>& enabled_extensions,
+	    std::string_view ext_name,
+	    std::uint32_t core_version
 	) {
 		if (device_api_version >= core_version) {
 			return;
 		}
 		if (!available_extensions.contains(ext_name)) {
 			fyuu_rhi::log::Warning(
-				std::format(
-					"Vulkan device extension '{}' is unavailable",
-					ext_name
-				)
+			    std::format("Vulkan device extension '{}' is unavailable", ext_name)
 			);
 			return;
 		}
@@ -129,21 +125,18 @@ namespace {
 	/// Enables a mandatory device extension, failing device creation when the
 	/// device does not expose it.
 	void AddMandatoryExtension(
-		std::uint32_t device_api_version,
-		std::unordered_set<std::string_view> const& available_extensions,
-		std::vector<char const*>& enabled_extensions,
-		std::string_view ext_name,
-		std::uint32_t core_version
+	    std::uint32_t device_api_version,
+	    std::unordered_set<std::string_view> const& available_extensions,
+	    std::vector<char const*>& enabled_extensions,
+	    std::string_view ext_name,
+	    std::uint32_t core_version
 	) {
 		if (device_api_version >= core_version) {
 			return;
 		}
 		if (!available_extensions.contains(ext_name)) {
 			throw std::runtime_error(
-				std::format(
-					"Mandatory Vulkan device extension '{}' is unavailable",
-					ext_name
-				)
+			    std::format("Mandatory Vulkan device extension '{}' is unavailable", ext_name)
 			);
 		}
 		enabled_extensions.emplace_back(ext_name.data());
@@ -153,46 +146,32 @@ namespace {
 
 namespace fyuu_rhi {
 
-	template <>
-	struct GetPhysicalDeviceInfo<vulkan::PhysicalDevice> {
+	template <> struct GetPhysicalDeviceInfo<vulkan::PhysicalDevice> {
 		vulkan::PhysicalDevice const* native;
 
 		PhysicalDevice::Info operator()() const {
-			auto properties = native->impl->getProperties(
-				*native->dispatcher
-			);
-			auto memory_properties = native->impl->getMemoryProperties(
-				*native->dispatcher
-			);
+			auto properties = native->impl->getProperties(*native->dispatcher);
+			auto memory_properties = native->impl->getMemoryProperties(*native->dispatcher);
 			std::size_t dedicated_memory = 0u;
-			auto heaps = std::span(
-				memory_properties.memoryHeaps.data(),
-				memory_properties.memoryHeapCount
-			) | std::views::filter(
-				[](auto const& heap) {
-					return static_cast<bool>(
-						heap.flags & vk::MemoryHeapFlagBits::eDeviceLocal
-					);
-				}
-			);
-			std::ranges::for_each(
-				heaps,
-				[&dedicated_memory](auto const& heap) {
-					dedicated_memory += static_cast<std::size_t>(heap.size);
-				}
-			);
+			auto heaps =
+			    std::span(memory_properties.memoryHeaps.data(), memory_properties.memoryHeapCount) |
+			    std::views::filter([](auto const& heap) {
+				    return static_cast<bool>(heap.flags & vk::MemoryHeapFlagBits::eDeviceLocal);
+			    });
+			std::ranges::for_each(heaps, [&dedicated_memory](auto const& heap) {
+				dedicated_memory += static_cast<std::size_t>(heap.size);
+			});
 			return {
-				.name = properties.deviceName.data(),
-				.vendor_id = properties.vendorID,
-				.device_id = properties.deviceID,
-				.dedicated_memory = dedicated_memory,
-				.type = GetPhysicalDeviceType(properties.deviceType)
+			    .name = properties.deviceName.data(),
+			    .vendor_id = properties.vendorID,
+			    .device_id = properties.deviceID,
+			    .dedicated_memory = dedicated_memory,
+			    .type = GetPhysicalDeviceType(properties.deviceType)
 			};
 		}
 	};
 
-	template <>
-	struct CreateLogicalDevice<vulkan::PhysicalDevice> {
+	template <> struct CreateLogicalDevice<vulkan::PhysicalDevice> {
 		vulkan::PhysicalDevice const* physical_device;
 
 		LogicalDevice operator()() const {
@@ -202,122 +181,340 @@ namespace fyuu_rhi {
 			// throws until they land.
 			vulkan::QueueAllocator queue_alloc(QueryQueueInfo(physical_device));
 
-			auto extension_properties =
-				physical_device->impl->enumerateDeviceExtensionProperties(
-					nullptr,
-					*physical_device->dispatcher
-				);
-			auto supported_extensions =
-				extension_properties |
-				std::views::transform(
-					[](vk::ExtensionProperties const& prop) -> std::string_view {
-						return prop.extensionName;
-					}
-				) |
-				std::ranges::to<std::unordered_set>();
+			auto extension_properties = physical_device->impl->enumerateDeviceExtensionProperties(
+			    nullptr,
+			    *physical_device->dispatcher
+			);
+			auto supported_extensions = extension_properties |
+			    std::views::transform([](vk::ExtensionProperties const& prop) -> std::string_view {
+				                            return prop.extensionName;
+			                            }) |
+			    std::ranges::to<std::unordered_set>();
 
 			// Phase 2: select device extensions. Everything is added on demand and a
 			// missing extension only logs a warning, so the engine degrades gracefully.
-			auto device_version = physical_device->impl->getProperties(*(physical_device->dispatcher)).apiVersion;
+			auto const properties =
+			    physical_device->impl->getProperties(*(physical_device->dispatcher));
+			auto const device_version = properties.apiVersion;
 			std::vector<char const*> enabled_extensions;
 
 			// Presentation is the core workload; a device without swapchain fails here.
-			AddMandatoryExtension(device_version, supported_extensions, enabled_extensions, vk::KHRSwapchainExtensionName, (std::numeric_limits<std::uint32_t>::max)());
+			AddMandatoryExtension(
+			    device_version,
+			    supported_extensions,
+			    enabled_extensions,
+			    vk::KHRSwapchainExtensionName,
+			    (std::numeric_limits<std::uint32_t>::max)()
+			);
 
 			// Perf-critical features promoted into core 1.2/1.3.
-			AddOptionalExtension(device_version, supported_extensions, enabled_extensions, vk::KHRTimelineSemaphoreExtensionName, vk::ApiVersion12);
-			AddOptionalExtension(device_version, supported_extensions, enabled_extensions, vk::EXTDescriptorIndexingExtensionName, vk::ApiVersion12);
-			AddOptionalExtension(device_version, supported_extensions, enabled_extensions, vk::KHRBufferDeviceAddressExtensionName, vk::ApiVersion12);
-			AddOptionalExtension(device_version, supported_extensions, enabled_extensions, vk::KHRDynamicRenderingExtensionName, vk::ApiVersion13);
-			AddOptionalExtension(device_version, supported_extensions, enabled_extensions, vk::KHRSynchronization2ExtensionName, vk::ApiVersion13);
-			AddOptionalExtension(device_version, supported_extensions, enabled_extensions, vk::EXTExtendedDynamicStateExtensionName, vk::ApiVersion13);
-			AddOptionalExtension(device_version, supported_extensions, enabled_extensions, vk::EXTExtendedDynamicState2ExtensionName, vk::ApiVersion13);
-			AddOptionalExtension(device_version, supported_extensions, enabled_extensions, vk::KHRMaintenance4ExtensionName, vk::ApiVersion13);
-			AddOptionalExtension(device_version, supported_extensions, enabled_extensions, vk::EXTPipelineCreationCacheControlExtensionName, vk::ApiVersion13);
-			AddOptionalExtension(device_version, supported_extensions, enabled_extensions, vk::EXTPipelineCreationFeedbackExtensionName, vk::ApiVersion13);
-			AddOptionalExtension(device_version, supported_extensions, enabled_extensions, vk::EXTHostQueryResetExtensionName, vk::ApiVersion12);
-			AddOptionalExtension(device_version, supported_extensions, enabled_extensions, vk::KHRShaderSubgroupExtendedTypesExtensionName, vk::ApiVersion12);
+			AddOptionalExtension(
+			    device_version,
+			    supported_extensions,
+			    enabled_extensions,
+			    vk::KHRTimelineSemaphoreExtensionName,
+			    vk::ApiVersion12
+			);
+			AddOptionalExtension(
+			    device_version,
+			    supported_extensions,
+			    enabled_extensions,
+			    vk::EXTDescriptorIndexingExtensionName,
+			    vk::ApiVersion12
+			);
+			AddOptionalExtension(
+			    device_version,
+			    supported_extensions,
+			    enabled_extensions,
+			    vk::KHRBufferDeviceAddressExtensionName,
+			    vk::ApiVersion12
+			);
+			AddOptionalExtension(
+			    device_version,
+			    supported_extensions,
+			    enabled_extensions,
+			    vk::KHRDynamicRenderingExtensionName,
+			    vk::ApiVersion13
+			);
+			AddOptionalExtension(
+			    device_version,
+			    supported_extensions,
+			    enabled_extensions,
+			    vk::KHRSynchronization2ExtensionName,
+			    vk::ApiVersion13
+			);
+			AddOptionalExtension(
+			    device_version,
+			    supported_extensions,
+			    enabled_extensions,
+			    vk::EXTExtendedDynamicStateExtensionName,
+			    vk::ApiVersion13
+			);
+			AddOptionalExtension(
+			    device_version,
+			    supported_extensions,
+			    enabled_extensions,
+			    vk::EXTExtendedDynamicState2ExtensionName,
+			    vk::ApiVersion13
+			);
+			AddOptionalExtension(
+			    device_version,
+			    supported_extensions,
+			    enabled_extensions,
+			    vk::KHRMaintenance4ExtensionName,
+			    vk::ApiVersion13
+			);
+			AddOptionalExtension(
+			    device_version,
+			    supported_extensions,
+			    enabled_extensions,
+			    vk::EXTPipelineCreationCacheControlExtensionName,
+			    vk::ApiVersion13
+			);
+			AddOptionalExtension(
+			    device_version,
+			    supported_extensions,
+			    enabled_extensions,
+			    vk::EXTPipelineCreationFeedbackExtensionName,
+			    vk::ApiVersion13
+			);
+			AddOptionalExtension(
+			    device_version,
+			    supported_extensions,
+			    enabled_extensions,
+			    vk::EXTHostQueryResetExtensionName,
+			    vk::ApiVersion12
+			);
+			AddOptionalExtension(
+			    device_version,
+			    supported_extensions,
+			    enabled_extensions,
+			    vk::KHRShaderSubgroupExtendedTypesExtensionName,
+			    vk::ApiVersion12
+			);
 
 			// Swapchain / present chain; the instance-gated extensions only when the
 			// matching instance extension was actually enabled.
-			if (physical_device->enabled_instance_extensions.contains(vk::EXTSurfaceMaintenance1ExtensionName)) {
-				AddOptionalExtension(device_version, supported_extensions, enabled_extensions, vk::EXTSwapchainMaintenance1ExtensionName, (std::numeric_limits<std::uint32_t>::max)());
+			if (physical_device->enabled_instance_extensions.contains(
+			        vk::EXTSurfaceMaintenance1ExtensionName
+			    )) {
+				AddOptionalExtension(
+				    device_version,
+				    supported_extensions,
+				    enabled_extensions,
+				    vk::EXTSwapchainMaintenance1ExtensionName,
+				    (std::numeric_limits<std::uint32_t>::max)()
+				);
 			}
 			if (supported_extensions.contains(vk::KHRPresentIdExtensionName)) {
-				AddOptionalExtension(device_version, supported_extensions, enabled_extensions, vk::KHRPresentIdExtensionName, (std::numeric_limits<std::uint32_t>::max)());
-				AddOptionalExtension(device_version, supported_extensions, enabled_extensions, vk::KHRPresentWaitExtensionName, (std::numeric_limits<std::uint32_t>::max)());
+				AddOptionalExtension(
+				    device_version,
+				    supported_extensions,
+				    enabled_extensions,
+				    vk::KHRPresentIdExtensionName,
+				    (std::numeric_limits<std::uint32_t>::max)()
+				);
+				AddOptionalExtension(
+				    device_version,
+				    supported_extensions,
+				    enabled_extensions,
+				    vk::KHRPresentWaitExtensionName,
+				    (std::numeric_limits<std::uint32_t>::max)()
+				);
 			}
-			if (physical_device->enabled_instance_extensions.contains(vk::KHRGetSurfaceCapabilities2ExtensionName)) {
-				AddOptionalExtension(device_version, supported_extensions, enabled_extensions, vk::KHRPresentModeFifoLatestReadyExtensionName, (std::numeric_limits<std::uint32_t>::max)());
+			if (physical_device->enabled_instance_extensions.contains(
+			        vk::KHRGetSurfaceCapabilities2ExtensionName
+			    )) {
+				AddOptionalExtension(
+				    device_version,
+				    supported_extensions,
+				    enabled_extensions,
+				    vk::KHRPresentModeFifoLatestReadyExtensionName,
+				    (std::numeric_limits<std::uint32_t>::max)()
+				);
 			}
 
 			// Ray tracing: never promoted to core, enabled via the KHR extension set.
 			if (supported_extensions.contains(vk::KHRAccelerationStructureExtensionName)) {
-				AddOptionalExtension(device_version, supported_extensions, enabled_extensions, vk::KHRAccelerationStructureExtensionName, (std::numeric_limits<std::uint32_t>::max)());
-				AddOptionalExtension(device_version, supported_extensions, enabled_extensions, vk::KHRRayTracingPipelineExtensionName, (std::numeric_limits<std::uint32_t>::max)());
-				AddOptionalExtension(device_version, supported_extensions, enabled_extensions, vk::KHRRayQueryExtensionName, (std::numeric_limits<std::uint32_t>::max)());
-				AddOptionalExtension(device_version, supported_extensions, enabled_extensions, vk::KHRDeferredHostOperationsExtensionName, (std::numeric_limits<std::uint32_t>::max)());
+				AddOptionalExtension(
+				    device_version,
+				    supported_extensions,
+				    enabled_extensions,
+				    vk::KHRAccelerationStructureExtensionName,
+				    (std::numeric_limits<std::uint32_t>::max)()
+				);
+				AddOptionalExtension(
+				    device_version,
+				    supported_extensions,
+				    enabled_extensions,
+				    vk::KHRRayTracingPipelineExtensionName,
+				    (std::numeric_limits<std::uint32_t>::max)()
+				);
+				AddOptionalExtension(
+				    device_version,
+				    supported_extensions,
+				    enabled_extensions,
+				    vk::KHRRayQueryExtensionName,
+				    (std::numeric_limits<std::uint32_t>::max)()
+				);
+				AddOptionalExtension(
+				    device_version,
+				    supported_extensions,
+				    enabled_extensions,
+				    vk::KHRDeferredHostOperationsExtensionName,
+				    (std::numeric_limits<std::uint32_t>::max)()
+				);
 			}
 
 			// Mesh shaders (never promoted to core).
-			AddOptionalExtension(device_version, supported_extensions, enabled_extensions, vk::EXTMeshShaderExtensionName, (std::numeric_limits<std::uint32_t>::max)());
+			AddOptionalExtension(
+			    device_version,
+			    supported_extensions,
+			    enabled_extensions,
+			    vk::EXTMeshShaderExtensionName,
+			    (std::numeric_limits<std::uint32_t>::max)()
+			);
 
 			// Memory management: budget queries drive the allocator and priority hints
 			// order eviction (VMA consumes the budget extension when available).
-			AddOptionalExtension(device_version, supported_extensions, enabled_extensions, vk::EXTMemoryBudgetExtensionName, (std::numeric_limits<std::uint32_t>::max)());
-			AddOptionalExtension(device_version, supported_extensions, enabled_extensions, vk::EXTMemoryPriorityExtensionName, (std::numeric_limits<std::uint32_t>::max)());
+			AddOptionalExtension(
+			    device_version,
+			    supported_extensions,
+			    enabled_extensions,
+			    vk::EXTMemoryBudgetExtensionName,
+			    (std::numeric_limits<std::uint32_t>::max)()
+			);
+			AddOptionalExtension(
+			    device_version,
+			    supported_extensions,
+			    enabled_extensions,
+			    vk::EXTMemoryPriorityExtensionName,
+			    (std::numeric_limits<std::uint32_t>::max)()
+			);
 
 			// Shader objects avoid pipeline-object state churn; push descriptors avoid
 			// descriptor-set updates for small bindings.
-			AddOptionalExtension(device_version, supported_extensions, enabled_extensions, vk::EXTShaderObjectExtensionName, (std::numeric_limits<std::uint32_t>::max)());
-			AddOptionalExtension(device_version, supported_extensions, enabled_extensions, vk::KHRPushDescriptorExtensionName, (std::numeric_limits<std::uint32_t>::max)());
+			AddOptionalExtension(
+			    device_version,
+			    supported_extensions,
+			    enabled_extensions,
+			    vk::EXTShaderObjectExtensionName,
+			    (std::numeric_limits<std::uint32_t>::max)()
+			);
+			AddOptionalExtension(
+			    device_version,
+			    supported_extensions,
+			    enabled_extensions,
+			    vk::KHRPushDescriptorExtensionName,
+			    (std::numeric_limits<std::uint32_t>::max)()
+			);
 
 			// Tooling: shader statistics for performance analysis.
-			AddOptionalExtension(device_version, supported_extensions, enabled_extensions, vk::KHRPipelineExecutablePropertiesExtensionName, (std::numeric_limits<std::uint32_t>::max)());
+			AddOptionalExtension(
+			    device_version,
+			    supported_extensions,
+			    enabled_extensions,
+			    vk::KHRPipelineExecutablePropertiesExtensionName,
+			    (std::numeric_limits<std::uint32_t>::max)()
+			);
 
 			// Phase 3: probe and enable device features. A candidate feature struct is
 			// chained into PhysicalDeviceFeatures2 only when its extension (or the core
 			// version that promoted it) is available; getFeatures2 then fills the bools
 			// with what the device actually supports. enabled_features records what
-			// survived, so runtime code can branch on it later.
+			// survived, so runtime code can branch on it later. Because that same chain
+			// is what createDevice receives, every feature the device supports inside a
+			// chained struct ends up enabled: the selection is which structs to chain,
+			// not which members to set.
 			auto IsDeviceExtensionEnabled = [&](std::string_view extension) {
-				return std::ranges::find_if(
-					enabled_extensions,
-					[extension](char const* name) {
-						return std::string_view(name) == extension;
-					}
-				) != enabled_extensions.end();
-				};
+				return std::ranges::find_if(enabled_extensions, [extension](char const* name) {
+					       return std::string_view(name) == extension;
+				       }) != enabled_extensions.end();
+			};
 
 			std::vector<std::pair<vk::StructureType, vk::Bool32*>> probed;
 			void* feature_chain = nullptr;
-			auto AddFeature = [&](auto& feature, bool available, vk::StructureType type, vk::Bool32* supported) {
-				if (!available) {
-					return;
-				}
-				feature.pNext = feature_chain;
-				feature_chain = &feature;
-				probed.emplace_back(type, supported);
-			};
-			auto Enable = [&](bool available, vk::Bool32& field, vk::StructureType type, bool& any_available) {
+			auto AddFeature =
+			    [&](auto& feature, bool available, vk::StructureType type, vk::Bool32* supported) {
+				    if (!available) {
+					    return;
+				    }
+				    feature.pNext = feature_chain;
+				    feature_chain = &feature;
+				    probed.emplace_back(type, supported);
+			    };
+			auto Enable = [&](bool available,
+			                  vk::Bool32& field,
+			                  vk::StructureType type,
+			                  bool& any_available) {
 				if (!available) {
 					return;
 				}
 				field = vk::True;
 				any_available = true;
 				probed.emplace_back(type, &field);
-				};
+			};
+
+			// Core 1.1 features, consolidated into the promoted struct. Nothing has to
+			// be requested per feature: chaining the struct is the request, getFeatures2
+			// below fills every member with the device's support, and the same chain
+			// goes to createDevice. shaderDrawParameters is recorded because the draw
+			// commands carry a base vertex, base instance and draw index, which a vertex
+			// shader reading SV_StartVertexLocation, SV_StartInstanceLocation or
+			// SV_DrawID needs.
+			vk::PhysicalDeviceVulkan11Features vulkan11;
+			bool vulkan11_available = false;
+			Enable(
+			    device_version >= vk::ApiVersion11,
+			    vulkan11.shaderDrawParameters,
+			    vk::StructureType::ePhysicalDeviceShaderDrawParametersFeatures,
+			    vulkan11_available
+			);
+			if (vulkan11_available) {
+				vulkan11.pNext = feature_chain;
+				feature_chain = &vulkan11;
+			}
 
 			// Core 1.2 features, consolidated into the promoted struct. This header's
 			// PhysicalDeviceDescriptorIndexingFeatures is missing its headline field, so
 			// descriptor indexing (and the other 1.2 core features) is enabled here.
 			vk::PhysicalDeviceVulkan12Features vulkan12;
 			bool vulkan12_available = false;
-			Enable(device_version >= vk::ApiVersion12 || IsDeviceExtensionEnabled(vk::KHRTimelineSemaphoreExtensionName), vulkan12.timelineSemaphore, vk::StructureType::ePhysicalDeviceTimelineSemaphoreFeatures, vulkan12_available);
-			Enable(device_version >= vk::ApiVersion12 || IsDeviceExtensionEnabled(vk::EXTDescriptorIndexingExtensionName), vulkan12.descriptorIndexing, vk::StructureType::ePhysicalDeviceDescriptorIndexingFeatures, vulkan12_available);
-			Enable(device_version >= vk::ApiVersion12 || IsDeviceExtensionEnabled(vk::KHRBufferDeviceAddressExtensionName), vulkan12.bufferDeviceAddress, vk::StructureType::ePhysicalDeviceBufferDeviceAddressFeatures, vulkan12_available);
-			Enable(device_version >= vk::ApiVersion12 || IsDeviceExtensionEnabled(vk::EXTHostQueryResetExtensionName), vulkan12.hostQueryReset, vk::StructureType::ePhysicalDeviceHostQueryResetFeatures, vulkan12_available);
-			Enable(device_version >= vk::ApiVersion12 || IsDeviceExtensionEnabled(vk::KHRShaderSubgroupExtendedTypesExtensionName), vulkan12.shaderSubgroupExtendedTypes, vk::StructureType::ePhysicalDeviceShaderSubgroupExtendedTypesFeatures, vulkan12_available);
+			Enable(
+			    device_version >= vk::ApiVersion12 ||
+			        IsDeviceExtensionEnabled(vk::KHRTimelineSemaphoreExtensionName),
+			    vulkan12.timelineSemaphore,
+			    vk::StructureType::ePhysicalDeviceTimelineSemaphoreFeatures,
+			    vulkan12_available
+			);
+			Enable(
+			    device_version >= vk::ApiVersion12 ||
+			        IsDeviceExtensionEnabled(vk::EXTDescriptorIndexingExtensionName),
+			    vulkan12.descriptorIndexing,
+			    vk::StructureType::ePhysicalDeviceDescriptorIndexingFeatures,
+			    vulkan12_available
+			);
+			Enable(
+			    device_version >= vk::ApiVersion12 ||
+			        IsDeviceExtensionEnabled(vk::KHRBufferDeviceAddressExtensionName),
+			    vulkan12.bufferDeviceAddress,
+			    vk::StructureType::ePhysicalDeviceBufferDeviceAddressFeatures,
+			    vulkan12_available
+			);
+			Enable(
+			    device_version >= vk::ApiVersion12 ||
+			        IsDeviceExtensionEnabled(vk::EXTHostQueryResetExtensionName),
+			    vulkan12.hostQueryReset,
+			    vk::StructureType::ePhysicalDeviceHostQueryResetFeatures,
+			    vulkan12_available
+			);
+			Enable(
+			    device_version >= vk::ApiVersion12 ||
+			        IsDeviceExtensionEnabled(vk::KHRShaderSubgroupExtendedTypesExtensionName),
+			    vulkan12.shaderSubgroupExtendedTypes,
+			    vk::StructureType::ePhysicalDeviceShaderSubgroupExtendedTypesFeatures,
+			    vulkan12_available
+			);
 			if (vulkan12_available) {
 				vulkan12.pNext = feature_chain;
 				feature_chain = &vulkan12;
@@ -326,99 +523,250 @@ namespace fyuu_rhi {
 			// Core 1.3 features consolidated into the promoted struct.
 			vk::PhysicalDeviceVulkan13Features vulkan13;
 			bool vulkan13_available = false;
-			Enable(device_version >= vk::ApiVersion13 || IsDeviceExtensionEnabled(vk::KHRDynamicRenderingExtensionName), vulkan13.dynamicRendering, vk::StructureType::ePhysicalDeviceDynamicRenderingFeatures, vulkan13_available);
-			Enable(device_version >= vk::ApiVersion13 || IsDeviceExtensionEnabled(vk::KHRSynchronization2ExtensionName), vulkan13.synchronization2, vk::StructureType::ePhysicalDeviceSynchronization2Features, vulkan13_available);
-			Enable(device_version >= vk::ApiVersion13 || IsDeviceExtensionEnabled(vk::KHRMaintenance4ExtensionName), vulkan13.maintenance4, vk::StructureType::ePhysicalDeviceMaintenance4Features, vulkan13_available);
-			Enable(device_version >= vk::ApiVersion13 || IsDeviceExtensionEnabled(vk::EXTPipelineCreationCacheControlExtensionName), vulkan13.pipelineCreationCacheControl, vk::StructureType::ePhysicalDevicePipelineCreationCacheControlFeatures, vulkan13_available);
+			Enable(
+			    device_version >= vk::ApiVersion13 ||
+			        IsDeviceExtensionEnabled(vk::KHRDynamicRenderingExtensionName),
+			    vulkan13.dynamicRendering,
+			    vk::StructureType::ePhysicalDeviceDynamicRenderingFeatures,
+			    vulkan13_available
+			);
+			Enable(
+			    device_version >= vk::ApiVersion13 ||
+			        IsDeviceExtensionEnabled(vk::KHRSynchronization2ExtensionName),
+			    vulkan13.synchronization2,
+			    vk::StructureType::ePhysicalDeviceSynchronization2Features,
+			    vulkan13_available
+			);
+			Enable(
+			    device_version >= vk::ApiVersion13 ||
+			        IsDeviceExtensionEnabled(vk::KHRMaintenance4ExtensionName),
+			    vulkan13.maintenance4,
+			    vk::StructureType::ePhysicalDeviceMaintenance4Features,
+			    vulkan13_available
+			);
+			Enable(
+			    device_version >= vk::ApiVersion13 ||
+			        IsDeviceExtensionEnabled(vk::EXTPipelineCreationCacheControlExtensionName),
+			    vulkan13.pipelineCreationCacheControl,
+			    vk::StructureType::ePhysicalDevicePipelineCreationCacheControlFeatures,
+			    vulkan13_available
+			);
 			if (vulkan13_available) {
 				vulkan13.pNext = feature_chain;
 				feature_chain = &vulkan13;
 			}
 
+			// Core 1.4 features, consolidated into the promoted struct. Only chained
+			// when the device advertises 1.4, because a lower-version device must not
+			// receive the struct at all. pushDescriptor is recorded because the
+			// extension set above already asks for VK_KHR_push_descriptor: on 1.4 that
+			// extension's commands require this promoted feature, while on 1.3 and
+			// below the extension needs no feature at all.
+			vk::PhysicalDeviceVulkan14Features vulkan14;
+			bool vulkan14_available = false;
+			Enable(
+			    device_version >= vk::ApiVersion14,
+			    vulkan14.pushDescriptor,
+			    vk::StructureType::ePhysicalDeviceVulkan14Features,
+			    vulkan14_available
+			);
+			if (vulkan14_available) {
+				vulkan14.pNext = feature_chain;
+				feature_chain = &vulkan14;
+			}
+
 			// Extended dynamic state is core 1.3 in the spec but not folded into
 			// Vulkan13Features in this header; its EXT struct enables the feature.
-			vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT extended_dynamic_state{ vk::True };
-			AddFeature(extended_dynamic_state, device_version >= vk::ApiVersion13 || IsDeviceExtensionEnabled(vk::EXTExtendedDynamicStateExtensionName), vk::StructureType::ePhysicalDeviceExtendedDynamicStateFeaturesEXT, &extended_dynamic_state.extendedDynamicState);
-			vk::PhysicalDeviceExtendedDynamicState2FeaturesEXT extended_dynamic_state2{ vk::True };
-			AddFeature(extended_dynamic_state2, device_version >= vk::ApiVersion13 || IsDeviceExtensionEnabled(vk::EXTExtendedDynamicState2ExtensionName), vk::StructureType::ePhysicalDeviceExtendedDynamicState2FeaturesEXT, &extended_dynamic_state2.extendedDynamicState2);
+			vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT extended_dynamic_state{vk::True};
+			AddFeature(
+			    extended_dynamic_state,
+			    device_version >= vk::ApiVersion13 ||
+			        IsDeviceExtensionEnabled(vk::EXTExtendedDynamicStateExtensionName),
+			    vk::StructureType::ePhysicalDeviceExtendedDynamicStateFeaturesEXT,
+			    &extended_dynamic_state.extendedDynamicState
+			);
+			vk::PhysicalDeviceExtendedDynamicState2FeaturesEXT extended_dynamic_state2{vk::True};
+			AddFeature(
+			    extended_dynamic_state2,
+			    device_version >= vk::ApiVersion13 ||
+			        IsDeviceExtensionEnabled(vk::EXTExtendedDynamicState2ExtensionName),
+			    vk::StructureType::ePhysicalDeviceExtendedDynamicState2FeaturesEXT,
+			    &extended_dynamic_state2.extendedDynamicState2
+			);
 
 			// Swapchain / present features.
-			vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR swapchain_maintenance1{ vk::True };
-			AddFeature(swapchain_maintenance1, IsDeviceExtensionEnabled(vk::EXTSwapchainMaintenance1ExtensionName), vk::StructureType::ePhysicalDeviceSwapchainMaintenance1FeaturesKHR, &swapchain_maintenance1.swapchainMaintenance1);
-			vk::PhysicalDevicePresentIdFeaturesKHR present_id{ vk::True };
-			AddFeature(present_id, IsDeviceExtensionEnabled(vk::KHRPresentIdExtensionName), vk::StructureType::ePhysicalDevicePresentIdFeaturesKHR, &present_id.presentId);
-			vk::PhysicalDevicePresentWaitFeaturesKHR present_wait{ vk::True };
-			AddFeature(present_wait, IsDeviceExtensionEnabled(vk::KHRPresentWaitExtensionName), vk::StructureType::ePhysicalDevicePresentWaitFeaturesKHR, &present_wait.presentWait);
-			vk::PhysicalDevicePresentModeFifoLatestReadyFeaturesKHR fifo_latest_ready{ vk::True };
-			AddFeature(fifo_latest_ready, IsDeviceExtensionEnabled(vk::KHRPresentModeFifoLatestReadyExtensionName), vk::StructureType::ePhysicalDevicePresentModeFifoLatestReadyFeaturesKHR, &fifo_latest_ready.presentModeFifoLatestReady);
+			vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR swapchain_maintenance1{vk::True};
+			AddFeature(
+			    swapchain_maintenance1,
+			    IsDeviceExtensionEnabled(vk::EXTSwapchainMaintenance1ExtensionName),
+			    vk::StructureType::ePhysicalDeviceSwapchainMaintenance1FeaturesKHR,
+			    &swapchain_maintenance1.swapchainMaintenance1
+			);
+			vk::PhysicalDevicePresentIdFeaturesKHR present_id{vk::True};
+			AddFeature(
+			    present_id,
+			    IsDeviceExtensionEnabled(vk::KHRPresentIdExtensionName),
+			    vk::StructureType::ePhysicalDevicePresentIdFeaturesKHR,
+			    &present_id.presentId
+			);
+			vk::PhysicalDevicePresentWaitFeaturesKHR present_wait{vk::True};
+			AddFeature(
+			    present_wait,
+			    IsDeviceExtensionEnabled(vk::KHRPresentWaitExtensionName),
+			    vk::StructureType::ePhysicalDevicePresentWaitFeaturesKHR,
+			    &present_wait.presentWait
+			);
+			vk::PhysicalDevicePresentModeFifoLatestReadyFeaturesKHR fifo_latest_ready{vk::True};
+			AddFeature(
+			    fifo_latest_ready,
+			    IsDeviceExtensionEnabled(vk::KHRPresentModeFifoLatestReadyExtensionName),
+			    vk::StructureType::ePhysicalDevicePresentModeFifoLatestReadyFeaturesKHR,
+			    &fifo_latest_ready.presentModeFifoLatestReady
+			);
 
 			// Ray tracing / mesh shader / memory / shader object features.
-			vk::PhysicalDeviceAccelerationStructureFeaturesKHR acceleration_structure{ vk::True };
-			AddFeature(acceleration_structure, IsDeviceExtensionEnabled(vk::KHRAccelerationStructureExtensionName), vk::StructureType::ePhysicalDeviceAccelerationStructureFeaturesKHR, &acceleration_structure.accelerationStructure);
-			vk::PhysicalDeviceRayTracingPipelineFeaturesKHR ray_tracing_pipeline{ vk::True };
-			AddFeature(ray_tracing_pipeline, IsDeviceExtensionEnabled(vk::KHRRayTracingPipelineExtensionName), vk::StructureType::ePhysicalDeviceRayTracingPipelineFeaturesKHR, &ray_tracing_pipeline.rayTracingPipeline);
-			vk::PhysicalDeviceRayQueryFeaturesKHR ray_query{ vk::True };
-			AddFeature(ray_query, IsDeviceExtensionEnabled(vk::KHRRayQueryExtensionName), vk::StructureType::ePhysicalDeviceRayQueryFeaturesKHR, &ray_query.rayQuery);
-			vk::PhysicalDeviceMeshShaderFeaturesEXT mesh_shader{ vk::True };
-			AddFeature(mesh_shader, IsDeviceExtensionEnabled(vk::EXTMeshShaderExtensionName), vk::StructureType::ePhysicalDeviceMeshShaderFeaturesEXT, &mesh_shader.meshShader);
-			vk::PhysicalDeviceMemoryPriorityFeaturesEXT memory_priority{ vk::True };
-			AddFeature(memory_priority, IsDeviceExtensionEnabled(vk::EXTMemoryPriorityExtensionName), vk::StructureType::ePhysicalDeviceMemoryPriorityFeaturesEXT, &memory_priority.memoryPriority);
-			vk::PhysicalDeviceShaderObjectFeaturesEXT shader_object{ vk::True };
-			AddFeature(shader_object, IsDeviceExtensionEnabled(vk::EXTShaderObjectExtensionName), vk::StructureType::ePhysicalDeviceShaderObjectFeaturesEXT, &shader_object.shaderObject);
+			vk::PhysicalDeviceAccelerationStructureFeaturesKHR acceleration_structure{vk::True};
+			AddFeature(
+			    acceleration_structure,
+			    IsDeviceExtensionEnabled(vk::KHRAccelerationStructureExtensionName),
+			    vk::StructureType::ePhysicalDeviceAccelerationStructureFeaturesKHR,
+			    &acceleration_structure.accelerationStructure
+			);
+			vk::PhysicalDeviceRayTracingPipelineFeaturesKHR ray_tracing_pipeline{vk::True};
+			AddFeature(
+			    ray_tracing_pipeline,
+			    IsDeviceExtensionEnabled(vk::KHRRayTracingPipelineExtensionName),
+			    vk::StructureType::ePhysicalDeviceRayTracingPipelineFeaturesKHR,
+			    &ray_tracing_pipeline.rayTracingPipeline
+			);
+			vk::PhysicalDeviceRayQueryFeaturesKHR ray_query{vk::True};
+			AddFeature(
+			    ray_query,
+			    IsDeviceExtensionEnabled(vk::KHRRayQueryExtensionName),
+			    vk::StructureType::ePhysicalDeviceRayQueryFeaturesKHR,
+			    &ray_query.rayQuery
+			);
+			vk::PhysicalDeviceMeshShaderFeaturesEXT mesh_shader{vk::True};
+			AddFeature(
+			    mesh_shader,
+			    IsDeviceExtensionEnabled(vk::EXTMeshShaderExtensionName),
+			    vk::StructureType::ePhysicalDeviceMeshShaderFeaturesEXT,
+			    &mesh_shader.meshShader
+			);
+			vk::PhysicalDeviceMemoryPriorityFeaturesEXT memory_priority{vk::True};
+			AddFeature(
+			    memory_priority,
+			    IsDeviceExtensionEnabled(vk::EXTMemoryPriorityExtensionName),
+			    vk::StructureType::ePhysicalDeviceMemoryPriorityFeaturesEXT,
+			    &memory_priority.memoryPriority
+			);
+			vk::PhysicalDeviceShaderObjectFeaturesEXT shader_object{vk::True};
+			AddFeature(
+			    shader_object,
+			    IsDeviceExtensionEnabled(vk::EXTShaderObjectExtensionName),
+			    vk::StructureType::ePhysicalDeviceShaderObjectFeaturesEXT,
+			    &shader_object.shaderObject
+			);
 
-			vk::PhysicalDeviceFeatures2 supported_features{ {}, feature_chain };
-			physical_device->impl->getFeatures2(&supported_features, *physical_device->dispatcher);
+			// Core 1.0 features are a separate opt-in set the promoted structs above do
+			// not cover: a device may support them and still leave them disabled unless
+			// the created device asks for them. Core features are enabled wholesale,
+			// with no whitelist: the struct is chained, so getFeatures2 fills every
+			// member with the device's support and createDevice — which receives this
+			// same chain — enables every core 1.0 feature the device supports,
+			// robustBufferAccess included. The Enable() entries below are bookkeeping
+			// for enabled_features, not a filter; they record the capabilities runtime
+			// code may branch on.
+			vk::PhysicalDeviceFeatures2 core_features;
+			bool core_available = false;
+			Enable(
+			    true,
+			    core_features.features.samplerAnisotropy,
+			    vk::StructureType::ePhysicalDeviceFeatures2,
+			    core_available
+			);
+			Enable(
+			    true,
+			    core_features.features.independentBlend,
+			    vk::StructureType::ePhysicalDeviceFeatures2,
+			    core_available
+			);
+			Enable(
+			    true,
+			    core_features.features.geometryShader,
+			    vk::StructureType::ePhysicalDeviceFeatures2,
+			    core_available
+			);
+			Enable(
+			    true,
+			    core_features.features.tessellationShader,
+			    vk::StructureType::ePhysicalDeviceFeatures2,
+			    core_available
+			);
+			Enable(
+			    true,
+			    core_features.features.vertexPipelineStoresAndAtomics,
+			    vk::StructureType::ePhysicalDeviceFeatures2,
+			    core_available
+			);
+			Enable(
+			    true,
+			    core_features.features.fragmentStoresAndAtomics,
+			    vk::StructureType::ePhysicalDeviceFeatures2,
+			    core_available
+			);
+			if (core_available) {
+				core_features.pNext = feature_chain;
+				feature_chain = &core_features;
+			}
+			physical_device->impl->getFeatures2(&core_features, *physical_device->dispatcher);
 
 			std::unordered_set<vk::StructureType> enabled_features;
 			// Every probed feature (core via the promoted structs, the rest via their
 			// own structs) whose bool survived getFeatures2 is enabled.
-			auto available_features = probed | std::views::filter(
-				[](auto const& feature) {
-					return *feature.second;
-				}
-			);
+			auto available_features = probed | std::views::filter([](auto const& feature) {
+				                          return *feature.second;
+			                          });
 			std::ranges::transform(
-				available_features,
-				std::inserter(enabled_features, enabled_features.end()),
-				[](auto const& feature) {
-					return feature.first;
-				}
+			    available_features,
+			    std::inserter(enabled_features, enabled_features.end()),
+			    [](auto const& feature) {
+				    return feature.first;
+			    }
 			);
 
 			// Build one VkDeviceQueueCreateInfo per queue family from the immutable
 			// queue pool, preserving the priorities computed at QueueAllocator creation.
-			auto queue_create_infos =
-				queue_alloc.GetCreatePlans() |
-				std::views::transform(
-					[](auto const& plan) {
-						return vk::DeviceQueueCreateInfo(
-							vk::DeviceQueueCreateFlags{},
-							plan.family,
-							static_cast<std::uint32_t>(plan.priorities.size()),
-							plan.priorities.data(),
-							nullptr
-						);
-					}
-				) |
-				std::ranges::to<std::vector>();
+			auto queue_create_infos = queue_alloc.GetCreatePlans() |
+			    std::views::transform([](auto const& plan) {
+				                          return vk::DeviceQueueCreateInfo(
+				                              vk::DeviceQueueCreateFlags{},
+				                              plan.family,
+				                              static_cast<std::uint32_t>(plan.priorities.size()),
+				                              plan.priorities.data(),
+				                              nullptr
+				                          );
+			                          }) |
+			    std::ranges::to<std::vector>();
 
 			// Phase 4: create the logical device and initialize its dispatcher.
 			vk::SharedDevice device(
-				physical_device->impl->createDevice(
-					{
-						{},
-						queue_create_infos,
-						{},
-						enabled_extensions,
-						nullptr,      // pEnabledFeatures: base features ride the feature chain
-						feature_chain // pNext: the validated feature chain
-					}, 
-					nullptr, 
-					*physical_device->dispatcher
-				),
-				{ nullptr, *physical_device->dispatcher }
+			    physical_device->impl->createDevice(
+			        {
+			            {},
+			            queue_create_infos,
+			            {},
+			            enabled_extensions,
+			            nullptr,      // pEnabledFeatures: base features ride the feature chain
+			            feature_chain // pNext: the validated feature chain
+			        },
+			        nullptr,
+			        *physical_device->dispatcher
+			    ),
+			    {nullptr, *physical_device->dispatcher}
 			);
-			auto device_dispatcher = std::make_shared<vk::detail::DispatchLoaderDynamic>(*physical_device->dispatcher);
+			auto device_dispatcher =
+			    std::make_shared<vk::detail::DispatchLoaderDynamic>(*physical_device->dispatcher);
 			device_dispatcher->init(*device);
 
 			// Phase 5: wrap VMA around the device. The budget flag is only set when
@@ -428,8 +776,9 @@ namespace fyuu_rhi {
 			vulkan_functions.vkGetDeviceProcAddr = vkGetDeviceProcAddr;
 			VmaAllocatorCreateInfo allocator_info = {};
 			allocator_info.flags = static_cast<VmaAllocatorCreateFlags>(
-				IsDeviceExtensionEnabled(vk::EXTMemoryBudgetExtensionName) ?
-					VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT : 0
+			    IsDeviceExtensionEnabled(vk::EXTMemoryBudgetExtensionName) ?
+			        VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT :
+			        0
 			);
 			allocator_info.vulkanApiVersion = device_version;
 			allocator_info.physicalDevice = *physical_device->impl;
@@ -437,20 +786,23 @@ namespace fyuu_rhi {
 			allocator_info.instance = *physical_device->impl.getDestructorType();
 			allocator_info.pVulkanFunctions = &vulkan_functions;
 			VmaAllocator allocator_impl = nullptr;
-			if (vmaCreateAllocator(&allocator_info, &allocator_impl) != VK_SUCCESS || !allocator_impl) {
+			if (vmaCreateAllocator(&allocator_info, &allocator_impl) != VK_SUCCESS ||
+			    !allocator_impl) {
 				throw std::runtime_error("Failed to create the VMA allocator");
 			}
 			vulkan::MemoryAllocator memory_allocator(device, allocator_impl);
 
 			return MakeLogicalDevice(
-				vulkan::LogicalDevice{
-					physical_device->impl,
-					std::move(queue_alloc),
-					std::move(device),
-					std::move(device_dispatcher),
-					std::move(memory_allocator),
-					std::move(enabled_features)
-				}
+			    vulkan::LogicalDevice{
+			        physical_device->impl,
+			        std::move(queue_alloc),
+			        std::move(device),
+			        std::move(device_dispatcher),
+			        std::move(memory_allocator),
+			        std::move(enabled_features),
+			        core_features.features,
+			        properties.limits.maxSamplerAnisotropy
+			    }
 			);
 		}
 	};

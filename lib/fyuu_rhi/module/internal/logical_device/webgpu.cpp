@@ -265,15 +265,23 @@ namespace fyuu_rhi {
 
 		Resource operator()(std::size_t size_in_bytes, ResourceFlags const& flags) const {
 			auto usage = webgpu::BufferUsage(flags);
+			// Created unmapped, including the host-visible upload buffers a WriteBuffer targets.
+			// The scheduler's pre-map pass owns mapping those and releasing them before the
+			// queue is asked to execute work that references them; a buffer created mapped
+			// stays mapped, and Dawn rejects a submit that names a mapped buffer ("used in
+			// submit while mapped") - which is what an upload through a staging buffer is.
 			wgpu::BufferDescriptor descriptor{
 				nullptr,
 				{},
 				usage,
 				size_in_bytes,
-				static_cast<bool>(usage & wgpu::BufferUsage::MapWrite)
+				false
 			};
 			return MakeResource(
-				webgpu::Resource{ logical_device->impl.CreateBuffer(&descriptor) },
+				webgpu::Resource{
+					logical_device->impl.CreateBuffer(&descriptor),
+					logical_device->errors
+				},
 				size_in_bytes,
 				flags
 			);
@@ -308,7 +316,10 @@ namespace fyuu_rhi {
 				nullptr
 			};
 			return MakeResource(
-				webgpu::Resource{ logical_device->impl.CreateTexture(&descriptor) },
+				webgpu::Resource{
+					logical_device->impl.CreateTexture(&descriptor),
+					logical_device->errors
+				},
 				ResourceTextureExtent{
 					.width = static_cast<std::uint32_t>(width),
 					.height = static_cast<std::uint32_t>(height),
