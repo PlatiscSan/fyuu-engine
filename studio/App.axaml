@@ -1,0 +1,22 @@
+<Application
+	x:Class="FyuuStudio.StudioApplication"
+	xmlns="https://github.com/avaloniaui"
+	xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+	xmlns:vm="clr-namespace:FyuuStudio.ViewModels"
+	xmlns:views="clr-namespace:FyuuStudio.Views"
+	RequestedThemeVariant="Dark">
+	<Application.Styles>
+		<FluentTheme />
+	</Application.Styles>
+	<Application.DataTemplates>
+		<DataTemplate DataType="{x:Type vm:StartPageViewModel}">
+			<views:StartPageView />
+		</DataTemplate>
+		<DataTemplate DataType="{x:Type vm:CreateProjectViewModel}">
+			<views:CreateProjectView />
+		</DataTemplate>
+		<DataTemplate DataType="{x:Type vm:EditorViewModel}">
+			<views:EditorView />
+		</DataTemplate>
+	</Application.DataTemplates>
+</Application>

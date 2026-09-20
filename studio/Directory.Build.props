@@ -1,0 +1,12 @@
+<Project>
+	<PropertyGroup>
+		<FyuuBuildRoot Condition="'$(SolutionDir)' != ''">$(SolutionDir)</FyuuBuildRoot>
+		<FyuuBuildRoot Condition="'$(FyuuBuildRoot)' == ''">$(MSBuildThisFileDirectory)..\cmake-build\dotnet\</FyuuBuildRoot>
+		<BaseOutputPath>$(FyuuBuildRoot)bin\</BaseOutputPath>
+		<OutputPath>$(BaseOutputPath)$(Configuration)\FyuuStudio\</OutputPath>
+		<AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+		<BaseIntermediateOutputPath>$(FyuuBuildRoot)obj\FyuuStudio\</BaseIntermediateOutputPath>
+		<MSBuildProjectExtensionsPath>$(BaseIntermediateOutputPath)</MSBuildProjectExtensionsPath>
+		<FyuuNativeOutputDir Condition="'$(FyuuNativeOutputDir)' == '' And '$(SolutionDir)' != ''">$(SolutionDir)bin\$(Configuration)</FyuuNativeOutputDir>
+	</PropertyGroup>
+</Project>

@@ -1,0 +1,166 @@
+<UserControl xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:FyuuStudio.Views"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             x:Class="FyuuStudio.Views.EditorView" d:DesignWidth="1440" d:DesignHeight="900"
+             mc:Ignorable="d" Background="#090D12">
+  <UserControl.Styles>
+    <Style Selector="Button.tool">
+      <Setter Property="Width" Value="32" />
+      <Setter Property="Height" Value="30" />
+      <Setter Property="Padding" Value="0" />
+      <Setter Property="HorizontalContentAlignment" Value="Center" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="CornerRadius" Value="5" />
+      <Setter Property="Foreground" Value="#9DA9BA" />
+    </Style>
+    <Style Selector="Button.tool:pointerover /template/ ContentPresenter">
+      <Setter Property="Background" Value="#202938" />
+    </Style>
+    <Style Selector="Button.tool.accent">
+      <Setter Property="Background" Value="#253E65" />
+      <Setter Property="Foreground" Value="#86B6FF" />
+    </Style>
+    <Style Selector="TextBlock.panelTitle">
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="Foreground" Value="#C7D0DD" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+    <Style Selector="local|RuntimeViewportControl">
+      <Setter Property="Template">
+        <ControlTemplate>
+          <Grid Background="#080B10" ClipToBounds="True">
+            <Image x:Name="PART_Image" Stretch="Uniform" />
+            <Border x:Name="PART_StatusBorder"
+                    HorizontalAlignment="Center" VerticalAlignment="Center"
+                    Padding="12,7" CornerRadius="6" Background="#B30D1219">
+              <TextBlock x:Name="PART_Status" FontSize="11" Foreground="#647186" />
+            </Border>
+          </Grid>
+        </ControlTemplate>
+      </Setter>
+    </Style>
+  </UserControl.Styles>
+
+  <Grid RowDefinitions="34,44,*,24">
+    <Border Grid.Row="0" Background="#11161E" BorderBrush="#232C39" BorderThickness="0,0,0,1">
+      <Grid>
+        <Menu Background="Transparent"
+              HorizontalAlignment="Left"
+              VerticalAlignment="Stretch">
+          <MenuItem Header="File">
+            <MenuItem Header="Open Scene…" Command="{Binding OpenSceneCommand}" />
+            <Separator />
+            <MenuItem Header="Close Project" Command="{Binding CloseProjectCommand}" />
+          </MenuItem>
+          <MenuItem Header="Edit" />
+          <MenuItem Header="View" />
+          <MenuItem Header="Window" />
+          <MenuItem Header="Help" />
+        </Menu>
+      </Grid>
+    </Border>
+
+    <Border Grid.Row="1" Background="#0F141B" BorderBrush="#232C39" BorderThickness="0,0,0,1">
+      <Grid ColumnDefinitions="*,Auto,*" Margin="8,0">
+        <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="3" VerticalAlignment="Center">
+          <Button Classes="tool accent" Content="S" ToolTip.Tip="Select" />
+          <Button Classes="tool" Content="M" ToolTip.Tip="Move" />
+          <Button Classes="tool" Content="R" ToolTip.Tip="Rotate" />
+          <Button Classes="tool" Content="T" ToolTip.Tip="Scale" />
+        </StackPanel>
+        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+          <Button Classes="tool" Content="▶" ToolTip.Tip="Play" />
+          <Button Classes="tool" Content="Ⅱ" ToolTip.Tip="Pause" />
+          <Button Classes="tool" Content="■" ToolTip.Tip="Stop" />
+        </StackPanel>
+        <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="3"
+                    HorizontalAlignment="Right" VerticalAlignment="Center">
+          <Button Classes="tool" Content="⋯" ToolTip.Tip="More" />
+        </StackPanel>
+      </Grid>
+    </Border>
+
+    <Grid Grid.Row="2" ColumnDefinitions="230,4,*,4,280">
+      <Border Grid.Column="0" Background="#0E131A">
+        <Grid RowDefinitions="38,*">
+          <Border Grid.Row="0" Padding="12,0" BorderBrush="#222B38" BorderThickness="0,0,0,1">
+            <Grid ColumnDefinitions="*,Auto">
+              <TextBlock Classes="panelTitle" Text="Scene" />
+              <Button Grid.Column="1" Classes="tool" Content="+" ToolTip.Tip="Add object" />
+            </Grid>
+          </Border>
+          <StackPanel Grid.Row="1" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="6">
+            <TextBlock Text="No objects" FontSize="12" Foreground="#758196" HorizontalAlignment="Center" />
+            <TextBlock Text="Add an object to the scene" FontSize="11" Foreground="#4F5B6D" />
+          </StackPanel>
+        </Grid>
+      </Border>
+
+      <GridSplitter Grid.Column="1" Background="#222B38" ResizeDirection="Columns" />
+
+      <Grid Grid.Column="2" RowDefinitions="*,4,210">
+        <Border Grid.Row="0" Background="#080B10">
+          <Grid RowDefinitions="34,*">
+            <Border Grid.Row="0" Padding="10,0" Background="#0D1219"
+                    BorderBrush="#202936" BorderThickness="0,0,0,1">
+              <Grid ColumnDefinitions="*,Auto">
+                <TextBlock Text="Viewport" Classes="panelTitle" />
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="2" VerticalAlignment="Center">
+                  <Button Classes="tool" Content="2D" ToolTip.Tip="2D view" />
+                  <Button Classes="tool" Content="☷" ToolTip.Tip="Viewport options" />
+                </StackPanel>
+              </Grid>
+            </Border>
+            <local:RuntimeViewportControl Grid.Row="1" ScenePath="{Binding ScenePath}" />
+          </Grid>
+        </Border>
+
+        <GridSplitter Grid.Row="1" Background="#222B38" ResizeDirection="Rows" />
+
+        <Border Grid.Row="2" Background="#0E131A">
+          <Grid RowDefinitions="38,*">
+            <Border Grid.Row="0" Padding="12,0" BorderBrush="#222B38" BorderThickness="0,0,0,1">
+              <Grid ColumnDefinitions="Auto,*,Auto">
+                <TextBlock Classes="panelTitle" Text="Assets" />
+                <TextBox Grid.Column="1" Width="210" Height="26" Margin="18,0,0,0"
+                         HorizontalAlignment="Left" Watermark="Search assets" />
+                <Button Grid.Column="2" Classes="tool" Content="+" ToolTip.Tip="Import asset" />
+              </Grid>
+            </Border>
+            <StackPanel Grid.Row="1" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="6">
+              <TextBlock Text="No assets" FontSize="12" Foreground="#758196" HorizontalAlignment="Center" />
+              <TextBlock Text="Import an asset to get started" FontSize="11" Foreground="#4F5B6D" />
+            </StackPanel>
+          </Grid>
+        </Border>
+      </Grid>
+
+      <GridSplitter Grid.Column="3" Background="#222B38" ResizeDirection="Columns" />
+
+      <Border Grid.Column="4" Background="#0E131A">
+        <Grid RowDefinitions="38,*">
+          <Border Grid.Row="0" Padding="12,0" BorderBrush="#222B38" BorderThickness="0,0,0,1">
+            <TextBlock Classes="panelTitle" Text="Inspector" />
+          </Border>
+          <StackPanel Grid.Row="1" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="6">
+            <TextBlock Text="Nothing selected" FontSize="12" Foreground="#758196" HorizontalAlignment="Center" />
+            <TextBlock Text="Select an object to inspect it" FontSize="11" Foreground="#4F5B6D" />
+          </StackPanel>
+        </Grid>
+      </Border>
+    </Grid>
+
+    <Border Grid.Row="3" Background="#11161E" BorderBrush="#232C39" BorderThickness="0,1,0,0">
+      <Grid ColumnDefinitions="*,Auto" Margin="9,0">
+        <TextBlock Text="Ready" FontSize="10" Foreground="#677388" VerticalAlignment="Center" />
+        <TextBlock Grid.Column="1" Text="{Binding ProjectPath}"
+                   FontSize="10" Foreground="#4F5B6D" TextTrimming="CharacterEllipsis"
+                   MaxWidth="520" VerticalAlignment="Center" />
+      </Grid>
+    </Border>
+  </Grid>
+</UserControl>

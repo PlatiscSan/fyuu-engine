@@ -1,0 +1,175 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             x:Class="FyuuStudio.Views.StartPageView"
+             d:DesignWidth="960"
+             d:DesignHeight="640"
+             mc:Ignorable="d"
+             Background="#0B0F15">
+  <UserControl.Styles>
+    <Style Selector="Button.action">
+      <Setter Property="Height" Value="64" />
+      <Setter Property="Padding" Value="18,0" />
+      <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+      <Setter Property="Background" Value="#151B25" />
+      <Setter Property="BorderBrush" Value="#273142" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="9" />
+    </Style>
+    <Style Selector="Button.action:pointerover /template/ ContentPresenter">
+      <Setter Property="Background" Value="#1B2330" />
+      <Setter Property="BorderBrush" Value="#4777B8" />
+    </Style>
+    <Style Selector="Button.action:pressed /template/ ContentPresenter">
+      <Setter Property="Background" Value="#202B3C" />
+    </Style>
+    <Style Selector="Border.recentItem:pointerover">
+      <Setter Property="Background" Value="#171E29" />
+    </Style>
+  </UserControl.Styles>
+
+  <ScrollViewer HorizontalScrollBarVisibility="Disabled"
+                VerticalScrollBarVisibility="Auto"
+                HorizontalContentAlignment="Stretch">
+    <Grid MaxWidth="760"
+          Margin="48,52,48,40"
+          HorizontalAlignment="Center"
+          RowDefinitions="Auto,Auto,Auto,*">
+
+      <StackPanel Grid.Row="0"
+                  Orientation="Horizontal"
+                  Spacing="16"
+                  VerticalAlignment="Center">
+        <Border Width="48"
+                Height="48"
+                CornerRadius="12"
+                Background="#5C91E8"
+                VerticalAlignment="Center">
+          <TextBlock Text="F"
+                     FontSize="24"
+                     FontWeight="SemiBold"
+                     Foreground="White"
+                     HorizontalAlignment="Center"
+                     VerticalAlignment="Center" />
+        </Border>
+        <StackPanel Spacing="2" VerticalAlignment="Center">
+          <TextBlock Text="Fyuu Studio"
+                     FontSize="24"
+                     FontWeight="SemiBold"
+                     Foreground="#F4F7FB" />
+          <TextBlock Text="Create, open, and manage your projects."
+                     FontSize="13"
+                     Foreground="#8D98AA" />
+        </StackPanel>
+      </StackPanel>
+
+      <Grid Grid.Row="1"
+            Margin="0,32,0,0"
+            ColumnDefinitions="1*,16,1*">
+        <Button Grid.Column="0"
+                Classes="action"
+                HorizontalAlignment="Stretch"
+                Command="{Binding NewProjectCommand}">
+          <Grid ColumnDefinitions="32,*">
+            <Border Width="30" Height="30" CornerRadius="7" Background="#1E3150">
+              <TextBlock Text="+" FontSize="21" Foreground="#77ACFF"
+                         HorizontalAlignment="Center" VerticalAlignment="Center" />
+            </Border>
+            <StackPanel Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Center" Spacing="2">
+              <TextBlock Text="New Project" FontSize="14" FontWeight="SemiBold" Foreground="#F0F3F8" />
+              <TextBlock Text="Create a new workspace" FontSize="12" Foreground="#8793A7"
+                         TextTrimming="CharacterEllipsis" />
+            </StackPanel>
+          </Grid>
+        </Button>
+
+        <Button Grid.Column="2"
+                Classes="action"
+                HorizontalAlignment="Stretch"
+                Command="{Binding OpenProjectCommand}">
+          <Grid ColumnDefinitions="32,*">
+            <Border Width="30" Height="30" CornerRadius="7" Background="#1E3150">
+              <TextBlock Text="↗" FontSize="17" Foreground="#77ACFF"
+                         HorizontalAlignment="Center" VerticalAlignment="Center" />
+            </Border>
+            <StackPanel Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Center" Spacing="2">
+              <TextBlock Text="Open Project" FontSize="14" FontWeight="SemiBold" Foreground="#F0F3F8" />
+              <TextBlock Text="Choose an existing project" FontSize="12" Foreground="#8793A7"
+                         TextTrimming="CharacterEllipsis" />
+            </StackPanel>
+          </Grid>
+        </Button>
+      </Grid>
+
+      <TextBlock Grid.Row="2"
+                 Margin="2,14,0,0"
+                 Text="{Binding Status}"
+                 FontSize="11"
+                 Foreground="#667286" />
+
+      <StackPanel Grid.Row="3" Margin="0,38,0,0" Spacing="12">
+        <Grid ColumnDefinitions="*,Auto">
+          <TextBlock Text="Recent projects"
+                     FontSize="16"
+                     FontWeight="SemiBold"
+                     Foreground="#E8ECF3" />
+          <TextBlock Grid.Column="1"
+                     Text="Quick access"
+                     FontSize="11"
+                     Foreground="#657185"
+                     VerticalAlignment="Center" />
+        </Grid>
+
+        <Border IsVisible="{Binding HasNoRecentProjects, FallbackValue=True}"
+                MinHeight="132"
+                CornerRadius="10"
+                Background="#111720">
+          <StackPanel HorizontalAlignment="Center"
+                      VerticalAlignment="Center"
+                      Spacing="7">
+            <Border Width="30" Height="30" CornerRadius="15" Background="#182130">
+              <TextBlock Text="◇" FontSize="16" Foreground="#71819A"
+                         HorizontalAlignment="Center" VerticalAlignment="Center" />
+            </Border>
+            <TextBlock Text="No recent projects"
+                       FontSize="13"
+                       Foreground="#A5AFC0"
+                       HorizontalAlignment="Center" />
+            <TextBlock Text="Projects you open will appear here."
+                       FontSize="11"
+                       Foreground="#667286"
+                       HorizontalAlignment="Center" />
+          </StackPanel>
+        </Border>
+
+        <ItemsControl ItemsSource="{Binding RecentProjects}"
+                      IsVisible="{Binding HasRecentProjects}">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate>
+              <Border Classes="recentItem"
+                      Padding="14,12"
+                      Margin="0,0,0,6"
+                      CornerRadius="8"
+                      Background="#111720">
+                <Grid ColumnDefinitions="28,*">
+                  <Border Width="26" Height="26" CornerRadius="6" Background="#1E3150">
+                    <TextBlock Text="F" FontSize="12" FontWeight="SemiBold" Foreground="#77ACFF"
+                               HorizontalAlignment="Center" VerticalAlignment="Center" />
+                  </Border>
+                  <TextBlock Grid.Column="1"
+                             Margin="10,0,0,0"
+                             Text="{Binding}"
+                             TextTrimming="CharacterEllipsis"
+                             FontSize="13"
+                             Foreground="#DCE2EC"
+                             VerticalAlignment="Center" />
+                </Grid>
+              </Border>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+      </StackPanel>
+    </Grid>
+  </ScrollViewer>
+</UserControl>

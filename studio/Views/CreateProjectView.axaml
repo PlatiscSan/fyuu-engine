@@ -1,0 +1,114 @@
+<UserControl xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             x:Class="FyuuStudio.Views.CreateProjectView" d:DesignWidth="960" d:DesignHeight="640"
+             mc:Ignorable="d" Background="#0B0F15" Focusable="True"
+             PointerPressed="OnBackgroundPointerPressed">
+  <UserControl.Styles>
+    <Style Selector="TextBox.field">
+      <Setter Property="Height" Value="42" />
+      <Setter Property="Padding" Value="12,0" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+      <Setter Property="Background" Value="#111720" />
+      <Setter Property="BorderBrush" Value="#293345" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="7" />
+    </Style>
+    <Style Selector="Button.secondary">
+      <Setter Property="Height" Value="38" />
+      <Setter Property="Padding" Value="17,0" />
+      <Setter Property="HorizontalContentAlignment" Value="Center" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+      <Setter Property="Background" Value="#151B25" />
+      <Setter Property="BorderBrush" Value="#2A3547" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="7" />
+    </Style>
+    <Style Selector="Button.primary">
+      <Setter Property="Height" Value="38" />
+      <Setter Property="Padding" Value="20,0" />
+      <Setter Property="HorizontalContentAlignment" Value="Center" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+      <Setter Property="Background" Value="#5C91E8" />
+      <Setter Property="Foreground" Value="White" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="CornerRadius" Value="7" />
+    </Style>
+    <Style Selector="Button.folderButton">
+      <Setter Property="Width" Value="40" />
+      <Setter Property="Height" Value="36" />
+      <Setter Property="Padding" Value="10" />
+      <Setter Property="HorizontalContentAlignment" Value="Center" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+      <Setter Property="HorizontalAlignment" Value="Right" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+      <Setter Property="Margin" Value="0,0,3,0" />
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="CornerRadius" Value="5" />
+    </Style>
+    <Style Selector="Button.folderButton:pointerover /template/ ContentPresenter">
+      <Setter Property="Background" Value="#1D2735" />
+    </Style>
+  </UserControl.Styles>
+
+  <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto"
+                HorizontalContentAlignment="Stretch">
+    <Grid Width="600" Margin="44,44,44,40" HorizontalAlignment="Center"
+          RowDefinitions="Auto,Auto,Auto,Auto">
+      <Button Grid.Row="0" Command="{Binding CancelCommand}" Padding="0"
+              HorizontalAlignment="Left" Background="Transparent" BorderThickness="0">
+        <StackPanel Orientation="Horizontal" Spacing="8">
+          <TextBlock Text="←" FontSize="16" Foreground="#8EA7CC" />
+          <TextBlock Text="Back" FontSize="13" Foreground="#A9B5C8" VerticalAlignment="Center" />
+        </StackPanel>
+      </Button>
+
+      <StackPanel Grid.Row="1" Margin="0,30,0,0" Spacing="5">
+        <TextBlock Text="Create a project" FontSize="27" FontWeight="SemiBold" Foreground="#F4F7FB" />
+        <TextBlock Text="Choose a name and save location for the project file."
+                   FontSize="13" Foreground="#8793A7" />
+      </StackPanel>
+
+      <StackPanel Grid.Row="2" Margin="0,34,0,0" Spacing="22">
+        <StackPanel Spacing="8">
+          <TextBlock Text="Project name" FontSize="12" FontWeight="SemiBold" Foreground="#C8D0DC" />
+          <TextBox Classes="field"
+                   Text="{Binding Name, FallbackValue=Untitled}"
+                   Watermark="Project name" />
+        </StackPanel>
+
+        <StackPanel Spacing="8">
+          <TextBlock Text="Location" FontSize="12" FontWeight="SemiBold" Foreground="#C8D0DC" />
+          <Grid>
+            <TextBox Classes="field"
+                     Padding="12,0,48,0"
+                     Text="{Binding Location}"
+                     Watermark="Choose a folder" />
+            <Button Classes="folderButton"
+                    Command="{Binding BrowseCommand}"
+                    ToolTip.Tip="Choose folder">
+              <Viewbox Width="17" Height="17">
+                <Path Data="M 1,4 L 7,4 L 9,6 L 19,6 L 19,17 L 1,17 Z"
+                      Stroke="#8EA7CC"
+                      StrokeThickness="1.5"
+                      StrokeJoin="Round"
+                      Fill="Transparent" />
+              </Viewbox>
+            </Button>
+          </Grid>
+        </StackPanel>
+
+      </StackPanel>
+
+      <StackPanel Grid.Row="3"
+                  Margin="0,24,0,0"
+                  Orientation="Horizontal"
+                  HorizontalAlignment="Right"
+                  Spacing="10">
+          <Button Width="90" Classes="secondary" Command="{Binding CancelCommand}" Content="Cancel" />
+          <Button Width="142" Classes="primary" Command="{Binding CreateCommand}" Content="Create project" />
+      </StackPanel>
+    </Grid>
+  </ScrollViewer>
+</UserControl>
