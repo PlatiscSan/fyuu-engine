@@ -103,8 +103,6 @@ add_subdirectory(lib/vulkan_hpp)
 add_subdirectory(lib/PixEvents-cmake)
 add_subdirectory(lib/fyuu_rhi)
 add_subdirectory(lib/fyuu_asset)
-add_subdirectory(lib/fyuu_ui)
-
 add_subdirectory(runtime)
 
 if(FYUU_BUILD_DESKTOP)
