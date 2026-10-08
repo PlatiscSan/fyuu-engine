@@ -57,20 +57,15 @@ namespace {
 
 	public:
 		void Write(
-			fyuu_rhi::log::Level level,
-			std::string_view message,
-			std::source_location const& location
+		    fyuu_rhi::log::Level level,
+		    std::string_view message,
+		    std::source_location const& location
 		) noexcept override {
-			if (
-				level == fyuu_rhi::log::Level::Error ||
-				level == fyuu_rhi::log::Level::Fatal
-			) {
+			if (level == fyuu_rhi::log::Level::Error || level == fyuu_rhi::log::Level::Fatal) {
 				m_has_error.store(true, std::memory_order_relaxed);
 			}
-			std::clog
-				<< '[' << static_cast<int>(level) << "] "
-				<< location.file_name() << ':' << location.line() << ": "
-				<< message << '\n';
+			std::clog << '[' << static_cast<int>(level) << "] " << location.file_name() << ':'
+			          << location.line() << ": " << message << '\n';
 		}
 
 		bool HasError() const noexcept {
@@ -97,8 +92,7 @@ namespace {
 	struct Receiver {
 		std::shared_ptr<State> state;
 
-		struct Environment {
-		};
+		struct Environment {};
 
 		Environment get_env() const noexcept {
 			return {};
@@ -139,13 +133,9 @@ namespace {
 
 	Resources Wait(std::shared_ptr<State> const& state) {
 		std::unique_lock lock(state->mutex);
-		if (!state->condition.wait_for(
-			lock,
-			30s,
-			[&state]() {
-				return state->completed;
-			}
-		)) {
+		if (!state->condition.wait_for(lock, 30s, [&state]() {
+			    return state->completed;
+		    })) {
 			throw std::runtime_error("Timed out waiting for the draw graph");
 		}
 		if (state->error) {
@@ -158,21 +148,22 @@ namespace {
 	}
 
 	int Run(
-		char const* backend_name,
-		bool two_attribute_layout,
-		bool push_constants,
-		bool uniform_space_zero,
-		bool early_binds,
-		bool zero_clip_z
+	    char const* backend_name,
+	    bool two_attribute_layout,
+	    bool push_constants,
+	    bool uniform_space_zero,
+	    bool early_binds,
+	    bool zero_clip_z
 	) {
 		using namespace fyuu_rhi;
 		using namespace fyuu_rhi::execution;
 		using namespace fyuu_rhi::pipeline;
-		auto const name = std::string_view{ backend_name };
+		auto const name = std::string_view{backend_name};
 		auto const backend = name == "d3d12" ? Backend::DirectX12 :
-			name == "vulkan" ? Backend::Vulkan :
-			name == "webgpu" ? Backend::WebGPU :
-			name == "metal" ? Backend::Metal : Backend::OpenGL;
+		    name == "vulkan"                 ? Backend::Vulkan :
+		    name == "webgpu"                 ? Backend::WebGPU :
+		    name == "metal"                  ? Backend::Metal :
+		                                       Backend::OpenGL;
 
 		InitializeRHIContext("Draw probe", {}, "FyuuEngine", {}, &LogSink());
 		auto& instance = RequestInstance(backend);
@@ -277,50 +268,47 @@ namespace {
 				return object.color * pipeline_constant.color * input.color;
 			}
 		)";
-		auto const& shader = push_constants
-			? (uniform_space_zero ? push_space0_shader : push_shader)
-			: (two_attribute_layout ? hello_shader : simple_shader);
-		std::array const modules{ SlangPipelineProgramDescriptor::Module{ "probe", shader } };
+		auto const& shader = push_constants ?
+		    (uniform_space_zero ? push_space0_shader : push_shader) :
+		    (two_attribute_layout ? hello_shader : simple_shader);
+		std::array const modules{SlangPipelineProgramDescriptor::Module{"probe", shader}};
 		std::array const entries{
-			SlangPipelineProgramDescriptor::EntryPoint{ "vertex_main", Stage::Vertex },
-			SlangPipelineProgramDescriptor::EntryPoint{ "fragment_main", Stage::Fragment }
+		    SlangPipelineProgramDescriptor::EntryPoint{"vertex_main", Stage::Vertex},
+		    SlangPipelineProgramDescriptor::EntryPoint{"fragment_main", Stage::Fragment}
 		};
-		std::array const colors{ ColorTargetState{ .format = ResourceFlagBits::R8G8B8A8Unorm } };
+		std::array const colors{ColorTargetState{.format = ResourceFlagBits::R8G8B8A8Unorm}};
 		std::vector<VertexBufferLayout> layouts;
 		std::vector<VertexAttribute> attributes;
 		if (two_attribute_layout || push_constants) {
-			layouts = { VertexBufferLayout{ .slot = 0u, .stride = 6u * sizeof(float) } };
+			layouts = {VertexBufferLayout{.slot = 0u, .stride = 6u * sizeof(float)}};
 			attributes = {
-				VertexAttribute{
-					.location = 0u,
-					.slot = 0u,
-					.offset = 0u,
-					.format = ResourceFlagBits::R32G32Float
-				},
-				VertexAttribute{
-					.location = 1u,
-					.slot = 0u,
-					.offset = 2u * sizeof(float),
-					.format = ResourceFlagBits::R32G32B32A32Float
-				}
+			    VertexAttribute{
+			        .location = 0u,
+			        .slot = 0u,
+			        .offset = 0u,
+			        .format = ResourceFlagBits::R32G32Float
+			    },
+			    VertexAttribute{
+			        .location = 1u,
+			        .slot = 0u,
+			        .offset = 2u * sizeof(float),
+			        .format = ResourceFlagBits::R32G32B32A32Float
+			    }
 			};
+		} else {
+			layouts = {VertexBufferLayout{.slot = 0u, .stride = 16u}};
+			attributes = {VertexAttribute{
+			    .location = 0u,
+			    .slot = 0u,
+			    .offset = 0u,
+			    .format = ResourceFlagBits::R32G32B32A32Float
+			}};
 		}
-		else {
-			layouts = { VertexBufferLayout{ .slot = 0u, .stride = 16u } };
-			attributes = {
-				VertexAttribute{
-					.location = 0u,
-					.slot = 0u,
-					.offset = 0u,
-					.format = ResourceFlagBits::R32G32B32A32Float
-				}
-			};
-		}
-		auto pipeline = device.CreateGraphicsPipeline({
-			.program = { .modules = modules, .entry_points = entries },
-			.vertex = { .buffers = layouts, .attributes = attributes },
-			.color_targets = colors
-		});
+		auto pipeline = device.CreateGraphicsPipeline(
+		    {.program = {.modules = modules, .entry_points = entries},
+			 .vertex = {.buffers = layouts, .attributes = attributes},
+			 .color_targets = colors}
+		);
 
 		ResourceFlags target_flags;
 		target_flags.Set(ResourceFlagBits::DeviceLocal);
@@ -346,27 +334,38 @@ namespace {
 		std::vector<float> vertex_data;
 		if (two_attribute_layout || push_constants) {
 			vertex_data = {
-				-0.9f, -0.9f, 1.0f, 0.0f, 0.0f, 1.0f,
-				0.9f, -0.9f, 1.0f, 0.0f, 0.0f, 1.0f,
-				0.0f, 0.9f, 1.0f, 0.0f, 0.0f, 1.0f
+			    -0.9f,
+			    -0.9f,
+			    1.0f,
+			    0.0f,
+			    0.0f,
+			    1.0f,
+			    0.9f,
+			    -0.9f,
+			    1.0f,
+			    0.0f,
+			    0.0f,
+			    1.0f,
+			    0.0f,
+			    0.9f,
+			    1.0f,
+			    0.0f,
+			    0.0f,
+			    1.0f
 			};
-		}
-		else {
+		} else {
 			// The "zeroz" mode writes gl_Position.z = 0, the near plane of the engine's
 			// Vulkan-style [0, 1] depth convention that every shader in this RHI is authored
 			// in. On OpenGL that must land inside the clip volume; a clip-space fixup that
 			// re-maps it to -1 silently clips the whole draw.
 			auto const depth = zero_clip_z ? 0.0f : 0.5f;
-			vertex_data = {
-				-0.9f, -0.9f, depth, 1.0f,
-				0.9f, -0.9f, depth, 1.0f,
-				0.0f, 0.9f, depth, 1.0f
-			};
+			vertex_data =
+			    {-0.9f, -0.9f, depth, 1.0f, 0.9f, -0.9f, depth, 1.0f, 0.0f, 0.9f, depth, 1.0f};
 		}
 		auto vertices = device.CreateBuffer(vertex_data.size() * sizeof(float), vertex_flags);
 
 		std::array const bindings{
-			ResourceBinding{ .slot = 0u, .value = BindingValue::FromBuffer(uniform) }
+		    ResourceBinding{.slot = 0u, .value = BindingValue::FromBuffer(uniform)}
 		};
 		// The push-constant shaders declare their uniform buffer in space 1, matching HelloTriangle,
 		// except "pushcolor_space0", which puts it in space 0. The group has to be created in, and
@@ -385,100 +384,92 @@ namespace {
 		auto upload = builder.CreateNode(QueueType::Transfer);
 		// "pushcolor" multiplies this uniform colour by the pipeline-constant colour, so the two
 		// are deliberately different from every other mode's values.
-		std::array const fragment_color = push_constants
-			? std::array{ 0.8f, 0.4f, 0.0f, 1.0f }
-			: std::array{ 1.0f, 0.0f, 0.0f, 1.0f };
+		std::array const fragment_color = push_constants ? std::array{0.8f, 0.4f, 0.0f, 1.0f} :
+		                                                   std::array{1.0f, 0.0f, 0.0f, 1.0f};
 		auto const* color_bytes = reinterpret_cast<std::byte const*>(fragment_color.data());
 		upload.Record(
-			WriteBuffer{
-				uniform_binding,
-				0u,
-				std::vector<std::byte>{ color_bytes, color_bytes + sizeof(fragment_color) }
-			}
+		    WriteBuffer{
+		        uniform_binding,
+		        0u,
+		        std::vector<std::byte>{color_bytes, color_bytes + sizeof(fragment_color)}
+		    }
 		);
 		auto const* vertex_bytes = reinterpret_cast<std::byte const*>(vertex_data.data());
 		upload.Record(
-			WriteBuffer{
-				vertex_binding,
-				0u,
-				std::vector<std::byte>{
-					vertex_bytes,
-					vertex_bytes + vertex_data.size() * sizeof(float)
-				}
-			}
+		    WriteBuffer{
+		        vertex_binding,
+		        0u,
+		        std::vector<std::byte>{
+		            vertex_bytes,
+		            vertex_bytes + vertex_data.size() * sizeof(float)
+		        }
+		    }
 		);
 		auto draw = builder.CreateNode(QueueType::Graphics, upload);
-		draw
-			.Access({ target_binding, AccessMode::Write, ResourceUsage::ColorAttachment, {} })
-			.Access({ uniform_binding, AccessMode::Read, ResourceUsage::Uniform, {} })
-			.Access({ vertex_binding, AccessMode::Read, ResourceUsage::VertexBuffer, {} })
-			.Record(BindPipeline{ pipeline_binding });
+		draw.Access({target_binding, AccessMode::Write, ResourceUsage::ColorAttachment, {}})
+		    .Access({uniform_binding, AccessMode::Read, ResourceUsage::Uniform, {}})
+		    .Access({vertex_binding, AccessMode::Read, ResourceUsage::VertexBuffer, {}})
+		    .Record(BindPipeline{pipeline_binding});
 		// HelloTriangle binds the resource group and vertex buffer before BeginRendering rather
 		// than inside the render scope, which is the one structural difference left between its
 		// graph and this probe's.
 		if (early_binds) {
-			draw
-				.Record(BindResourceGroup{ group_binding, group_space })
-				.Record(
-					BindVertexBuffer{
-						vertex_binding,
-						0u,
-						(two_attribute_layout || push_constants) ? 24u : 16u,
-						0u
-					}
-				);
+			draw.Record(BindResourceGroup{group_binding, group_space})
+			    .Record(
+			        BindVertexBuffer{
+			            vertex_binding,
+			            0u,
+			            (two_attribute_layout || push_constants) ? 24u : 16u,
+			            0u
+			        }
+			    );
 		}
-		draw
-			.Record(
-				BeginRendering{
-					.area = { 0, 0, TargetWidth, TargetHeight },
-					.colors = {
-						{
-							.resource = target_binding,
-							.view = view_binding,
-							.load = LoadOperation::Clear,
-							// Black, so any red pixel proves the draw ran.
-							.clear = { 0.0f, 0.0f, 0.0f, 1.0f }
-						}
-					}
-				}
-			)
-			.Record(Viewport{ 0.0f, 0.0f, float(TargetWidth), float(TargetHeight) })
-			.Record(Scissor{ 0, 0, TargetWidth, TargetHeight });
+		draw.Record(
+		        BeginRendering{
+		            .area = {0, 0, TargetWidth, TargetHeight},
+		            .colors =
+		                {{.resource = target_binding,
+						  .view = view_binding,
+						  .load = LoadOperation::Clear,
+						  // Black, so any red pixel proves the draw ran.
+						  .clear = {0.0f, 0.0f, 0.0f, 1.0f}}}
+		        }
+		)
+		    .Record(Viewport{0.0f, 0.0f, float(TargetWidth), float(TargetHeight)})
+		    .Record(Scissor{0, 0, TargetWidth, TargetHeight});
 		if (push_constants) {
-			std::array const pipeline_constant_color{ 0.5f, 0.5f, 0.5f, 1.0f };
+			std::array const pipeline_constant_color{0.5f, 0.5f, 0.5f, 1.0f};
 			auto const* pipeline_constant_bytes =
-				reinterpret_cast<std::byte const*>(pipeline_constant_color.data());
+			    reinterpret_cast<std::byte const*>(pipeline_constant_color.data());
 			// Both push shaders leave the pipeline-constant block unpinned, so it reflects under the same
 			// backend-neutral ABI identity in every mode and on every backend.
-			draw.Record(SetPipelineConstants{
-				.slot = 0u,
-				.space = 0u,
-				.offset = 0u,
-				.data = std::vector<std::byte>{
-					pipeline_constant_bytes,
-					pipeline_constant_bytes + sizeof(pipeline_constant_color)
-				}
-			});
+			draw.Record(
+			    SetPipelineConstants{
+			        .slot = 0u,
+			        .space = 0u,
+			        .offset = 0u,
+			        .data = std::vector<std::byte>{
+			            pipeline_constant_bytes,
+			            pipeline_constant_bytes + sizeof(pipeline_constant_color)
+			        }
+			    }
+			);
 		}
 		if (!early_binds) {
-			draw
-				.Record(BindResourceGroup{ group_binding, group_space })
-				.Record(
-					BindVertexBuffer{
-						vertex_binding,
-						0u,
-						(two_attribute_layout || push_constants) ? 24u : 16u,
-						0u
-					}
-				);
+			draw.Record(BindResourceGroup{group_binding, group_space})
+			    .Record(
+			        BindVertexBuffer{
+			            vertex_binding,
+			            0u,
+			            (two_attribute_layout || push_constants) ? 24u : 16u,
+			            0u
+			        }
+			    );
 		}
-		draw
-			.Record(Draw{ 3u })
-			.Record(EndRendering{});
+		draw.Record(Draw{3u}).Record(EndRendering{});
 
 		auto upload_state = std::make_shared<State>();
-		auto operation = std::move(builder).connect(Receiver{ upload_state });
+		auto operation = std::move(builder).connect(Receiver{upload_state});
 		operation.BindResource(target_binding, std::move(target));
 		operation.BindResource(uniform_binding, std::move(uniform));
 		operation.BindResource(vertex_binding, std::move(vertices));
@@ -498,32 +489,28 @@ namespace {
 		auto copy_builder = scheduler.schedule();
 		auto const source_binding = copy_builder.RegisterResource();
 		auto const destination_binding = copy_builder.RegisterResource();
-		copy_builder
-			.CreateNode(QueueType::Transfer)
-			.Access({ source_binding, AccessMode::Read, ResourceUsage::CopySource, {} })
-			.Access({ destination_binding, AccessMode::Write, ResourceUsage::CopyDestination, {} })
-			.Record(
-				CopyTextureToBuffer{
-					.source = source_binding,
-					.destination = destination_binding,
-					.source_region = { .width = TargetWidth, .height = TargetHeight },
-					.destination_layout = {
-						.offset = 0u,
-						.bytes_per_row = RowPitch,
-						.rows_per_image = TargetHeight
-					}
-				}
-			);
+		copy_builder.CreateNode(QueueType::Transfer)
+		    .Access({source_binding, AccessMode::Read, ResourceUsage::CopySource, {}})
+		    .Access({destination_binding, AccessMode::Write, ResourceUsage::CopyDestination, {}})
+		    .Record(
+		        CopyTextureToBuffer{
+		            .source = source_binding,
+		            .destination = destination_binding,
+		            .source_region = {.width = TargetWidth, .height = TargetHeight},
+		            .destination_layout =
+		                {.offset = 0u, .bytes_per_row = RowPitch, .rows_per_image = TargetHeight}
+		        }
+		    );
 
 		auto copy_state = std::make_shared<State>();
-		auto copy_operation = std::move(copy_builder).connect(Receiver{ copy_state });
+		auto copy_operation = std::move(copy_builder).connect(Receiver{copy_state});
 		copy_operation.BindResource(source_binding, std::move(target));
 		copy_operation.BindResource(destination_binding, std::move(readback));
 		copy_operation.start();
 		auto copy_resources = Wait(copy_state);
 		readback = copy_resources.TakeResource(destination_binding);
 
-		auto mapping = readback.Map({ 0u, RowPitch * TargetHeight });
+		auto mapping = readback.Map({0u, RowPitch * TargetHeight});
 		auto const bytes = mapping.Read();
 		std::size_t red = 0u;
 		std::size_t non_black = 0u;
@@ -537,7 +524,7 @@ namespace {
 		// The first shaded pixel, so a failing mode reports what it actually drew instead of only
 		// that it failed to match: the difference between "the pipeline constant never arrived"
 		// and "it arrived mis-scaled" is one glance at this triple.
-		std::array<int, 3> sample{ -1, -1, -1 };
+		std::array<int, 3> sample{-1, -1, -1};
 		for (std::uint32_t y = 0u; y < TargetHeight; ++y) {
 			for (std::uint32_t x = 0u; x < TargetWidth; ++x) {
 				auto const offset = static_cast<std::size_t>(y) * RowPitch + x * 4u;
@@ -550,7 +537,7 @@ namespace {
 				if (r + g + b > 30) {
 					++non_black;
 					if (sample[0] < 0) {
-						sample = { r, g, b };
+						sample = {r, g, b};
 					}
 				}
 				if (r >= 99 && r <= 105 && g <= 6 && b <= 6) {
@@ -560,8 +547,8 @@ namespace {
 		}
 		auto const total = static_cast<std::size_t>(TargetWidth) * TargetHeight;
 		std::cout << name << " draw: red=" << red << " non-black=" << non_black
-			<< " total=" << total
-			<< " (" << (100.0 * static_cast<double>(red) / static_cast<double>(total)) << "%)";
+		          << " total=" << total << " ("
+		          << (100.0 * static_cast<double>(red) / static_cast<double>(total)) << "%)";
 		if (push_constants) {
 			std::cout << " pipeline=" << pipeline_pixels << " expected=(102, 0, 0)";
 		}
@@ -573,17 +560,16 @@ namespace {
 			}
 			if (pipeline_pixels == 0u) {
 				throw std::runtime_error(
-					"the pipeline-constant colour did not reach the fragment shader"
+				    "the pipeline-constant colour did not reach the fragment shader"
 				);
 			}
-		}
-		else if (red == 0u) {
+		} else if (red == 0u) {
 			throw std::runtime_error("the draw produced no shaded pixels");
 		}
 		// Whatever the pixels say, a backend that logged an error did not do what was asked.
 		if (LogSink().HasError()) {
 			throw std::runtime_error(
-				"the backend reported a validation or runtime error; see the log above"
+			    "the backend reported a validation or runtime error; see the log above"
 			);
 		}
 		return 0;
@@ -592,8 +578,8 @@ namespace {
 } // namespace
 
 int main(int argc, char** argv) try {
-	auto const name = argc > 1 ? std::string_view{ argv[1] } : std::string_view{ "opengl" };
-	auto const mode = argc > 2 ? std::string_view{ argv[2] } : std::string_view{ "simple" };
+	auto const name = argc > 1 ? std::string_view{argv[1]} : std::string_view{"opengl"};
+	auto const mode = argc > 2 ? std::string_view{argv[2]} : std::string_view{"simple"};
 	// "pushcolor" is the pipeline-constant check: it feeds a meaningful push-constant colour and
 	// requires the multiply to reach the fragment shader, so a backend that silently drops
 	// SetPipelineConstants fails instead of reporting the uniform colour.
@@ -609,15 +595,14 @@ int main(int argc, char** argv) try {
 	auto const uniform_space_zero = mode == "pushcolor_space0";
 	auto const push_constants = mode == "pushcolor" || uniform_space_zero;
 	return Run(
-		std::string{ name }.c_str(),
-		mode == "hello" || mode == "early" || push_constants,
-		push_constants,
-		uniform_space_zero,
-		mode == "early",
-		mode == "zeroz"
+	    std::string{name}.c_str(),
+	    mode == "hello" || mode == "early" || push_constants,
+	    push_constants,
+	    uniform_space_zero,
+	    mode == "early",
+	    mode == "zeroz"
 	);
-}
-catch (std::exception const& error) {
+} catch (std::exception const& error) {
 	std::cerr << "Draw probe failed: " << error.what() << std::endl;
 	return 1;
 }

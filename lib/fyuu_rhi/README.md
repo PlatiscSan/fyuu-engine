@@ -327,16 +327,52 @@ Backend diagnostics are written to the configured `fyuu_rhi::log::Sink`.
 Automated tests should treat Error and Fatal records as failures even when a
 backend or process returns success.
 
-The cross-backend integration test lives at
-`lib/fyuu_rhi/test/hello_triangle`. With testing enabled, CTest registers a
-bounded run for each configured backend. The executable can also run
-interactively:
+Cross-backend regression tests live under `lib/fyuu_rhi/test`. Enable BUILD_TESTING to register them with CTest. Run `DrawProbe <backend> hello` to check triangle pixels. DrawShapes, BindingProbe, GraphValidation and CompletionPool provide rendering-state, binding, graph and concurrency coverage. Window presentation and resize are exercised by native-window host integration checks. Metal still requires validation on Apple hardware.
+## Shader cache cleanup
+
+Shader programs are stored under the platform cache directory, followed by
+`<engine>/v<version>/<application>/v<version>/shaders/`:
 
 ```text
-HelloTriangle <d3d12|vulkan|opengl|webgpu|metal>
+shaders/
+  d3d12/                         # also vulkan, opengl, webgpu, metal
+    shader-my_material/          # portable, shortened module name
+      <variant-hash>/            # source, compiler, driver and options
+        manifest.json            # full module/entry names and compilation tag
+        interface.json
+        reflection.json
+        entry-0-shader-vertex_main.bin
+        entry-1-shader-fragment_main.bin
 ```
 
-It covers device creation, upload, pipeline and resource-group creation,
-command recording, drawing, presentation, completion, and resize handling.
-Metal remains unvalidated until this test passes on Apple hardware with a real
-window and event loop.
+Windows uses `%LOCALAPPDATA%`; Linux uses `$XDG_CACHE_HOME` or `~/.cache`;
+macOS uses `~/Library/Caches`. Close applications using RHI before cleanup.
+Delete a variant directory, a shader directory, or a backend directory to clear
+that scope; missing entries are rebuilt on the next pipeline creation. Programs
+with several modules are grouped under the first module; `manifest.json` lists
+all modules. Sanitized names are only labels: hashes still distinguish variants.
+
+Old `bundles/` entries are not migrated or automatically deleted by this layout
+change, and can be removed manually. They remain included in the cache size
+budget. Automatic eviction removes whole variants rather than individual files.
+
+Native pipeline caches use the adjacent `pipelines/` directory:
+
+```text
+pipelines/
+  d3d12/
+    graphics/shader-my_material/<hash>.bin
+    compute/shader-my_compute/<hash>.bin
+    root-signatures/<hash>.bin
+  opengl/
+    graphics/shader-my_material/<hash>.bin
+    compute/shader-my_compute/<hash>.bin
+  vulkan/device-shared/<hash>.bin
+```
+
+D3D12 root signatures are shared by layout. Vulkan caches are shared by device
+and driver, not one shader; clearing `device-shared/` clears that native cache.
+WebGPU and Metal currently have no RHI-managed native pipeline disk cache.
+Driver/runtime-owned caches are outside this directory. Close RHI applications
+before deleting files or directories. Cache misses rebuild the native objects;
+old flat cache files are left untouched by this change and may be removed manually.

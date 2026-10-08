@@ -300,4 +300,13 @@ namespace fyuu_rhi {
 		}
 	};
 
+	template <>
+	struct PipelineBindings<webgpu::Pipeline> {
+		webgpu::Pipeline* native;
+
+		std::vector<pipeline::BindingMetadata> operator()() const {
+			return native->bindings;
+		}
+	};
+
 } // namespace fyuu_rhi

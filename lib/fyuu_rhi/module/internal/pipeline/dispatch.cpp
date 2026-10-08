@@ -2,6 +2,7 @@ module;
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <stdexcept>
+#include <vector>
 
 #include <cstdint>
 
@@ -23,6 +24,17 @@ namespace fyuu_rhi {
 		PipelineResourceGroup operator()(std::uint32_t, std::span<pipeline::ResourceBinding const>) const {
 			throw std::runtime_error(
 				"Pipeline resource group creation is not implemented for this backend"
+			);
+		}
+	};
+
+	template <class NativePipeline>
+	struct PipelineBindings {
+		NativePipeline* native;
+
+		std::vector<pipeline::BindingMetadata> operator()() const {
+			throw std::runtime_error(
+				"Pipeline binding reflection is not implemented for this backend"
 			);
 		}
 	};

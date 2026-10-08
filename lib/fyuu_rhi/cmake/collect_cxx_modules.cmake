@@ -12,7 +12,12 @@ function(collect_cxx_modules base_dir group_name out_public_var out_internal_var
 	file(GLOB_RECURSE internal_modules CONFIGURE_DEPENDS
 		"${base_dir}/internal/*.cpp"
 	)
-	set(implementation_units)
+	# Module implementation units (a primary module declaration such as
+	# "module fyuu_rhi;") live under module/impl by project convention.
+	file(GLOB_RECURSE impl_units CONFIGURE_DEPENDS
+		"${base_dir}/impl/*.cpp"
+	)
+	set(implementation_units ${impl_units})
 	foreach(module_file IN LISTS internal_modules)
 		file(STRINGS "${module_file}" primary_module_declaration
 			REGEX "^[ \t]*module[ \t]+[^:;]+[ \t]*;"

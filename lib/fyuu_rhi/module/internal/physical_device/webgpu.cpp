@@ -22,6 +22,10 @@ module;
 #include <format>
 #endif // !defined(__cpp_lib_modules)
 #include <dawn/webgpu_cpp.h>
+#if defined(_WIN32)
+#include <Windows.h>
+#include <dawn/native/DawnNative.h>
+#endif
 
 module fyuu_rhi:webgpu_physical_device;
 #if defined(__cpp_lib_modules)
@@ -250,6 +254,34 @@ namespace fyuu_rhi {
 			if (!device) {
 				throw std::runtime_error("WebGPU device creation failed; verify that the selected backend runtime is installed");
 			}
+#if defined(_WIN32)
+			char diagnostic_setting[2]{};
+			if (GetEnvironmentVariableA(
+				"FYUU_RHI_WEBGPU_SUBMIT_DIAGNOSTICS",
+				diagnostic_setting,
+				sizeof(diagnostic_setting)
+			) == 1u && diagnostic_setting[0] == '1') {
+				wgpu::AdapterInfo info;
+				if (physical_device->adapter.GetInfo(&info)) {
+					log::Info(
+						std::format(
+							"WebGPU adapter: device={}, description={}, backend={}, vendor=0x{:X}, device=0x{:X}",
+							std::string_view(info.device.data, info.device.length),
+							std::string_view(info.description.data, info.description.length),
+							static_cast<int>(info.backendType),
+							info.vendorID,
+							info.deviceID
+						)
+					);
+				}
+				bool skip_validation = false;
+				for (auto toggle : dawn::native::GetTogglesUsed(device.Get())) {
+					log::Info(std::format("WebGPU enabled toggle: {}", toggle));
+					skip_validation = skip_validation || std::string_view{toggle} == "skip_validation";
+				}
+				log::Info(std::format("WebGPU Dawn validation enabled: {}", !skip_validation));
+			}
+#endif
 			return MakeLogicalDevice(
 				webgpu::LogicalDevice{
 					physical_device->instance,

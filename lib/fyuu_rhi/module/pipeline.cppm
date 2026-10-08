@@ -478,6 +478,17 @@ export namespace fyuu_rhi {
 		}
 
 		/**
+		 * @brief Snapshot of the reflected binding layout, one entry per logical slot.
+		 *
+		 * A caller that pins its bindings already knows the slots. A caller that lets the shader
+		 * place them - a declaration with neither a Vulkan binding nor a D3D register - reads them
+		 * from here instead of assuming them: the entries are the ones a resource group is
+		 * validated against, so a slot taken from this list always binds, and the number is the
+		 * dense per-space sequence the shader's own target assigns in declaration order.
+		 */
+		std::vector<pipeline::BindingMetadata> Bindings() const;
+
+		/**
 		 * @brief Materializes every declared binding in one shader space.
 		 * @param space Logical register space / descriptor set.
 		 * @param bindings Values for every required slot and array element in space.

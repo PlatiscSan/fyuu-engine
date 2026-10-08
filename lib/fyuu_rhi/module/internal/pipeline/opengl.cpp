@@ -255,5 +255,14 @@ namespace fyuu_rhi {
 		}
 	};
 
+	template <>
+	struct PipelineBindings<opengl::Pipeline> {
+		opengl::Pipeline* native;
+
+		std::vector<pipeline::BindingMetadata> operator()() const {
+			return native->bindings;
+		}
+	};
+
 } // namespace fyuu_rhi
 #endif // !defined(__APPLE__)

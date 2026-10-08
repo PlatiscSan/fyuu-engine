@@ -112,9 +112,6 @@ namespace fyuu_rhi::execution {
 			/// Its own non-null value is the readiness signal, so no separate flag is needed.
 			std::atomic<DriverState*> s_driver{nullptr};
 
-			/// The driver thread. Joinable for the process lifetime.
-			std::jthread s_driver_thread;
-
 			void RunCompletionDriver(std::stop_token stop) {
 				DriverState state;
 				s_driver.store(&state, std::memory_order_release);
@@ -153,29 +150,22 @@ namespace fyuu_rhi::execution {
 					// The stop request must not be raised on the explicit shutdown path: once it
 					// is, every stop-aware wait below returns immediately and this park would
 					// become a no-op, destroying the state under the shutdown caller.
-					state.condition.wait(
-						lock,
-						stop,
-						[]() {
-							return false;
-						}
-					);
+					state.condition.wait(lock, stop, []() {
+						return false;
+					});
 				}
 				s_driver.store(nullptr, std::memory_order_release);
 			}
 
 			/// Returns the driver's state, starting the driver on first use; null once stopped.
 			DriverState* AcquireDriver() {
-				// One-time start. The driver publishes its own frame, so waiting for the pointer to
-				// become non-null is the whole handshake; other callers block until that happens.
-				static const bool started = []() {
-					s_driver_thread = std::jthread([](std::stop_token stop) {
-						RunCompletionDriver(stop);
-					});
-					s_driver.wait(nullptr, std::memory_order_acquire);
-					return true;
-				}();
-				(void)started;
+				// Construct the worker on first use, after the backend instance that submitted
+				// the first task. Function-local static destruction therefore joins the worker
+				// before those backend instances are destroyed at process exit.
+				static std::jthread driver([](std::stop_token stop) {
+					RunCompletionDriver(stop);
+				});
+				s_driver.wait(nullptr, std::memory_order_acquire);
 				return s_driver.load(std::memory_order_acquire);
 			}
 
@@ -183,18 +173,25 @@ namespace fyuu_rhi::execution {
 
 		void EnqueueCompletionTask(CompletionTask&& task) {
 			DriverState* driver = AcquireDriver();
+			static std::stop_source s_stop_source;
+			static std::once_flag s_stop_source_once;
+			std::call_once(s_stop_source_once, []() {
+				std::atexit([]() {
+					s_stop_source.request_stop();
+				});
+			});
+
 			if (!driver) {
 				// The driver has stopped, so deliver on this thread rather than leave the
 				// operation without a terminal signal. A default stop token never reports a stop,
 				// so this waits for the real result instead of a cancellation.
-				task(std::stop_token{});
+				task(s_stop_source.get_token());
 				return;
 			}
 			{
 				std::unique_lock lock(driver->mutex);
 				if (driver->shutting_down) {
-					lock.unlock();
-					task(std::stop_token{});
+					task(s_stop_source.get_token());
 					return;
 				}
 				driver->tasks.emplace_back(std::move(task));

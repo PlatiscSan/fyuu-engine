@@ -289,5 +289,23 @@ namespace fyuu_rhi {
 		}
 	};
 
+	template <>
+	struct PipelineBindings<metal::Pipeline> {
+		metal::Pipeline* native;
+
+		std::vector<pipeline::BindingMetadata> operator()() const {
+			std::vector<pipeline::BindingMetadata> result;
+			result.reserve(native->bindings.size());
+			std::ranges::transform(
+				native->bindings,
+				std::back_inserter(result),
+				[](metal::PipelineBinding const& binding) {
+					return binding.metadata;
+				}
+			);
+			return result;
+		}
+	};
+
 } // namespace fyuu_rhi
 #endif // defined(__APPLE__)

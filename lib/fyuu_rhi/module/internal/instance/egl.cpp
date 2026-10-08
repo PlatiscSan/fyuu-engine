@@ -7,6 +7,7 @@ module;
 #include <string_view>
 
 #include <format>
+#include <variant>
 #endif // !defined(__cpp_lib_modules)
 #if defined(__linux__) || defined(__ANDROID__)
 #include <glad/glad.h>
@@ -25,6 +26,10 @@ import :opengl_instance_common;
 import :physical_device_factory;
 
 namespace {
+	std::uint64_t NextInstanceGeneration() noexcept {
+		static std::uint64_t generation = 0u;
+		return ++generation;
+	}
 
 	void ThrowEGL(std::string_view operation) {
 		throw std::runtime_error(
@@ -121,6 +126,7 @@ namespace {
 	struct ThreadContext {
 		fyuu_rhi::opengl::ManagedEGLSurface surface;
 		fyuu_rhi::opengl::ManagedEGLContext context;
+		std::uint64_t generation;
 	};
 
 	template <class Instance>
@@ -164,8 +170,31 @@ namespace {
 		);
 		return {
 			std::move(surface),
-			std::move(context)
+			std::move(context),
+			instance->generation
 		};
+	}
+
+	template <class Instance>
+	ThreadContext& CurrentThreadContext(Instance const* instance) {
+		thread_local std::variant<std::monostate, ThreadContext> storage;
+		if (
+			std::holds_alternative<std::monostate>(storage) ||
+			std::get<ThreadContext>(storage).generation != instance->generation
+		) {
+			auto current_display = eglGetCurrentDisplay();
+			if (current_display != EGL_NO_DISPLAY) {
+				(void)eglMakeCurrent(
+					current_display,
+					EGL_NO_SURFACE,
+					EGL_NO_SURFACE,
+					EGL_NO_CONTEXT
+				);
+			}
+			storage.emplace<std::monostate>();
+			storage.emplace<ThreadContext>(CreateThreadContext(instance));
+		}
+		return std::get<ThreadContext>(storage);
 	}
 
 	template <class Instance>
@@ -239,7 +268,8 @@ namespace {
 			std::move(display),
 			config,
 			std::move(surface),
-			std::move(context)
+			std::move(context),
+			NextInstanceGeneration()
 		};
 	}
 
@@ -290,7 +320,7 @@ namespace fyuu_rhi {
 		opengl::EGLInstance const* instance;
 
 		void operator()() const {
-			thread_local auto context = CreateThreadContext(instance);
+			auto& context = CurrentThreadContext(instance);
 			if (!eglMakeCurrent(
 				instance->display.get(),
 				context.surface.get(),
@@ -327,7 +357,7 @@ namespace fyuu_rhi {
 		opengl::Instance const* instance;
 
 		void operator()() const {
-			thread_local auto context = CreateThreadContext(instance);
+			auto& context = CurrentThreadContext(instance);
 			if (!eglMakeCurrent(
 				instance->display.get(),
 				context.surface.get(),

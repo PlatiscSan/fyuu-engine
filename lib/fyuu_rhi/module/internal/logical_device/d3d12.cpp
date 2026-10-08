@@ -268,7 +268,11 @@ namespace {
 	    Microsoft::WRL::ComPtr<ID3D12Device> const& logical_device,
 	    SlangPipelineInterface const& pipeline_interface
 	) {
-		auto cache_path = cache::GetCacheFilePath(RootSignatureCacheKey(pipeline_interface));
+		auto cache_path = cache::GetCacheFilePath(
+			RootSignatureCacheKey(pipeline_interface),
+			"d3d12",
+			"root-signatures"
+		);
 		auto serialized = cache::ReadFile(cache_path);
 
 		if (serialized.empty()) {
@@ -1082,7 +1086,7 @@ namespace fyuu_rhi {
 			// The PSO blob is driver-specific, so the cache key mixes the driver
 			// identity into the compiled DXIL and the non-shader PSO descriptor.
 			boost::hash2::xxhash_64 pso_hash;
-			constexpr std::uint32_t pso_schema = 1;
+			constexpr std::uint32_t pso_schema = 2;
 			pso_hash.update(&pso_schema, sizeof(pso_schema));
 			auto root_key = RootSignatureCacheKey(program.GetInterface());
 			pso_hash.update(root_key.data(), root_key.size());
@@ -1090,27 +1094,77 @@ namespace fyuu_rhi {
 				pso_hash.update(&entry.stage, sizeof(entry.stage));
 				pso_hash.update(entry.code.data(), entry.code.size());
 			}
-			auto hash_desc = native;
-			hash_desc.pRootSignature = nullptr;
-			hash_desc.InputLayout.pInputElementDescs = nullptr;
-			hash_desc.VS = {};
-			hash_desc.PS = {};
-			hash_desc.DS = {};
-			hash_desc.HS = {};
-			hash_desc.GS = {};
-			hash_desc.CachedPSO = {};
-			pso_hash.update(&hash_desc, sizeof(hash_desc));
-			for (auto const& element : input_elements) {
-				pso_hash.update(
-				    element.SemanticName,
-				    std::char_traits<char>::length(element.SemanticName)
+			// Hash semantic scalars, not pointer identities or unspecified padding.
+			// Whole-struct hashing generated duplicate PSO entries across processes.
+			pso_hash.update(cache_tag.data(), cache_tag.size());
+			auto fields = [&pso_hash](auto const&... values) {
+				(pso_hash.update(&values, sizeof(values)), ...);
+			};
+			fields(
+				native.BlendState.AlphaToCoverageEnable,
+				native.BlendState.IndependentBlendEnable
+			);
+			for (auto const& blend_target : native.BlendState.RenderTarget) {
+				fields(
+					blend_target.BlendEnable, blend_target.LogicOpEnable, blend_target.SrcBlend,
+					blend_target.DestBlend, blend_target.BlendOp, blend_target.SrcBlendAlpha,
+					blend_target.DestBlendAlpha, blend_target.BlendOpAlpha, blend_target.LogicOp,
+					blend_target.RenderTargetWriteMask
 				);
-				auto copy = element;
-				copy.SemanticName = nullptr;
-				pso_hash.update(&copy, sizeof(copy));
+			}
+			fields(
+				native.SampleMask,
+				native.RasterizerState.FillMode,
+				native.RasterizerState.CullMode,
+				native.RasterizerState.FrontCounterClockwise,
+				native.RasterizerState.DepthBias,
+				native.RasterizerState.DepthBiasClamp,
+				native.RasterizerState.SlopeScaledDepthBias,
+				native.RasterizerState.DepthClipEnable,
+				native.RasterizerState.MultisampleEnable,
+				native.RasterizerState.AntialiasedLineEnable,
+				native.RasterizerState.ForcedSampleCount,
+				native.RasterizerState.ConservativeRaster,
+				native.DepthStencilState.DepthEnable,
+				native.DepthStencilState.DepthWriteMask,
+				native.DepthStencilState.DepthFunc,
+				native.DepthStencilState.StencilEnable,
+				native.DepthStencilState.StencilReadMask,
+				native.DepthStencilState.StencilWriteMask,
+				native.InputLayout.NumElements,
+				native.IBStripCutValue,
+				native.PrimitiveTopologyType,
+				native.NumRenderTargets,
+				native.DSVFormat,
+				native.SampleDesc.Count,
+				native.SampleDesc.Quality,
+				native.NodeMask,
+				native.Flags
+			);
+			for (auto const* face : {&native.DepthStencilState.FrontFace, &native.DepthStencilState.BackFace}) {
+				fields(
+					face->StencilFailOp, face->StencilDepthFailOp,
+					face->StencilPassOp, face->StencilFunc
+				);
+			}
+			for (auto format : native.RTVFormats) {
+				fields(format);
+			}
+			for (auto const& element : input_elements) {
+				auto const length = std::char_traits<char>::length(element.SemanticName);
+				fields(length);
+				pso_hash.update(element.SemanticName, length);
+				fields(
+					element.SemanticIndex, element.Format, element.InputSlot,
+					element.AlignedByteOffset, element.InputSlotClass,
+					element.InstanceDataStepRate
+				);
 			}
 			auto pso_path = cache::GetCacheFilePath(
-			    std::format("d3d12-graphics-pso-{:016x}.bin", pso_hash.result())
+			    std::format("d3d12-graphics-pso-{:016x}.bin", pso_hash.result()),
+				"d3d12",
+				"graphics",
+				descriptor.program.modules.front().name
 			);
 			auto cached_pso = cache::ReadFile(pso_path);
 			native.CachedPSO = {cached_pso.data(), cached_pso.size()};
@@ -1125,13 +1179,14 @@ namespace fyuu_rhi {
 			d3d12::ThrowIfFailed(creation_result);
 			if (cached_pso.empty()) {
 				Microsoft::WRL::ComPtr<ID3DBlob> blob;
-				d3d12::ThrowIfFailed(pso->GetCachedBlob(&blob));
-				auto begin = static_cast<std::byte const*>(blob->GetBufferPointer());
-				if (!cache::WriteFileAtomically(
-				        pso_path,
-				        std::span<std::byte const>(begin, blob->GetBufferSize())
-				    )) {
-					throw std::runtime_error("Failed to write D3D12 graphics-pipeline cache");
+				if (SUCCEEDED(pso->GetCachedBlob(&blob)) && blob) {
+					auto begin = static_cast<std::byte const*>(blob->GetBufferPointer());
+					// A PSO cache is only an optimization. A read-only or unavailable
+					// cache directory must not invalidate an already-created pipeline.
+					(void)cache::WriteFileAtomically(
+						pso_path,
+						std::span<std::byte const>(begin, blob->GetBufferSize())
+					);
 				}
 			}
 			return MakePipeline(
@@ -1196,7 +1251,7 @@ namespace fyuu_rhi {
 			}
 
 			boost::hash2::xxhash_64 pso_hash;
-			constexpr std::uint32_t pso_schema = 1u;
+			constexpr std::uint32_t pso_schema = 2u;
 			pso_hash.update(&pso_schema, sizeof(pso_schema));
 			auto root_key = RootSignatureCacheKey(program.GetInterface());
 			pso_hash.update(root_key.data(), root_key.size());
@@ -1204,13 +1259,14 @@ namespace fyuu_rhi {
 				pso_hash.update(&entry.stage, sizeof(entry.stage));
 				pso_hash.update(entry.code.data(), entry.code.size());
 			}
-			auto hash_desc = native;
-			hash_desc.pRootSignature = nullptr;
-			hash_desc.CS = {};
-			hash_desc.CachedPSO = {};
-			pso_hash.update(&hash_desc, sizeof(hash_desc));
+			pso_hash.update(cache_tag.data(), cache_tag.size());
+			pso_hash.update(&native.NodeMask, sizeof(native.NodeMask));
+			pso_hash.update(&native.Flags, sizeof(native.Flags));
 			auto pso_path = cache::GetCacheFilePath(
-			    std::format("d3d12-compute-pso-{:016x}.bin", pso_hash.result())
+			    std::format("d3d12-compute-pso-{:016x}.bin", pso_hash.result()),
+				"d3d12",
+				"compute",
+				descriptor.program.modules.front().name
 			);
 			auto cached_pso = cache::ReadFile(pso_path);
 			native.CachedPSO = {cached_pso.data(), cached_pso.size()};
@@ -1225,13 +1281,12 @@ namespace fyuu_rhi {
 			d3d12::ThrowIfFailed(creation_result);
 			if (cached_pso.empty()) {
 				Microsoft::WRL::ComPtr<ID3DBlob> blob;
-				d3d12::ThrowIfFailed(pso->GetCachedBlob(&blob));
-				auto begin = static_cast<std::byte const*>(blob->GetBufferPointer());
-				if (!cache::WriteFileAtomically(
-				        pso_path,
-				        std::span<std::byte const>(begin, blob->GetBufferSize())
-				    )) {
-					throw std::runtime_error("Failed to write D3D12 compute-pipeline cache");
+				if (SUCCEEDED(pso->GetCachedBlob(&blob)) && blob) {
+					auto begin = static_cast<std::byte const*>(blob->GetBufferPointer());
+					(void)cache::WriteFileAtomically(
+						pso_path,
+						std::span<std::byte const>(begin, blob->GetBufferSize())
+					);
 				}
 			}
 			return MakePipeline(

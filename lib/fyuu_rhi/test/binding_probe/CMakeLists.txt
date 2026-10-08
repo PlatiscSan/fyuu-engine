@@ -24,9 +24,13 @@ endif()
 #             D3D12 and WebGPU paths use. A target whose reflection folds the pair into one
 #             combined binding is reported rather than failed, and the mismatch cases then run
 #             only where the pair is accepted.
-# Both modes also create a sampler asking for anisotropy, which fails if the backend logs the
+#   bare      Texture2D and SamplerState with neither a Vulkan binding nor a D3D register, so the
+#             target places them itself. The slots come back from Pipeline::Bindings() and are
+#             asserted to be the dense declaration-order sequence in space 0, which is what a
+#             caller that lets the shader place its bindings has to rely on.
+# All modes also create a sampler asking for anisotropy, which fails if the backend logs the
 # VUID that a device without samplerAnisotropy raises.
-set(binding_probe_modes combined separate)
+set(binding_probe_modes combined separate bare)
 
 function(add_binding_probe_test backend)
 	foreach(mode IN LISTS binding_probe_modes)

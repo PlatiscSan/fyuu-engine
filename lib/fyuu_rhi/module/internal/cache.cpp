@@ -6,6 +6,7 @@ module;
 #include <vector>
 #include <algorithm>
 #include <functional>
+#include <iterator>
 #include <string>
 #include <fstream>
 
@@ -90,22 +91,59 @@ namespace {
 			);
 		}
 		auto bundles_dir = s_cache_root / "bundles";
-		if (!fs::exists(bundles_dir)) return entries;
-		for (auto const& entry : fs::directory_iterator(bundles_dir, ec)) {
-			if (ec) {
-				break;
-			}
-			if (!entry.is_directory()) {
-				continue;
-			}
-			entries.push_back(
-				{
-					.path = entry.path(),
-					.size = CalculateDirSize(entry.path()),
-					.last_modified = entry.last_write_time(),
-					.is_bundle = true
+		if (fs::exists(bundles_dir)) {
+			for (auto const& entry : fs::directory_iterator(bundles_dir, ec)) {
+				if (ec) {
+					break;
 				}
-			);
+				if (!entry.is_directory()) {
+					continue;
+				}
+				entries.push_back(
+					{
+						.path = entry.path(),
+						.size = CalculateDirSize(entry.path()),
+						.last_modified = entry.last_write_time(),
+						.is_bundle = true
+					}
+				);
+			}
+		}
+		// Evict complete variants, not backend/program directories or individual
+		// manifest files. Legacy bundles remain included in the same size budget.
+		auto shaders_dir = s_cache_root / "shaders";
+		if (fs::exists(shaders_dir)) {
+			for (auto iterator = fs::recursive_directory_iterator(shaders_dir, ec);
+				iterator != fs::recursive_directory_iterator{}; iterator.increment(ec)) {
+				if (ec) {
+					break;
+				}
+				if (iterator.depth() == 2 && iterator->is_directory()) {
+					iterator.disable_recursion_pending();
+					entries.push_back({
+						.path = iterator->path(),
+						.size = CalculateDirSize(iterator->path()),
+						.last_modified = iterator->last_write_time(),
+						.is_bundle = true
+					});
+				}
+			}
+		}
+		auto pipelines_dir = s_cache_root / "pipelines";
+		if (fs::exists(pipelines_dir)) {
+			for (auto const& entry : fs::recursive_directory_iterator(pipelines_dir, ec)) {
+				if (ec) {
+					break;
+				}
+				if (entry.is_regular_file()) {
+					entries.push_back({
+						.path = entry.path(),
+						.size = entry.file_size(),
+						.last_modified = entry.last_write_time(),
+						.is_bundle = false
+					});
+				}
+			}
 		}
 		return entries;
 	}
@@ -331,7 +369,14 @@ namespace fyuu_rhi::cache {
 		);
 	}
 
-	fs::path GetCacheFilePath(std::string_view key) {
+	std::string PathName(std::string_view name);
+
+	fs::path GetCacheFilePath(
+		std::string_view key,
+		std::string_view backend,
+		std::string_view kind,
+		std::string_view program_name = {}
+	) {
 
 		LazyCleanup();
 
@@ -342,7 +387,12 @@ namespace fyuu_rhi::cache {
 		std::uint64_t hash = hasher.result();
 		std::string filename = std::format("{:016x}", hash);
 		filename += ext.empty() ? ".bin" : ext;
-		auto path = s_cache_root / filename;
+		auto directory = s_cache_root / "pipelines" / backend / kind;
+		if (!program_name.empty()) {
+			directory /= PathName(program_name);
+		}
+		fs::create_directories(directory);
+		auto path = directory / filename;
 
 		std::error_code ec;
 		if (fs::exists(path, ec)) {
@@ -353,7 +403,28 @@ namespace fyuu_rhi::cache {
 
 	}
 
-	fs::path GetCacheDirectory(std::string_view key) {
+	// Prefix avoids Windows reserved device names and dot-only components.
+	// Restrict names to portable ASCII; the full original name stays in manifest.
+	std::string PathName(std::string_view name) {
+		std::string result = "shader-";
+		std::ranges::transform(
+			name.substr(0u, 64u),
+			std::back_inserter(result),
+			[](char character) {
+				return (character >= 'a' && character <= 'z') ||
+					(character >= 'A' && character <= 'Z') ||
+					(character >= '0' && character <= '9') || character == '-' || character == '_' ?
+					character : '_';
+			}
+		);
+		return result;
+	}
+
+	fs::path GetCacheDirectory(
+		std::string_view key,
+		std::string_view backend,
+		std::string_view program_name
+	) {
 
 		LazyCleanup();
 
@@ -361,7 +432,7 @@ namespace fyuu_rhi::cache {
 		hasher.update(key.data(), key.size());
 		std::uint64_t hash = hasher.result();
 		std::string dirname = std::format("{:016x}", hash);
-		fs::path dir = s_cache_root / "bundles" / dirname;
+		fs::path dir = s_cache_root / "shaders" / backend / PathName(program_name) / dirname;
 		fs::create_directories(dir);
 
 		std::error_code ec;

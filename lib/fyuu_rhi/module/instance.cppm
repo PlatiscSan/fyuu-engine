@@ -61,5 +61,5 @@ export namespace fyuu_rhi {
 	 * @return A process-lifetime non-owning handle for the requested backend.
 	 */
 	Instance& RequestInstance(Backend backend);
-	
+
 } // namespace fyuu_rhi

@@ -238,6 +238,10 @@ namespace {
 			},
 			logical_device->instance
 		);
+		// Object wrappers may have reached their last owner on the completion
+		// thread. This thread now has a context in the same share group, so it can
+		// safely perform the deferred native deletions before creating more names.
+		opengl::CollectRetiredObjects();
 	}
 
 	bool SupportsProgramBinary() noexcept {
@@ -678,7 +682,9 @@ namespace {
 
 	std::filesystem::path PipelineCachePath(
 		shader::SlangProgram const& program,
-		std::string_view profile
+		std::string_view profile,
+		bool compute,
+		std::string_view program_name
 	) {
 		boost::hash2::xxhash_64 hash;
 		HashString(hash, profile);
@@ -694,7 +700,10 @@ namespace {
 			}
 		);
 		return cache::GetCacheFilePath(
-			std::format("opengl-pipeline-{:016x}.bin", hash.result())
+			std::format("opengl-pipeline-{:016x}.bin", hash.result()),
+			"opengl",
+			compute ? "compute" : "graphics",
+			program_name
 		);
 	}
 
@@ -792,13 +801,14 @@ namespace {
 
 	GLuint CreateProgram(
 		shader::SlangProgram const& program,
+		std::string_view program_name,
 		ShaderTarget const& target,
 		bool compute,
 		std::span<opengl::Pipeline::CombinedSampler const> combined_samplers,
 		std::span<opengl::BindingUnit const> binding_units,
 		std::span<opengl::Pipeline::ConstantRange const> constant_ranges
 	) {
-		auto cache_path = PipelineCachePath(program, target.cache_name);
+		auto cache_path = PipelineCachePath(program, target.cache_name, compute, program_name);
 		GLuint result = LoadProgramBinary(cache_path);
 		if (result != 0u) {
 			return result;
@@ -874,15 +884,11 @@ namespace {
 namespace fyuu_rhi::opengl {
 
 	void PipelineDeleter::operator()(GLuint impl) const noexcept {
-		if (impl != 0u) {
-			glDeleteProgram(impl);
-		}
+		RetireObject(RetiredObjectType::Program, impl);
 	}
 
 	void SamplerDeleter::operator()(GLuint impl) const noexcept {
-		if (impl != 0u) {
-			glDeleteSamplers(1u, &impl);
-		}
+		RetireObject(RetiredObjectType::Sampler, impl);
 	}
 
 	Sampler::Sampler(GLuint impl_) noexcept
@@ -898,6 +904,7 @@ namespace fyuu_rhi {
 		opengl::LogicalDevice* logical_device;
 
 		Resource operator()(std::size_t size_in_bytes, ResourceFlags const& flags) const {
+			ShareContext(logical_device);
 			while (glGetError() != GL_NO_ERROR) {
 			}
 			GLuint buffer = 0u;
@@ -953,6 +960,7 @@ namespace fyuu_rhi {
 			std::size_t mip_levels,
 			ResourceFlags const& flags
 		) const {
+			ShareContext(logical_device);
 			while (glGetError() != GL_NO_ERROR) {
 			}
 
@@ -1025,6 +1033,7 @@ namespace fyuu_rhi {
 		opengl::LogicalDevice* logical_device;
 
 		Sampler operator()(SamplerDescriptor const& descriptor) const {
+			ShareContext(logical_device);
 			if (!GLAD_GL_ARB_sampler_objects) {
 				throw std::runtime_error(
 					"An OpenGL sampler requires GL_ARB_sampler_objects"
@@ -1187,6 +1196,7 @@ namespace fyuu_rhi {
 
 			auto native_program = CreateProgram(
 				program,
+				descriptor.program.modules.front().name,
 				shader_target,
 				false,
 				combined_samplers,
@@ -1274,6 +1284,7 @@ namespace fyuu_rhi {
 
 			auto native_program = CreateProgram(
 				program,
+				descriptor.program.modules.front().name,
 				shader_target,
 				true,
 				combined_samplers,

@@ -41,6 +41,12 @@ namespace fyuu_rhi {
 		> native;
 	};
 
+	namespace {
+#if !defined(__APPLE__)
+		LogicalDeviceImplementation s_opengl_logical_device;
+#endif // !defined(__APPLE__)
+	} // namespace
+
 	template <class NativeLogicalDevice>
 	LogicalDevice MakeLogicalDevice(NativeLogicalDevice&& native) {
 		return LogicalDevice(
@@ -56,27 +62,17 @@ namespace fyuu_rhi {
 #if !defined(__APPLE__)
 	template <>
 	LogicalDevice MakeLogicalDevice(opengl::LogicalDevice&& native) {
-		static LogicalDeviceImplementation implementation{ std::move(native) };
+		if (std::holds_alternative<std::monostate>(s_opengl_logical_device.native)) {
+			s_opengl_logical_device.native.emplace<opengl::LogicalDevice>(std::move(native));
+		}
 		return LogicalDevice(
 			LogicalDevice::UniqueHandle(
-				&implementation,
+				&s_opengl_logical_device,
 				[](LogicalDeviceImplementation*) noexcept {
 				}
 			)
 		);
 	}
 #endif // !defined(__APPLE__)
-
-	template <>
-	LogicalDevice MakeLogicalDevice(webgpu::LogicalDevice&& native) {
-		static LogicalDeviceImplementation implementation{ std::move(native) };
-		return LogicalDevice(
-			LogicalDevice::UniqueHandle(
-				&implementation,
-				[](LogicalDeviceImplementation*) noexcept {
-				}
-			)
-		);
-	}
 
 } // namespace fyuu_rhi

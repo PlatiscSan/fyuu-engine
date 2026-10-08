@@ -187,8 +187,10 @@ namespace fyuu_rhi::shader {
 		/// entries written before that would restore a root signature at the
 		/// placeholder register. Version 8 takes the sampler register and space of
 		/// a combined binding from the target's own layout, so entries written
-		/// before that carry the logical binding instead.
-		static constexpr std::uint32_t CACHE_SCHEMA_VERSION = 8u;
+		/// before that carry the logical binding instead. Version 9 makes the
+		/// logical slot unique within its space, so entries written before that can
+		/// hand two bindings of different kinds the same slot.
+		static constexpr std::uint32_t CACHE_SCHEMA_VERSION = 9u;
 
 		/// Per-entry-point compiled bytecode, in program order.
 		std::vector<SlangCompiledEntryPoint> m_entry_points;
@@ -686,6 +688,36 @@ namespace fyuu_rhi::shader {
 			);
 		}
 
+		/// Gives every binding a logical slot that is unique within its space.
+		///
+		/// A binding's logical slot is what a caller addresses and what a resource group is keyed by,
+		/// so two bindings may never share one. The number the reflection starts from is the
+		/// declaration's own: the register a pinned declaration asked for, or -- for a declaration
+		/// that pinned nothing -- the index Slang assigned it in its own category, where a buffer, a
+		/// texture and a sampler each start at zero. Keeping that number when it is free and handing
+		/// out the next free one otherwise leaves every pinned declaration exactly where it was, and
+		/// lands an unpinned shader on the dense sequence its SPIR-V target assigns in declaration
+		/// order, so the Vulkan and OpenGL layouts keep matching the shader's own bindings.
+		static void UniquifyLogicalSlots(std::vector<pipeline::SlangPipelineBinding>& bindings) {
+			std::vector<std::pair<std::uint32_t, std::uint32_t>> taken;
+			taken.reserve(bindings.size());
+			for (auto& entry : bindings) {
+				auto const used = [&taken](std::uint32_t space, std::uint32_t slot) {
+					return std::ranges::find(taken, std::pair{ space, slot }) != taken.end();
+				};
+				if (!used(entry.space, entry.slot)) {
+					taken.emplace_back(entry.space, entry.slot);
+					continue;
+				}
+				std::uint32_t candidate = 0u;
+				while (used(entry.space, candidate)) {
+					++candidate;
+				}
+				entry.slot = candidate;
+				taken.emplace_back(entry.space, candidate);
+			}
+		}
+
 		static slang::ParameterCategory ResourceCategory(ResourceFlags const& flags) {
 			using Bits = ResourceFlagBits;
 			if (flags.Test(Bits::UniformBuffer)) {
@@ -869,13 +901,26 @@ namespace fyuu_rhi::shader {
 					"resource binding space"
 				);
 				auto resource_category = ResourceCategory(flags);
+				// Every register a backend places a binding at comes from the target's own layout,
+				// the same way the pipeline-constant register is resolved above. The generic layout
+				// is what the logical slot is taken from, and it numbers a declaration that pinned
+				// nothing densely across categories - the second declaration of any kind lands on
+				// index 1, whatever register class it belongs to. That is the register the shader
+				// actually reads only when the source pinned it; DXIL numbers per register class
+				// instead (b0/t0/s0), so a root signature built from the generic number would
+				// declare a register the shader never reads and the pipeline state creation would
+				// reject it. A pinned declaration resolves to the same number in both layouts.
+				auto* native_variable = FindNativeParameter(native_layout, variable->getName());
+				if (!native_variable) {
+					native_variable = variable;
+				}
 				auto resource_slot = BindingSlot(
-					variable,
+					native_variable,
 					resource_category,
 					slot
 				);
 				auto resource_space = BindingSpace(
-					variable,
+					native_variable,
 					resource_category,
 					space
 				);
@@ -883,37 +928,18 @@ namespace fyuu_rhi::shader {
 				// the logical identity for its sampler half as well. Where the sampler actually
 				// lands is the target compiler's decision - DXIL places the implicit sampler
 				// densely from s0 in register space 0, whatever space its texture was declared in -
-				// so the combined case asks the target's own layout, the same way the
-				// pipeline-constant register is resolved above. A separate sampler keeps the
-				// generic value: the source declared its register explicitly, and both layouts
-				// agree on it.
-				auto const combined_binding =
-					flags.Test(ResourceFlagBits::TextureBinding) &&
-					flags.Test(ResourceFlagBits::SamplerBinding);
-				auto* sampler_variable = combined_binding
-					? FindNativeParameter(native_layout, variable->getName())
-					: nullptr;
-				if (!sampler_variable) {
-					sampler_variable = variable;
-				}
+				// so the combined case asks the target's own layout as well. A separate sampler is
+				// a parameter of its own, so its register answers directly there too.
 				auto sampler_slot = BindingSlot(
-					sampler_variable,
+					native_variable,
 					slang::ParameterCategory::SamplerState,
 					slot
 				);
 				auto sampler_space = BindingSpace(
-					sampler_variable,
+					native_variable,
 					slang::ParameterCategory::SamplerState,
 					space
 				);
-				if (
-					flags.Test(ResourceFlagBits::TextureBinding) &&
-					flags.Test(ResourceFlagBits::SamplerBinding) &&
-					!HasCategory(variable, slang::ParameterCategory::DescriptorTableSlot)
-				) {
-					slot = resource_slot;
-					space = resource_space;
-				}
 				result.bindings.push_back(
 					{
 						.name = variable->getName() ? variable->getName() : "",
@@ -929,6 +955,8 @@ namespace fyuu_rhi::shader {
 					}
 				);
 			}
+
+			UniquifyLogicalSlots(result.bindings);
 
 			for (SlangUInt index = 0; index < layout->getEntryPointCount(); ++index) {
 				auto entry = layout->getEntryPointByIndex(index);
@@ -1066,12 +1094,20 @@ namespace fyuu_rhi::shader {
 		// Persists the compiled result: one .bin per entry point, interface.json,
 		// reflection.json, the dependency file hashes, and finally manifest.json
 		// (published last so its presence marks a complete, usable entry).
-		void WriteCache(fs::path const& directory, std::string_view key, std::span<Slang::ComPtr<slang::IModule> const> modules) const {
+		void WriteCache(
+			fs::path const& directory,
+			std::string_view key,
+			std::span<Slang::ComPtr<slang::IModule> const> modules,
+			SlangPipelineProgramDescriptor const& descriptor,
+			std::string_view cache_tag
+		) const {
 			try {
 				nlohmann::json manifest{
 					{ "schema", CACHE_SCHEMA_VERSION },
 					{ "key", key },
 					{ "slang", SlangGlobalSession()->getBuildTagString() },
+					{ "cache_tag", cache_tag },
+					{ "modules", nlohmann::json::array() },
 					{ "interface", "interface.json" },
 					{ "reflection", "reflection.json" },
 					{ "reflection_size", m_reflection_json.size() },
@@ -1080,9 +1116,12 @@ namespace fyuu_rhi::shader {
 					{ "dependencies", nlohmann::json::array() }
 				};
 
+				for (auto const& module : descriptor.modules) {
+					manifest["modules"].push_back(module.name);
+				}
 				for (std::size_t index = 0; index < m_entry_points.size(); ++index) {
 					auto const& entry = m_entry_points[index];
-					auto filename = std::format("entry-{}.bin", index);
+					auto filename = std::format("entry-{}-{}.bin", index, cache::PathName(entry.name));
 					WriteFileAtomically(directory / filename, entry.code);
 					manifest["entry_points"].push_back(
 						{
@@ -1154,7 +1193,18 @@ namespace fyuu_rhi::shader {
 			// entirely. The lock serializes construction so concurrent pipeline
 			// creation cannot read while another thread is writing the cache.
 			auto cache_key = BuildCacheKey(target, desc, cache_tag);
-			auto cache_directory = cache::GetCacheDirectory(cache_key);
+			// OpenGL also compiles SPIR-V, so identify it by its explicit cache tag
+			// rather than treating every SPIR-V target as Vulkan.
+			auto const backend = cache_tag.starts_with("opengl-") ? "opengl" :
+				target.format == SLANG_DXIL ? "d3d12" :
+				target.format == SLANG_SPIRV ? "vulkan" :
+				target.format == SLANG_WGSL ? "webgpu" :
+				target.format == SLANG_METAL ? "metal" : "other";
+			auto cache_directory = cache::GetCacheDirectory(
+				cache_key,
+				backend,
+				desc.modules.front().name
+			);
 			static std::mutex cache_mutex;
 			std::unique_lock cache_lock(cache_mutex);
 			if (TryLoadCache(cache_directory, cache_key)) {
@@ -1264,7 +1314,7 @@ namespace fyuu_rhi::shader {
 
 			// Persist the compiled result so a later construction with the same
 			// key returns from the disk cache instead of recompiling.
-			WriteCache(cache_directory, cache_key, modules);
+			WriteCache(cache_directory, cache_key, modules, desc, cache_tag);
 		}
 
 		/// Compiled backend bytecode, one element per entry point, in program order.

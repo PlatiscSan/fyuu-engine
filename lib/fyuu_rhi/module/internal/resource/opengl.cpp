@@ -45,21 +45,18 @@ namespace fyuu_rhi::opengl {
 	}
 
 	void ResourceDeleter::operator()(GLuint impl) const noexcept {
-		if (impl == 0u) {
-			return;
-		}
+		auto retired_type = RetiredObjectType::Texture;
 		if (type == ResourceType::Buffer) {
-			glDeleteBuffers(1, &impl);
+			retired_type = RetiredObjectType::Buffer;
 		}
-		else {
-			glDeleteTextures(1, &impl);
-		}
+		RetireObject(
+			retired_type,
+			impl
+		);
 	}
 
 	void SyncDeleter::operator()(GLsync sync) const noexcept {
-		if (sync) {
-			glDeleteSync(sync);
-		}
+		RetireSync(sync);
 	}
 
 	View::View(
@@ -77,7 +74,7 @@ namespace fyuu_rhi::opengl {
 
 	void ViewDeleter::operator()(GLuint impl) const noexcept {
 		if (owned && impl != 0u) {
-			glDeleteTextures(1, &impl);
+			RetireObject(RetiredObjectType::Texture, impl);
 		}
 	}
 

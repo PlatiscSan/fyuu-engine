@@ -338,5 +338,14 @@ namespace fyuu_rhi {
 		}
 	};
 
+	template <>
+	struct PipelineBindings<d3d12::Pipeline> {
+		d3d12::Pipeline* native;
+
+		std::vector<pipeline::BindingMetadata> operator()() const {
+			return native->bindings;
+		}
+	};
+
 } // namespace fyuu_rhi
 #endif // defined(_WIN32)

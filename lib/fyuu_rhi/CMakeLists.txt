@@ -241,7 +241,6 @@ endif()
 disable_rtti(${PROJECT_NAME})
 
 if(BUILD_TESTING)
-	add_subdirectory(test/hello_triangle)
 	add_subdirectory(test/completion_pool)
 	add_subdirectory(test/draw_probe)
 	add_subdirectory(test/draw_shapes)

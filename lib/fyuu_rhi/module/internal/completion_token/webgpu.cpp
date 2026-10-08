@@ -44,8 +44,8 @@ namespace fyuu_rhi::execution {
 		webgpu::CompletionToken* token;
 
 		bool operator()() const noexcept {
-			// The scheduler's pump thread owns the Dawn future and drives Dawn's callback
-			// processing, so a poll never waits: it only reports what the pump published.
+			// Only inspect CPU state published by a callback or fallback pump;
+			// polling never enters Dawn or invokes the user receiver.
 			return !token->state ||
 				token->state->complete.load(std::memory_order_acquire);
 		}
@@ -82,12 +82,9 @@ namespace fyuu_rhi::execution {
 			if (!token->state) {
 				return true;
 			}
-			// This thread must not poll: driving the Dawn future needs WaitAny, and the
-			// only timeout that is safe to wait on (zero) needs to be called repeatedly,
-			// which the scheduler's pump thread already does for every outstanding
-			// future. Completion is published under this mutex and notified after the
-			// release, so re-testing the flag while holding the lock cannot miss a
-			// wake-up.
+			// Spontaneous callbacks (or the fallback pump) publish CPU state under
+			// this mutex and notify afterwards. The completion executor only waits
+			// for that publication; it does not drive Dawn or hold a device lock.
 			std::unique_lock lock(token->state->mutex);
 			while (!token->state->complete.load(std::memory_order_acquire)) {
 				if (stop_token.stop_requested()) {

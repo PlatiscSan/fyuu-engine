@@ -2,6 +2,7 @@ module;
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <stdexcept>
+#include <variant>
 #endif // !defined(__cpp_lib_modules)
 #if defined(__linux__) && !defined(__ANDROID__)
 #include <boost/scope/defer.hpp>
@@ -24,6 +25,10 @@ import :opengl_instance_common;
 import :physical_device_factory;
 
 namespace {
+	std::uint64_t NextInstanceGeneration() noexcept {
+		static std::uint64_t generation = 0u;
+		return ++generation;
+	}
 
 	constexpr int framebuffer_attributes[]{
 		GLX_X_RENDERABLE, True,
@@ -75,6 +80,7 @@ namespace {
 	struct ThreadContext {
 		ManagedPbuffer pbuffer;
 		fyuu_rhi::opengl::ManagedContext context;
+		std::uint64_t generation;
 	};
 
 	ThreadContext CreateThreadContext(
@@ -110,7 +116,8 @@ namespace {
 		);
 		return {
 			std::move(pbuffer),
-			std::move(context)
+			std::move(context),
+			instance->generation
 		};
 	}
 
@@ -276,7 +283,8 @@ namespace fyuu_rhi {
 				config,
 				std::move(colormap),
 				std::move(drawable),
-				std::move(context)
+				std::move(context),
+				NextInstanceGeneration()
 			};
 		}
 	};
@@ -286,7 +294,21 @@ namespace fyuu_rhi {
 		opengl::GLXInstance const* instance;
 
 		void operator()() const {
-			thread_local auto context = CreateThreadContext(instance);
+			thread_local std::variant<std::monostate, ThreadContext> storage;
+			if (
+				std::holds_alternative<std::monostate>(storage) ||
+				std::get<ThreadContext>(storage).generation != instance->generation
+			) {
+				(void)glXMakeContextCurrent(
+					instance->display.get(),
+					None,
+					None,
+					nullptr
+				);
+				storage.emplace<std::monostate>();
+				storage.emplace<ThreadContext>(CreateThreadContext(instance));
+			}
+			auto& context = std::get<ThreadContext>(storage);
 			if (!glXMakeContextCurrent(
 				instance->display.get(),
 				context.pbuffer.get(),

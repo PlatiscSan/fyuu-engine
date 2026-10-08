@@ -11,12 +11,6 @@ import :core;
 import :instance;
 
 namespace fyuu_rhi {
-
-	struct InstanceImplementation {
-		Backend type;
-		void* native;
-	};
-
 #if defined(_MSC_VER)
 	[[msvc::noinline]]
 #endif // defined(_MSC_VER)

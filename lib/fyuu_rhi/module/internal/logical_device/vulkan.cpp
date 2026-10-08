@@ -13,6 +13,7 @@ module;
 
 #include <optional>
 #include <string_view>
+#include <variant>
 
 #include <ranges>
 #include <span>
@@ -841,7 +842,9 @@ namespace fyuu_rhi {
 					properties.vendorID,
 					properties.deviceID,
 					properties.driverVersion
-				)
+				),
+				"vulkan",
+				"device-shared"
 			);
 			auto cache_data = cache::ReadFile(cache_path);
 			auto raw_cache = logical_device->impl->createPipelineCache(
@@ -938,7 +941,9 @@ namespace fyuu_rhi {
 					properties.vendorID,
 					properties.deviceID,
 					properties.driverVersion
-				)
+				),
+				"vulkan",
+				"device-shared"
 			);
 			auto cache_data = cache::ReadFile(cache_path);
 			auto raw_cache = logical_device->impl->createPipelineCache(

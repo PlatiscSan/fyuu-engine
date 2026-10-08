@@ -158,8 +158,6 @@ namespace {
 		if (!info_queue) {
 			return 0u;
 		}
-		(void)info_queue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION, TRUE);
-		(void)info_queue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, TRUE);
 		DWORD result = 0u;
 		if (FAILED(info_queue->RegisterMessageCallback(
 		        LogD3D12Message,

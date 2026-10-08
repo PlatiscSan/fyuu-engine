@@ -13,7 +13,6 @@ module;
 #include <stdexcept>
 #include <utility>
 
-#include <variant>
 #endif // !defined(__cpp_lib_modules)
 #if !defined(__APPLE__)
 #if defined(__clang__) && defined(_MSVC_STL_VERSION)
@@ -24,7 +23,7 @@ module;
 #include <vma/vk_mem_alloc.h>
 #endif // !defined(__APPLE__)
 
-module fyuu_rhi:vulkan_memory_allocator_impl;
+module fyuu_rhi;
 #if !defined(__APPLE__)
 #if defined(__cpp_lib_modules)
 import std;

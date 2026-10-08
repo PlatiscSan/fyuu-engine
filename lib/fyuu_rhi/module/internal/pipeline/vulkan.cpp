@@ -394,5 +394,14 @@ namespace fyuu_rhi {
 		}
 	};
 
+	template <>
+	struct PipelineBindings<vulkan::Pipeline> {
+		vulkan::Pipeline* native;
+
+		std::vector<pipeline::BindingMetadata> operator()() const {
+			return native->bindings;
+		}
+	};
+
 } // namespace fyuu_rhi
 #endif // !defined(__APPLE__)

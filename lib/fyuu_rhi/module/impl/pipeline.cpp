@@ -2,6 +2,8 @@ module;
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <stdexcept>
+#include <vector>
+
 #include <variant>
 
 #include <span>
@@ -26,6 +28,18 @@ import :vulkan_pipeline;
 import :webgpu_pipeline;
 
 namespace fyuu_rhi {
+
+	std::vector<pipeline::BindingMetadata> Pipeline::Bindings() const {
+		if (!m_impl) {
+			throw std::runtime_error("Cannot reflect the bindings of an empty pipeline");
+		}
+		return std::visit(
+			[&]<class NativePipeline>(NativePipeline& native) {
+				return fyuu_rhi::PipelineBindings<NativePipeline>{ &native }();
+			},
+			m_impl->native
+		);
+	}
 
 	PipelineResourceGroup Pipeline::CreatePipelineResourceGroup(std::uint32_t space, std::span<pipeline::ResourceBinding const> bindings) {
 		if (!m_impl) {

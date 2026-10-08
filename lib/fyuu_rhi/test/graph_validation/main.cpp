@@ -177,7 +177,7 @@ namespace {
 			node.DependsOn(node);
 		});
 		Rejected("a duplicated dependency", [](Builder& builder) {
-			auto const first = builder.CreateNode(QueueType::Transfer);
+			auto first = builder.CreateNode(QueueType::Transfer);
 			auto second = builder.CreateNode(QueueType::Graphics);
 			second.DependsOn(first).DependsOn(first);
 		});
@@ -613,7 +613,7 @@ namespace {
 			auto const pipeline = builder.RegisterPipeline();
 			auto const group = builder.RegisterResourceGroup();
 
-			auto const upload = builder.CreateNode(QueueType::Transfer);
+			auto upload = builder.CreateNode(QueueType::Transfer);
 			upload
 				.Access({ uniform, AccessMode::Write, ResourceUsage::CopyDestination, {} })
 				.Record(
@@ -624,7 +624,7 @@ namespace {
 					}
 				);
 
-			auto const draw = builder.CreateNode(QueueType::Graphics, upload);
+			auto draw = builder.CreateNode(QueueType::Graphics, upload);
 			draw
 				.Access({ target, AccessMode::Write, ResourceUsage::ColorAttachment, {} })
 				.Access({ vertex_buffer, AccessMode::Read, ResourceUsage::VertexBuffer, {} })

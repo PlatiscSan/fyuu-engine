@@ -34,7 +34,9 @@ endif()
 #                    filtering: all four texel colours must appear in the four quadrants
 #   texture_separate The same texture with separately declared texture and sampler bindings, the
 #                    shape D3D12 and WebGPU use in the engine
-set(draw_shapes_modes lines strip indexed scissor depth depth_only blend texture texture_separate)
+#   depth_bias       A biased red quad wins over a nearer green quad, then switching to an
+#                    unbiased pipeline must disable the previous polygon offset
+set(draw_shapes_modes lines strip indexed scissor depth depth_only depth_bias blend texture texture_separate)
 
 function(add_draw_shapes_test backend)
 	# The bare name runs every mode in one process, so a single CTest entry still covers the set.

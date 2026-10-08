@@ -2,6 +2,7 @@ module;
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <cstddef>
+#include <cstdlib>
 #include <exception>
 #include <memory>
 #include <stdexcept>
@@ -931,8 +932,24 @@ namespace fyuu_rhi::opengl {
 			}
 			current = std::move(pending.front());
 			pending.pop_front();
+			auto const observed = current.issued_at == std::chrono::steady_clock::time_point{} ?
+				std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
 			PublishCompletion(current.state, false);
+			auto const published = observed == std::chrono::steady_clock::time_point{} ?
+				std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
 			glDeleteSync(current.sync);
+			if (observed != std::chrono::steady_clock::time_point{}) {
+				// Observation is an upper bound on GPU completion. Publication is not
+				// receiver delivery: the completion worker wakes separately afterwards.
+				fyuu_rhi::log::Info(
+					std::format(
+						"GL scheduler fence: observed_us={}, issued_to_observed_us={}, published_us={}",
+						std::chrono::duration_cast<std::chrono::microseconds>(observed.time_since_epoch()).count(),
+						std::chrono::duration_cast<std::chrono::microseconds>(observed - current.issued_at).count(),
+						std::chrono::duration_cast<std::chrono::microseconds>(published.time_since_epoch()).count()
+					)
+				);
+			}
 		}
 	}
 
@@ -1004,9 +1021,9 @@ namespace fyuu_rhi::opengl {
 			}
 			bool counter_clockwise =
 				pipeline->rasterization.front_face == FrontFace::CounterClockwise;
-			if (clip_space == ClipSpace::YUp) {
-				counter_clockwise = !counter_clockwise;
-			}
+			// Clip control already compensates polygon area for GL_UPPER_LEFT.
+			// An extra reversal here selects the opposite faces, including the
+			// expanded outline shells instead of the model's textured surface.
 			glFrontFace(counter_clockwise ? GL_CCW : GL_CW);
 		}
 
@@ -1072,6 +1089,36 @@ namespace fyuu_rhi::opengl {
 			}
 			ApplyFrontFace();
 
+			// Polygon offset is context state, not program state. Replace it on every
+			// graphics bind so an outline/shadow pipeline cannot bias later geometry.
+			auto const& bias = value.rasterization.depth_bias;
+			if (bias.constant != 0 || bias.slope_scale != 0.0f) {
+				glEnable(GL_POLYGON_OFFSET_FILL);
+				if (GLAD_GL_VERSION_4_6 || GLAD_GL_ARB_polygon_offset_clamp) {
+					glPolygonOffsetClamp(
+						bias.slope_scale,
+						static_cast<GLfloat>(bias.constant),
+						bias.clamp
+					);
+				}
+				else if (GLAD_GL_EXT_polygon_offset_clamp) {
+					glPolygonOffsetClampEXT(
+						bias.slope_scale,
+						static_cast<GLfloat>(bias.constant),
+						bias.clamp
+					);
+				}
+				else if (bias.clamp == 0.0f) {
+					glPolygonOffset(bias.slope_scale, static_cast<GLfloat>(bias.constant));
+				}
+				else {
+					throw std::runtime_error("OpenGL depth bias clamping is not supported");
+				}
+			}
+			else {
+				glDisable(GL_POLYGON_OFFSET_FILL);
+			}
+
 			// Depth state.
 			if (value.depth_stencil && value.depth_stencil->depth_test_enabled) {
 				glEnable(GL_DEPTH_TEST);
@@ -1081,6 +1128,46 @@ namespace fyuu_rhi::opengl {
 				glDisable(GL_DEPTH_TEST);
 			}
 			glDepthMask(value.depth_stencil ? (value.depth_stencil->depth_write_enabled ? GL_TRUE : GL_FALSE) : GL_FALSE);
+
+			// Every graphics bind replaces both faces, including disabling a previous
+			// pipeline's stencil test. The RHI uses a fixed stencil reference of zero.
+			if (value.depth_stencil && value.depth_stencil->stencil_enabled) {
+				glEnable(GL_STENCIL_TEST);
+				auto const& state = *value.depth_stencil;
+				auto apply_face = [&](GLenum face, StencilFaceState const& stencil) {
+					auto operation = [](StencilOperation op) -> GLenum {
+						switch (op) {
+						case StencilOperation::Keep: return GL_KEEP;
+						case StencilOperation::Zero: return GL_ZERO;
+						case StencilOperation::Replace: return GL_REPLACE;
+						case StencilOperation::Invert: return GL_INVERT;
+						case StencilOperation::IncrementClamp: return GL_INCR;
+						case StencilOperation::DecrementClamp: return GL_DECR;
+						case StencilOperation::IncrementWrap: return GL_INCR_WRAP;
+						case StencilOperation::DecrementWrap: return GL_DECR_WRAP;
+						}
+						return GL_KEEP;
+					};
+					glStencilFuncSeparate(
+						face,
+						NativeCompareOp(stencil.compare),
+						0,
+						state.stencil_read_mask
+					);
+					glStencilMaskSeparate(face, state.stencil_write_mask);
+					glStencilOpSeparate(
+						face,
+						operation(stencil.fail_operation),
+						operation(stencil.depth_fail_operation),
+						operation(stencil.pass_operation)
+					);
+				};
+				apply_face(GL_FRONT, state.stencil_front);
+				apply_face(GL_BACK, state.stencil_back);
+			}
+			else {
+				glDisable(GL_STENCIL_TEST);
+			}
 
 			// Blend state (fixed-function blending).
 			if (value.blend) {
@@ -1247,6 +1334,19 @@ namespace fyuu_rhi::opengl {
 					);
 				}
 			}
+			// Attachment load operations must ignore the previous draw's write masks.
+			// Restore them afterwards so a pipeline retained across passes is unchanged.
+			GLboolean color_mask[4];
+			GLboolean depth_mask;
+			GLint stencil_front_mask;
+			GLint stencil_back_mask;
+			glGetBooleanv(GL_COLOR_WRITEMASK, color_mask);
+			glGetBooleanv(GL_DEPTH_WRITEMASK, &depth_mask);
+			glGetIntegerv(GL_STENCIL_WRITEMASK, &stencil_front_mask);
+			glGetIntegerv(GL_STENCIL_BACK_WRITEMASK, &stencil_back_mask);
+			glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+			glDepthMask(GL_TRUE);
+			glStencilMask(~GLuint{0});
 			// Per-attachment clears via glClearBuffer* (respects the scissor set above).
 			for (std::size_t index = 0u; index < value.colors.size(); ++index) {
 				auto const& attachment = value.colors[index];
@@ -1283,6 +1383,10 @@ namespace fyuu_rhi::opengl {
 					);
 				}
 			}
+			glColorMask(color_mask[0], color_mask[1], color_mask[2], color_mask[3]);
+			glDepthMask(depth_mask);
+			glStencilMaskSeparate(GL_FRONT, static_cast<GLuint>(stencil_front_mask));
+			glStencilMaskSeparate(GL_BACK, static_cast<GLuint>(stencil_back_mask));
 			rendering = true;
 			active_colors = value.colors;
 		}
@@ -1905,6 +2009,30 @@ namespace fyuu_rhi::opengl {
 		std::deque<Submission> local_submissions;
 		std::mutex local_mutex;
 		std::condition_variable local_condition;
+		// Synchronize stop notification with the predicate-to-sleep transition.
+		// A bare notify after request_stop can be lost by an indefinite idle wait.
+		std::stop_callback wake_on_stop(
+			stop,
+			[&]() {
+				std::unique_lock lock(local_mutex);
+				local_condition.notify_one();
+			}
+		);
+#if defined(_MSC_VER)
+		char diagnostic_setting[2]{};
+		std::size_t required_size = 0u;
+		bool const diagnose_waits = getenv_s(
+			&required_size,
+			diagnostic_setting,
+			sizeof(diagnostic_setting),
+			"FYUU_RHI_GL_WAIT_DIAGNOSTICS"
+		) == 0 && diagnostic_setting[0] == '1';
+#else
+		auto const diagnostic_setting = std::getenv("FYUU_RHI_GL_WAIT_DIAGNOSTICS");
+		bool const diagnose_waits = diagnostic_setting && std::string_view{diagnostic_setting} == "1";
+#endif
+		std::size_t poll_count = 0u;
+		std::size_t idle_waits = 0u;
 		submission_mutex.store(&local_mutex, std::memory_order_relaxed);
 		submission_condition.store(&local_condition, std::memory_order_relaxed);
 		submissions.store(&local_submissions, std::memory_order_release);
@@ -1937,25 +2065,36 @@ namespace fyuu_rhi::opengl {
 		context_ready.notify_all();
 
 		while (!stop.stop_requested()) {
+			// RHI wrappers are released by the completion driver, which owns no GL
+			// context. Reclaim their native names here while this context is current.
+			CollectRetiredObjects();
 			ReapSignaled();
 			Submission current;
 			{
 				std::unique_lock<std::mutex> lock(local_mutex);
-				// Timed wait: pending fences must be re-polled even when no new
-				// submission arrives. An indefinite wait would strand the last
-				// submission's sync and the token would never complete.
-				local_condition.wait_for(
-					lock,
-					std::chrono::milliseconds(1),
-					[&]() {
+				// Never delay already queued work. Only fences require periodic polls;
+				// an idle scheduler sleeps until a submission or the stop callback.
+				if (local_submissions.empty()) {
+					auto ready = [&]() {
 						return !local_submissions.empty() || stop.stop_requested();
+					};
+					if (pending.empty()) {
+						if (diagnose_waits) {
+							++idle_waits;
+						}
+						local_condition.wait(lock, ready);
+					} else if (diagnose_waits) {
+						++poll_count;
 					}
-				);
+				}
 				if (stop.stop_requested()) {
 					break;
 				}
 				if (local_submissions.empty()) {
-					continue;   // timed out; loop back to ReapSignaled to poll pending
+					// Active GPU work: release the submission mutex before immediately
+					// checking fences again. No sleep/yield or blocking GPU wait; queued
+					// submissions and stop are checked on every iteration.
+					continue;
 				}
 				current = std::move(local_submissions.front());
 				local_submissions.pop_front();
@@ -2035,13 +2174,29 @@ namespace fyuu_rhi::opengl {
 			MakeCurrentScheduler(this, handles);
 			if (current.state) {
 				GLsync sync = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0u);
-				pending.push_back({ sync, std::move(current.state) });
+				pending.push_back(
+					{
+						sync,
+						std::move(current.state),
+						diagnose_waits ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{}
+					}
+				);
 			}
 		}
 
 		DrainPendingOnShutdown();
+		CollectRetiredObjects();
 		DestroySchedulerObjects(this);
 		DestroySchedulerContext(this, handles);
+		if (diagnose_waits) {
+			fyuu_rhi::log::Info(
+				std::format(
+					"GL scheduler waits: busy_polls={}, idle_waits={}",
+					poll_count,
+					idle_waits
+				)
+			);
+		}
 	}
 
 	CommandSchedulerContext::CommandSchedulerContext(CommandSchedulerContext&& other) noexcept
@@ -2056,9 +2211,6 @@ namespace fyuu_rhi::opengl {
 
 	CommandSchedulerContext::~CommandSchedulerContext() noexcept {
 		thread.request_stop();
-		if (auto condition = submission_condition.load(std::memory_order_acquire)) {
-			condition->notify_one();
-		}
 	}
 
 } // namespace fyuu_rhi::opengl

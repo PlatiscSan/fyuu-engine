@@ -12,6 +12,9 @@ module;
 #include <array>
 #include <unordered_set>
 
+#include <mutex>
+#include <thread>
+
 #include <string_view>
 
 #include <source_location>
@@ -155,7 +158,14 @@ namespace fyuu_rhi {
 	template <> struct CreateInstance<vulkan::Instance> {
 		vulkan::Instance operator()() const {
 
-			vk::detail::defaultDispatchLoaderDynamic.init(vkGetInstanceProcAddr);
+			static std::once_flag dispatcher_once;
+			std::call_once(
+				dispatcher_once,
+				[]() {
+					vk::detail::defaultDispatchLoaderDynamic.init(vkGetInstanceProcAddr);
+				}
+			);
+
 			auto vk_inst_ver = vk::ApiVersion10;
 			if (vk::detail::defaultDispatchLoaderDynamic.vkEnumerateInstanceVersion) {
 				vk_inst_ver = vk::enumerateInstanceVersion(
@@ -327,15 +337,15 @@ namespace fyuu_rhi {
 				nullptr,
 				vk::detail::defaultDispatchLoaderDynamic
 			);
-			vk::SharedInstance instance(
-				native_instance,
-				{ nullptr, vk::detail::defaultDispatchLoaderDynamic }
-			);
 			auto shared_dispatcher =
 			    std::make_shared<vk::detail::DispatchLoaderDynamic>(
 					vk::detail::defaultDispatchLoaderDynamic
 				);
-			shared_dispatcher->init(instance.get());
+			shared_dispatcher->init(native_instance);
+			vk::SharedInstance instance(
+				native_instance,
+				{ nullptr, *shared_dispatcher }
+			);
 
 			vk::SharedDebugUtilsMessengerEXT debug_messenger;
 			if (debug_utils_enabled) {
@@ -362,8 +372,8 @@ namespace fyuu_rhi {
 			return vulkan::Instance{
 			    .enabled_extensions = std::move(stored_extensions),
 			    .enabled_layers = std::move(stored_layers),
-			    .impl = std::move(instance),
 			    .dispatcher = std::move(shared_dispatcher),
+			    .impl = std::move(instance),
 			    .debug_messenger = std::move(debug_messenger)
 			};
 		}

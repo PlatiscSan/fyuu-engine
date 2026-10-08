@@ -8,6 +8,7 @@ module;
 
 #include <mutex>
 #include <system_error>
+#include <variant>
 #endif // !defined(__cpp_lib_modules)
 #if defined(_WIN32)
 #include <Windows.h>
@@ -29,6 +30,11 @@ import :opengl_instance_common;
 import :physical_device_factory;
 
 namespace {
+	std::uint64_t NextInstanceGeneration() noexcept {
+		static std::uint64_t generation = 0u;
+		return ++generation;
+	}
+
 	constexpr int context_attributes[]{
 		WGL_CONTEXT_MAJOR_VERSION_ARB, 4,
 		WGL_CONTEXT_MINOR_VERSION_ARB, 3,
@@ -75,6 +81,7 @@ namespace {
 		fyuu_rhi::opengl::Window window;
 		ManagedDeviceContext device_context;
 		ManagedRenderingContext context;
+		std::uint64_t generation;
 	};
 
 	fyuu_rhi::opengl::Window CreateInstanceWindow() {
@@ -187,7 +194,8 @@ namespace {
 		return {
 			std::move(window),
 			std::move(device_context),
-			std::move(context)
+			std::move(context),
+			instance->generation
 		};
 	}
 
@@ -254,7 +262,8 @@ namespace fyuu_rhi {
 				std::move(window),
 				device_context,
 				context,
-				GetCurrentThreadId()
+				GetCurrentThreadId(),
+				NextInstanceGeneration()
 			};
 		}
 	};
@@ -264,7 +273,19 @@ namespace fyuu_rhi {
 		opengl::Instance const* instance;
 
 		void operator()() const {
-			thread_local auto context = CreateThreadContext(instance);
+			thread_local std::variant<std::monostate, ThreadContext> storage;
+			if (
+				std::holds_alternative<std::monostate>(storage) ||
+				std::get<ThreadContext>(storage).generation != instance->generation
+			) {
+				(void)wglMakeCurrent(
+					nullptr,
+					nullptr
+				);
+				storage.emplace<std::monostate>();
+				storage.emplace<ThreadContext>(CreateThreadContext(instance));
+			}
+			auto& context = std::get<ThreadContext>(storage);
 			if (!wglMakeCurrent(context.device_context.get(), context.context.get())) {
 				throw std::runtime_error("Failed to make the shared WGL context current");
 			}

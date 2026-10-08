@@ -40,6 +40,12 @@ namespace fyuu_rhi {
 		> native;
 	};
 
+	namespace {
+#if !defined(__APPLE__)
+		PhysicalDeviceImplementation s_opengl_physical_device;
+#endif // !defined(__APPLE__)
+	} // namespace
+
 	template <class NativePhysicalDevice>
 	PhysicalDevice MakePhysicalDevice(NativePhysicalDevice&& native) {
 		return PhysicalDevice(
@@ -55,27 +61,17 @@ namespace fyuu_rhi {
 #if !defined(__APPLE__)
 	template <>
 	PhysicalDevice MakePhysicalDevice(opengl::PhysicalDevice&& native) {
-		static PhysicalDeviceImplementation implementation{ std::move(native) };
+		if (std::holds_alternative<std::monostate>(s_opengl_physical_device.native)) {
+			s_opengl_physical_device.native.emplace<opengl::PhysicalDevice>(std::move(native));
+		}
 		return PhysicalDevice(
 			PhysicalDevice::UniqueHandle(
-				&implementation,
+				&s_opengl_physical_device,
 				[](PhysicalDeviceImplementation*) noexcept {
 				}
 			)
 		);
 	}
 #endif // !defined(__APPLE__)
-
-	template <>
-	PhysicalDevice MakePhysicalDevice(webgpu::PhysicalDevice&& native) {
-		static PhysicalDeviceImplementation implementation{ std::move(native) };
-		return PhysicalDevice(
-			PhysicalDevice::UniqueHandle(
-				&implementation,
-				[](PhysicalDeviceImplementation*) noexcept {
-				}
-			)
-		);
-	}
 
 } // namespace fyuu_rhi

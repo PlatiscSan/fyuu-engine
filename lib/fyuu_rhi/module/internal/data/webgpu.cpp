@@ -1,23 +1,25 @@
 module;
 #include <version>
 #if !defined(__cpp_lib_modules)
-#include <atomic>
-#include <condition_variable>
+
 #include <cstddef>
 #include <exception>
 #include <memory>
-#include <mutex>
-#include <thread>
 #include <utility>
+#include <string>
 #include <vector>
 
 #include <cstdint>
+#include <mutex>
+#include <thread>
+#include <atomic>
+#include <condition_variable>
 
 #include <variant>
+#include <string_view>
 
 #include <stop_token>
-#include <string>
-#include <string_view>
+
 #endif // !defined(__cpp_lib_modules)
 #include <dawn/webgpu_cpp.h>
 
@@ -88,8 +90,8 @@ namespace fyuu_rhi::webgpu {
 		std::atomic_bool complete = false;
 		std::atomic_bool stopped = false;
 		std::mutex mutex;
-		/// Wakes the completion wait. The scheduler's pump thread owns completion, so a
-		/// waiting thread cannot drive the Dawn future itself and must be notified instead.
+		/// A spontaneous callback or the fallback pump publishes completion and wakes
+		/// the completion executor, which alone delivers the receiver and releases bindings.
 		std::condition_variable condition;
 		std::exception_ptr error;
 	};

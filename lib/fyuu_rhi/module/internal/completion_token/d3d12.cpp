@@ -3,10 +3,12 @@ module;
 #if !defined(__cpp_lib_modules)
 #include <exception>
 #include <utility>
+#include <vector>
 
 #include <limits>
 
 #include <mutex>
+
 #endif // !defined(__cpp_lib_modules)
 #if defined(_WIN32)
 #include <d3d12.h>

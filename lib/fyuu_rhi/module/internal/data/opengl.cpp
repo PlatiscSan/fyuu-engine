@@ -14,6 +14,7 @@ module;
 #include <cstdint>
 #include <unordered_map>
 
+#include <chrono>
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
@@ -50,6 +51,91 @@ import :execution;
 import :pipeline;
 
 namespace fyuu_rhi::opengl {
+	enum class RetiredObjectType : std::uint8_t {
+		Buffer,
+		Texture,
+		Sampler,
+		Program
+	};
+} // namespace fyuu_rhi::opengl
+
+namespace {
+	struct RetiredObject {
+		fyuu_rhi::opengl::RetiredObjectType type;
+		GLuint impl;
+		GLsync sync;
+	};
+
+	std::deque<RetiredObject>& RetiredObjects() {
+		static std::deque<RetiredObject> objects;
+		return objects;
+	}
+
+	std::mutex& RetiredObjectsMutex() {
+		static std::mutex mutex;
+		return mutex;
+	}
+} // namespace
+
+namespace fyuu_rhi::opengl {
+	void RetireObject(RetiredObjectType type, GLuint impl) noexcept {
+		if (impl == 0u) {
+			return;
+		}
+		try {
+			std::unique_lock lock(RetiredObjectsMutex());
+			RetiredObjects().emplace_back(type, impl, nullptr);
+		}
+		catch (...) {
+			// Leaking a native name during allocation failure is safer than entering
+			// an OpenGL driver without a current context from this noexcept deleter.
+		}
+	}
+
+	void RetireSync(GLsync sync) noexcept {
+		if (!sync) {
+			return;
+		}
+		try {
+			std::unique_lock lock(RetiredObjectsMutex());
+			RetiredObjects().emplace_back(
+				RetiredObjectType::Buffer,
+				0u,
+				sync
+			);
+		}
+		catch (...) {
+			// See RetireObject(): failure must not call GL from the wrong thread.
+		}
+	}
+
+	void CollectRetiredObjects() noexcept {
+		std::deque<RetiredObject> objects;
+		{
+			std::unique_lock lock(RetiredObjectsMutex());
+			objects.swap(RetiredObjects());
+		}
+		for (auto const& object : objects) {
+			if (object.sync) {
+				glDeleteSync(object.sync);
+				continue;
+			}
+			switch (object.type) {
+			case RetiredObjectType::Buffer:
+				glDeleteBuffers(1, &object.impl);
+				break;
+			case RetiredObjectType::Texture:
+				glDeleteTextures(1, &object.impl);
+				break;
+			case RetiredObjectType::Sampler:
+				glDeleteSamplers(1, &object.impl);
+				break;
+			case RetiredObjectType::Program:
+				glDeleteProgram(object.impl);
+				break;
+			}
+		}
+	}
 
 #if defined(__linux__) || defined(__ANDROID__)
 	struct EGLDisplayDeleter {
@@ -94,6 +180,7 @@ namespace fyuu_rhi::opengl {
 		HDC device_context;
 		HGLRC context;
 		DWORD owner_thread;
+		std::uint64_t generation;
 	};
 #elif defined(__linux__) && !defined(__ANDROID__)
 	struct DisplayDeleter {
@@ -129,6 +216,7 @@ namespace fyuu_rhi::opengl {
 		ManagedColormap colormap;
 		ManagedDrawable drawable;
 		ManagedContext context;
+		std::uint64_t generation;
 	};
 
 	struct EGLInstance {
@@ -136,6 +224,7 @@ namespace fyuu_rhi::opengl {
 		EGLConfig config;
 		ManagedEGLSurface surface;
 		ManagedEGLContext context;
+		std::uint64_t generation;
 	};
 #elif defined(__ANDROID__)
 	struct Instance {
@@ -143,6 +232,7 @@ namespace fyuu_rhi::opengl {
 		EGLConfig config;
 		ManagedEGLSurface surface;
 		ManagedEGLContext context;
+		std::uint64_t generation;
 	};
 #endif
 
@@ -176,12 +266,22 @@ namespace fyuu_rhi::opengl {
 		std::shared_ptr<CompletionState> state;
 	};
 
+	/// Native GL objects may reach their last RHI owner on the completion thread,
+	/// which deliberately owns no OpenGL context. Their deleters therefore enqueue
+	/// the native name here instead of entering the driver from an arbitrary thread.
+	/// A thread with a current context in the same share group drains the queue.
+	void RetireObject(RetiredObjectType type, GLuint impl) noexcept;
+	void RetireSync(GLsync sync) noexcept;
+	void CollectRetiredObjects() noexcept;
+
 	struct Submission;
 
 	struct CommandSchedulerContext {
 		struct PendingSync {
 			GLsync sync;
 			std::shared_ptr<CompletionState> state;
+			/// Populated only by opt-in scheduler diagnostics; never a GPU timestamp.
+			std::chrono::steady_clock::time_point issued_at{};
 		};
 
 		struct PresentTarget {

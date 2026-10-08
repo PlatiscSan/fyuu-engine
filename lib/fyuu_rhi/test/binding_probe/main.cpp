@@ -13,6 +13,7 @@
 // reports both.
 #include <version>
 #if !defined(__cpp_lib_modules)
+#include <algorithm>
 #include <cstddef>
 #include <exception>
 #include <format>
@@ -98,10 +99,13 @@ namespace {
 		}
 	}
 
-	int Run(char const* backend_name, bool separate_declarations) {
+	int Run(char const* backend_name, std::string_view mode) {
 		using namespace fyuu_rhi;
 		using namespace fyuu_rhi::pipeline;
+		g_cases = 0u;
 		auto const name = std::string_view{ backend_name };
+		bool const bare = mode == "bare";
+		bool const separate_declarations = mode != "combined";
 		auto const backend = name == "d3d12" ? Backend::DirectX12 :
 			name == "vulkan" ? Backend::Vulkan :
 			name == "webgpu" ? Backend::WebGPU :
@@ -141,8 +145,29 @@ namespace {
 				return object.color * color_texture.Sample(color_sampler, float2(0.5, 0.5));
 			}
 		)";
-		auto const* shader = separate_declarations ? separate_shader : combined_shader;
-		std::array const modules{ SlangPipelineProgramDescriptor::Module{ "binding_probe", shader } };
+		// Neither a Vulkan binding nor a D3D register: the shader lets the target place its
+		// bindings, and the probe reads the slots back from the pipeline instead of assuming them.
+		// Slang numbers a bare declaration densely in declaration order, which is the sequence the
+		// reflection's logical slots reproduce.
+		constexpr char bare_shader[] = R"(
+			struct Uniform { float4 color; };
+			ConstantBuffer<Uniform> object;
+			Texture2D color_texture;
+			SamplerState color_sampler;
+			[shader("vertex")]
+			float4 vertex_main(float4 position : POSITION) : SV_Position { return position; }
+			[shader("fragment")]
+			float4 fragment_main() : SV_Target0 {
+				return object.color * color_texture.Sample(color_sampler, float2(0.5, 0.5));
+			}
+		)";
+		auto const* shader = bare
+			? bare_shader
+			: (separate_declarations ? separate_shader : combined_shader);
+		// Each mode compiles its own module: one name for several sources is a name the Slang
+		// session resolves to whichever of them it loaded first.
+		auto const module_name = std::format("binding_probe_{}", mode);
+		std::array const modules{ SlangPipelineProgramDescriptor::Module{ module_name, shader } };
 		std::array const entries{
 			SlangPipelineProgramDescriptor::EntryPoint{ "vertex_main", Stage::Vertex },
 			SlangPipelineProgramDescriptor::EntryPoint{ "fragment_main", Stage::Fragment }
@@ -241,14 +266,54 @@ namespace {
 		// carries the texture slots and nothing else. A group has to supply every slot its space
 		// reflects, and only those, which keeps each negative case below attributable to the one
 		// rule it names instead of to an unrelated missing binding.
-		auto const group_space = 1u;
+		//
+		// A bare shader pins nothing, so this is the one mode whose slots are not the probe's to
+		// choose: they come from the pipeline's own reflection, which is what a caller that lets
+		// the shader place its bindings has to do. The expected numbers are still asserted, one
+		// per declaration in declaration order inside space 0.
+		std::uint32_t group_space = 1u;
+		std::uint32_t texture_slot = 1u;
+		std::uint32_t sampler_slot = separate_declarations ? 2u : 1u;
+		if (bare) {
+			auto reflected = pipeline.Bindings();
+			auto const declared = [&reflected](ResourceFlagBits flag) {
+				auto entry = std::ranges::find_if(
+					reflected,
+					[flag](auto const& candidate) {
+						return candidate.flags.Test(flag);
+					}
+				);
+				if (entry == reflected.end()) {
+					throw std::runtime_error(
+						"the pipeline does not reflect the expected binding"
+					);
+				}
+				return *entry;
+			};
+			auto texture = declared(ResourceFlagBits::TextureBinding);
+			auto sampler = declared(ResourceFlagBits::SamplerBinding);
+			group_space = texture.space;
+			texture_slot = texture.slot;
+			sampler_slot = sampler.slot;
+			if (sampler.space != group_space) {
+				throw std::runtime_error("bare declarations did not land in one space");
+			}
+			if (group_space != 0u || texture_slot != 1u || sampler_slot != 2u) {
+				throw std::runtime_error(std::format(
+					"a bare shader reflected space {} slots ({}, {}) instead of space 0 slots (1, 2)",
+					group_space,
+					texture_slot,
+					sampler_slot
+				));
+			}
+		}
 		if (!separate_declarations) {
 			// One combined slot at (slot 1, space 1): the layout declares eCombinedImageSampler, so
 			// the value has to carry both halves.
 			Accepted("a combined view and sampler", [&]() {
 				std::array const bindings{
 					ResourceBinding{
-						.slot = 1u,
+						.slot = texture_slot,
 						.value = BindingValue::FromCombined(texture_view, sampler)
 					}
 				};
@@ -256,19 +321,19 @@ namespace {
 			});
 			Rejected("a buffer in a combined texture slot", [&]() {
 				std::array const bindings{
-					ResourceBinding{ .slot = 1u, .value = BindingValue::FromBuffer(uniform) }
+					ResourceBinding{ .slot = texture_slot, .value = BindingValue::FromBuffer(uniform) }
 				};
 				(void)pipeline.CreatePipelineResourceGroup(group_space, bindings);
 			});
 			Rejected("a view without its sampler in a combined slot", [&]() {
 				std::array const bindings{
-					ResourceBinding{ .slot = 1u, .value = BindingValue::FromView(texture_view) }
+					ResourceBinding{ .slot = texture_slot, .value = BindingValue::FromView(texture_view) }
 				};
 				(void)pipeline.CreatePipelineResourceGroup(group_space, bindings);
 			});
 			Rejected("a sampler without its view in a combined slot", [&]() {
 				std::array const bindings{
-					ResourceBinding{ .slot = 1u, .value = BindingValue::FromSampler(sampler) }
+					ResourceBinding{ .slot = texture_slot, .value = BindingValue::FromSampler(sampler) }
 				};
 				(void)pipeline.CreatePipelineResourceGroup(group_space, bindings);
 			});
@@ -284,11 +349,11 @@ namespace {
 			Rejected("a binding declared twice", [&]() {
 				std::array const bindings{
 					ResourceBinding{
-						.slot = 1u,
+						.slot = texture_slot,
 						.value = BindingValue::FromCombined(texture_view, sampler)
 					},
 					ResourceBinding{
-						.slot = 1u,
+						.slot = texture_slot,
 						.value = BindingValue::FromCombined(texture_view, sampler)
 					}
 				};
@@ -301,7 +366,7 @@ namespace {
 			Rejected("a group in a space the pipeline does not declare", [&]() {
 				std::array const bindings{
 					ResourceBinding{
-						.slot = 1u,
+						.slot = texture_slot,
 						.value = BindingValue::FromCombined(texture_view, sampler)
 					}
 				};
@@ -314,8 +379,8 @@ namespace {
 			// folds them is not a failure, so the pair is tried first and the mismatch cases only
 			// run where the pair is accepted.
 			std::array const separate_bindings{
-				ResourceBinding{ .slot = 1u, .value = BindingValue::FromView(texture_view) },
-				ResourceBinding{ .slot = 2u, .value = BindingValue::FromSampler(sampler) }
+				ResourceBinding{ .slot = texture_slot, .value = BindingValue::FromView(texture_view) },
+				ResourceBinding{ .slot = sampler_slot, .value = BindingValue::FromSampler(sampler) }
 			};
 			bool separate_slots = true;
 			try {
@@ -330,38 +395,38 @@ namespace {
 				Rejected("a combined value in a plain image slot", [&]() {
 					std::array const bindings{
 						ResourceBinding{
-							.slot = 1u,
+							.slot = texture_slot,
 							.value = BindingValue::FromCombined(texture_view, sampler)
 						},
-						ResourceBinding{ .slot = 2u, .value = BindingValue::FromSampler(sampler) }
+						ResourceBinding{ .slot = sampler_slot, .value = BindingValue::FromSampler(sampler) }
 					};
 					(void)pipeline.CreatePipelineResourceGroup(group_space, bindings);
 				});
 				Rejected("a view in a sampler slot", [&]() {
 					std::array const bindings{
-						ResourceBinding{ .slot = 1u, .value = BindingValue::FromView(texture_view) },
-						ResourceBinding{ .slot = 2u, .value = BindingValue::FromView(texture_view) }
+						ResourceBinding{ .slot = texture_slot, .value = BindingValue::FromView(texture_view) },
+						ResourceBinding{ .slot = sampler_slot, .value = BindingValue::FromView(texture_view) }
 					};
 					(void)pipeline.CreatePipelineResourceGroup(group_space, bindings);
 				});
 				Rejected("a buffer in a plain image slot", [&]() {
 					std::array const bindings{
-						ResourceBinding{ .slot = 1u, .value = BindingValue::FromBuffer(uniform) },
-						ResourceBinding{ .slot = 2u, .value = BindingValue::FromSampler(sampler) }
+						ResourceBinding{ .slot = texture_slot, .value = BindingValue::FromBuffer(uniform) },
+						ResourceBinding{ .slot = sampler_slot, .value = BindingValue::FromSampler(sampler) }
 					};
 					(void)pipeline.CreatePipelineResourceGroup(group_space, bindings);
 				});
 				Rejected("a separate pair with the sampler slot left unbound", [&]() {
 					std::array const bindings{
-						ResourceBinding{ .slot = 1u, .value = BindingValue::FromView(texture_view) }
+						ResourceBinding{ .slot = texture_slot, .value = BindingValue::FromView(texture_view) }
 					};
 					(void)pipeline.CreatePipelineResourceGroup(group_space, bindings);
 				});
 			}
 		}
 
-		std::cout << name << " binding: " << g_cases << " cases passed ("
-			<< (separate_declarations ? "separate" : "combined") << " declarations)" << std::endl;
+		std::cout << name << " binding: " << g_cases << " cases passed (" << mode << " declarations)"
+			<< std::endl;
 		if (LogSink().HasError()) {
 			throw std::runtime_error(
 				"the backend reported a validation or runtime error; see the log above"
@@ -375,10 +440,11 @@ namespace {
 int main(int argc, char** argv) try {
 	auto const name = argc > 1 ? std::string_view{ argv[1] } : std::string_view{ "vulkan" };
 	auto const mode = argc > 2 ? std::string_view{ argv[2] } : std::string_view{ "combined" };
-	if (mode != "combined" && mode != "separate") {
-		throw std::invalid_argument("usage: BindingProbe <backend> [combined|separate]");
+	if (mode != "combined" && mode != "separate" && mode != "bare") {
+		throw std::invalid_argument("usage: BindingProbe <backend> [combined|separate|bare]");
 	}
-	return Run(std::string{ name }.c_str(), mode == "separate");
+	auto const result = Run(std::string{ name }.c_str(), mode);
+	return result;
 }
 catch (std::exception const& error) {
 	std::cerr << "Binding probe failed: " << error.what() << std::endl;

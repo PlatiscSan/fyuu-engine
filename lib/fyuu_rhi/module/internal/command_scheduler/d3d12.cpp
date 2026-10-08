@@ -635,12 +635,10 @@ namespace {
 						auto descriptors = group.resource_descriptors.Allocate(
 							table.descriptors.Count()
 						);
-						device->CopyDescriptorsSimple(
-							static_cast<UINT>(table.descriptors.Count()),
-							descriptors.CPU(),
-							table.descriptors.CPU(),
-							D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV
-						);
+						// Every descriptor in a dynamic-buffer table is rebuilt below with
+						// its submitted offset. Do not copy from the persistent shader-visible
+						// table: D3D12 shader-visible heaps are CPU write-only and therefore
+						// cannot be CopyDescriptorsSimple sources.
 						table_handles[table_index] = descriptors.GPU();
 						temporary_tables[table_index] = temporary_descriptors->size();
 						temporary_descriptors->emplace_back(std::move(descriptors));

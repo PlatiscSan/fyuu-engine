@@ -284,10 +284,41 @@ Receiver 提供 `get_env()`，并且只接收一次终止信号：
 
 后端诊断会写入配置的 `fyuu_rhi::log::Sink`。自动化测试不能只检查进程退出码；即使进程正常退出，Error 或 Fatal 级别的日志仍应视为失败。
 
-跨后端集成测试位于 `lib/fyuu_rhi/test/hello_triangle`。启用测试后，CTest 会为当前构建中的每个后端注册一次有限帧测试；也可以直接运行程序进行交互测试：
+跨后端回归测试位于 `lib/fyuu_rhi/test`。启用 BUILD_TESTING 后由 CTest 注册。运行 `DrawProbe <backend> hello` 可检查三角形像素；DrawShapes、BindingProbe、GraphValidation 和 CompletionPool 分别覆盖渲染状态、绑定、图契约与并发。窗口呈现与缩放由 原生窗口宿主集成检查验证。Metal 仍需在 Apple 硬件上验证。
+## 着色器缓存清理
+
+着色器缓存位于系统缓存目录下的
+`<引擎>/v<版本>/<应用>/v<版本>/shaders/<后端>/shader-<模块名>/<变体哈希>/`。
+后端目录为 `d3d12`、`vulkan`、`opengl`、`webgpu` 或 `metal`。
+
+每个变体包含 `manifest.json`、`interface.json`、`reflection.json`，以及
+`entry-0-shader-vertex_main.bin` 这类带入口名的编译产物。
+`manifest.json` 记录完整模块名、入口名与编译标记，便于辨认用途。
+多模块程序按第一个模块分组；目录名经过长度限制和字符替换，变体仍由哈希区分。
+
+Windows 的系统缓存目录是 `%LOCALAPPDATA%`；Linux 使用 `$XDG_CACHE_HOME`
+或 `~/.cache`；macOS 使用 `~/Library/Caches`。请先关闭使用 RHI 的应用，再清理。
+可以删除单个变体、整个着色器目录或整个后端目录；下次创建对应管线时会重新编译。
+
+旧的 `bundles/` 不因这次目录调整而自动迁移或删除，可以手动清理。
+旧缓存仍计入容量限制，自动清理以完整变体为单位，不会单独删除 manifest 或入口文件。
+
+原生管线缓存放在相邻的 `pipelines/` 中：
 
 ```text
-HelloTriangle <d3d12|vulkan|opengl|webgpu|metal>
+pipelines/
+  d3d12/
+    graphics/shader-模块名/<哈希>.bin
+    compute/shader-模块名/<哈希>.bin
+    root-signatures/<哈希>.bin
+  opengl/
+    graphics/shader-模块名/<哈希>.bin
+    compute/shader-模块名/<哈希>.bin
+  vulkan/device-shared/<哈希>.bin
 ```
 
-该测试覆盖设备创建、数据上传、管线与资源组创建、命令录制、绘制、呈现、完成处理和窗口缩放。只有在 Apple 硬件上通过真实窗口与事件循环测试后，Metal 才会列入已经验证的后端。
+D3D12 root signature 按布局共享，Vulkan pipeline cache 按设备和驱动共享，
+因此不伪装成某个着色器的独立缓存。删除 `device-shared/` 会清理 Vulkan 原生共享缓存。
+WebGPU、Metal 目前没有 RHI 管理的原生管线磁盘缓存，驱动或运行库自行管理的缓存不在此处。
+关闭使用 RHI 的应用后，可删除单个文件或整个目录，缺失的缓存会重新生成。
+这次调整不删除旧的根目录散列缓存文件，可手动清理。

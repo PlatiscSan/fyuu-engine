@@ -45,8 +45,8 @@ namespace fyuu_rhi::vulkan {
 	struct Instance {
 		std::unordered_set<std::string_view> enabled_extensions;
 		std::unordered_set<std::string_view> enabled_layers;
+		std::shared_ptr<vk::detail::DispatchLoaderDynamic> dispatcher;
 		vk::SharedInstance impl;
-		std::shared_ptr<vk::detail::DispatchLoaderDynamic> dispatcher; 
 		vk::SharedDebugUtilsMessengerEXT debug_messenger;
 	};
 
