@@ -99,8 +99,6 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 add_subdirectory(lib/plastic)
 add_subdirectory(lib/fyuu_math)
-add_subdirectory(lib/vulkan_hpp)
-add_subdirectory(lib/PixEvents-cmake)
 add_subdirectory(lib/fyuu_rhi)
 add_subdirectory(lib/fyuu_asset)
 add_subdirectory(runtime)

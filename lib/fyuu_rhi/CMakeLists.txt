@@ -88,6 +88,11 @@ check_cxx_source_compiles(
 
 add_library(${PROJECT_NAME} STATIC)
 
+add_subdirectory(external/vulkan_hpp)
+if(WIN32)
+	add_subdirectory(external/PixEvents-cmake)
+endif()
+
 collect_sources(${CMAKE_CURRENT_SOURCE_DIR}/src ""
 	sources
 )
@@ -123,7 +128,7 @@ if(APPLE)
 	target_include_directories(
 		${PROJECT_NAME}
 		PRIVATE
-			${PROJECT_SOURCE_DIR}/../dependency/metal-cpp
+			${PROJECT_SOURCE_DIR}/external/metal-cpp
 	)
 endif()
 	
