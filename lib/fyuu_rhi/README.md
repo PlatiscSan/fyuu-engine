@@ -376,3 +376,14 @@ WebGPU and Metal currently have no RHI-managed native pipeline disk cache.
 Driver/runtime-owned caches are outside this directory. Close RHI applications
 before deleting files or directories. Cache misses rebuild the native objects;
 old flat cache files are left untouched by this change and may be removed manually.
+
+## License
+
+FyuuRHI's original source code, build scripts, tests and documentation are licensed
+under the [Apache License 2.0](LICENSE.txt). This component-specific license takes
+precedence over the repository's root license for these files; it does not change
+the license of other FyuuEngine components.
+
+Third-party code, including dependencies in `external/` and generated loader code,
+retains its own license and copyright notices. Those licenses must also be observed
+when distributing FyuuRHI with these dependencies.
