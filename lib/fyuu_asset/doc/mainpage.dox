@@ -1,0 +1,159 @@
+/**
+@mainpage FyuuAsset API Guide
+
+@tableofcontents
+
+FyuuAsset imports and persists dynamically typed assets. Asset types are open
+UTF-8 strings rather than a closed enumeration. Every asset has one stable
+fyuu_asset::UUID, one runtime type name, one workspace-wide name, and an owned
+fyuu_asset::Object containing its type-specific fields.
+
+@section context Context and diagnostics
+
+Call fyuu_asset::InitializeAssetContext before importing, loading, or deleting
+assets. The first call establishes the process-wide normalized asset root. The
+optional fyuu_asset::log::Sink is borrowed, may receive synchronous calls from
+worker threads, and must outlive all asset-system use.
+
+@code
+fyuu_asset::InitializeAssetContext("assets", &sink);
+@endcode
+
+@section values Dynamic values
+
+fyuu_asset::Value owns null, boolean, signed or unsigned 64-bit integer,
+floating-point, string, fyuu_asset::Binary, fyuu_asset::File,
+fyuu_asset::Array, fyuu_asset::Object, or fyuu_asset::UUID. Is<T>() checks the
+active alternative and As<T>() accesses it. A type mismatch throws
+std::bad_variant_access.
+
+Binary data is encoded inside the asset JSON. File values are persisted beside
+the JSON in a category directory selected from the logical filename. UUID
+values express identity without retaining or loading the referenced asset.
+
+@section import Import
+
+fyuu_asset::Importer is an awaitable parser for a regular file, directory, or
+ZIP package. Awaiting it returns a neutral fyuu_asset::Object.
+fyuu_asset::Factory persists the complete field object selected by the
+application. Both operations run on the shared asset worker.
+
+@code
+fyuu_asset::Importer::Register("miku_model", ImportMikuModel);
+auto fields = co_await fyuu_asset::Importer{"miku_model", "sources/character.zip"};
+auto asset = co_await fyuu_asset::Factory{"miku_model", "miku", fields};
+auto uuid = asset.GetUUID();
+@endcode
+
+Registration maps an open runtime type string to a plain ImportFunction.
+RegisterBuiltIn explicitly assigns FyuuAsset's format-detecting parser. An
+unregistered type is rejected rather than receiving an implicit field schema.
+
+A package can select one entry with `entry` or several entries with `entries`
+in its `asset.json`. Without a manifest, the importer discovers supported model
+entries or one unambiguous JSON entry. Virtual package paths are UTF-8.
+
+JSON becomes dynamic fields. Supported models are parsed with Assimp, with an
+internal PMD fallback. Model textures are decoded, mipmapped, and converted to
+BC data for Runtime upload. Unknown formats are retained in the `binary` field.
+
+@section importer_fields Built-in importer fields
+
+The value system is open. Built-in parsers produce the following neutral output
+protocols; these are not Asset schemas:
+
+- A JSON object keeps its own top-level fields.
+- An unknown format or standalone binary/image produces `binary`.
+- One model produces `geometry`, `meshes`, `materials`, `textures`, and
+  `animation_count`.
+- Multiple model entries produce `models`; each model object also has a stable
+  `name` equal to `model_N`.
+
+`geometry` is one File containing `geometry.mesh`. Mesh stream fields contain
+byte `offset` and `size` ranges into this file. Assimp meshes contain `name`,
+`material`, `vertex_count`, `index_count`, `positions`, and `indices`, plus
+conditional `normals`, `texcoords`, `tangents`, and `bitangents`. `material`
+indexes the model's `materials` array. Vector streams are packed float3, UVs are
+float2, and indices are std::uint32_t.
+
+The PMD fallback also emits two std::uint32_t `bone_indices` and float2
+`bone_weights` per vertex. Assimp materials contain `name` and `textures`.
+Each binding contains numeric Assimp `semantic` and `texture`, an index into the
+model's `textures` array. PMD materials additionally contain `diffuse`, `alpha`,
+`specularity`, `specular`, and `ambient`.
+
+Texture objects contain `name`, `width`, `height`, `format`, `mip_levels`, and
+`pixels`. Each mip has `width`, `height`, byte `offset`, and byte `size` into the
+pixels File. Supported stored formats are BC1, BC3, and BC5 variants named in
+README.md.
+
+`animation_count` is currently metadata only. Assimp animation channels,
+nodes, and skeleton data are not retained. Standalone images currently produce
+`binary`; only model-referenced textures follow the BC conversion path.
+
+@section load Load and field access
+
+Factory loads by stable UUID or by runtime type and name. Both forms are native
+awaitables executed on the asset worker.
+
+@code
+auto asset = co_await fyuu_asset::Factory{"miku_model", "miku"};
+auto& meshes = asset.GetField("meshes").As<fyuu_asset::Array>();
+@endcode
+
+GetField() preserves the Asset object's constness and value category. A missing
+field throws std::out_of_range.
+
+@section deletion Delete
+
+Delete by UUID or by runtime type and name. Awaiting Deleter returns the UUID
+that was removed. Catalog removal is committed before the independent asset
+directory is cleaned. Existing in-memory Asset snapshots cannot recreate a
+deleted catalog entry during destruction.
+
+@code
+auto deleted_uuid = co_await fyuu_asset::Deleter{uuid};
+@endcode
+
+If directory cleanup fails after the catalog commit, the awaitable reports the
+filesystem exception while the identity remains deleted.
+
+@section lifetime Lifetime and persistence
+
+fyuu_asset::Asset is copyable and movable. Mutable GetField() access can edit
+fields. Destruction submits the final snapshot asynchronously; moving transfers
+that persistence responsibility. Copies are independent snapshots, not
+concurrent edit transactions, so the last executed save becomes persistent.
+
+A successful Factory creation persists both fields and catalog identity.
+Importer only parses source data and never changes the catalog.
+Destruction-time persistence is noexcept and cannot report a background failure
+to the destroying caller.
+
+@section storage Storage layout
+
+Each asset name owns one workspace-wide directory. Type is catalog metadata and
+does not introduce another directory level.
+
+@code
+asset_root/
+  catalog.json
+  miku/
+    asset.json
+    mesh/
+    texture/
+    anime/
+    skeleton/
+@endcode
+
+catalog.json stores only `uuid`, `type`, and `name`. asset.json stores dynamic
+fields with internal type tags. Those tags are persistence details rather than
+a public interchange schema. Catalog changes use native durable replacement on
+Windows and POSIX platforms.
+
+@section ownership Runtime ownership
+
+FyuuAsset owns CPU-side import, dynamic representation, and persistence. It does
+not create RHI resources. Runtime loads UUID references according to demand and
+owns loaded-asset and GPU-resource caches.
+*/

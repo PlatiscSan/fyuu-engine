@@ -1,330 +1,268 @@
-# FyuuAsset 使用指南 / FyuuAsset User Guide
+# FyuuAsset
 
-FyuuAsset 是一个基于 C++ Modules 的资产系统，提供 UUID 标识、侵入式强弱引用、内存注册表、自动异步保存和按 UUID 加载。
+[简体中文](README.zh-CN.md)
 
-FyuuAsset is a C++ Modules asset system providing UUID identity, intrusive strong/weak ownership, an in-memory registry, automatic asynchronous persistence, and UUID-based loading.
+FyuuAsset is FyuuEngine's dynamic asset import and persistence library. It uses
+a process-wide catalog to resolve assets by UUID or by runtime type and name,
+stores type-specific data in recursive dynamic values, and performs storage
+operations on a shared worker.
 
-- [中文](#中文)
-- [English](#english)
+Asset types are open strings rather than a fixed enumeration. Applications may
+use names such as `model`, `scene`, or `miku_model`; the application and Runtime
+decide what each type means.
 
----
+## Requirements and integration
 
-## 中文
-
-### 初始化
-
-链接 `FyuuAsset` 并导入主模块：
+FyuuAsset requires C++23 and named-module support:
 
 ```cmake
-target_link_libraries(MyTarget PRIVATE FyuuAsset)
+target_link_libraries(MyApplication PRIVATE FyuuAsset)
+set_target_properties(MyApplication PROPERTIES CXX_EXTENSIONS OFF)
 ```
 
 ```cpp
 import fyuu_asset;
 ```
 
-创建或加载资产前设置根目录。默认目录为 `./asset`。
+## API reference
+
+Install Doxygen, configure the project with
+`-DFYUU_ASSET_BUILD_DOCUMENTATION=ON`, and build `FyuuAssetDocumentation` for
+English or `FyuuAssetDocumentationZhCN` for Simplified Chinese. Generated HTML
+is placed under the FyuuAsset documentation build directory in `en/html` and
+`zh-CN/html` respectively.
+
+Initialize the process-wide context before any asset operation:
 
 ```cpp
-fyuu_asset::SetRoot("assets");
+fyuu_asset::InitializeAssetContext("assets", &log_sink);
 ```
 
-资产目录结构：
+Only the first call establishes the normalized absolute root and borrowed log
+sink. The sink may be called synchronously from worker threads and must remain
+alive for all asset-system use. Omit it when diagnostics are not required.
 
-```text
-asset_root/类型名/uuid.json
-asset_root/类型名/uuid.bin   # 含二进制数据的资产
-```
+## Dynamic values
 
-支持 C++26 静态反射时直接使用反射类型名；fallback 使用 Boost.TypeIndex，并删除命名空间、MSVC 模块后缀以及非字母、数字、下划线字符。
-
-### 创建和访问资产
-
-`Asset<T>::Create` 会将参数直接转发给 `T`：
+`Value` owns null, `bool`, signed or unsigned 64-bit integer, `double`,
+`std::string`, `Binary`, `File`, `Array`, `Object`, or `UUID`. Use `Is<T>()` to
+inspect the active alternative and `As<T>()` to access it.
 
 ```cpp
-auto shader = fyuu_asset::Asset<fyuu_asset::Shader>::Create(
-    std::string{ "triangle" },
-    std::string{ "[shader(\"vertex\")] void vertexMain() {}" }
-);
-
-auto id = shader->GetID();
-shader->Get().source += "\n";
-```
-
-`ManagedAsset` 是 `boost::intrusive_ptr`。资产对象、引用计数、UUID 和数据位于同一次分配中。
-
-```cpp
-using ShaderAsset = fyuu_asset::Asset<fyuu_asset::Shader>;
-
-auto loaded = ShaderAsset::Find(id);
-ShaderAsset::Weak weak{ loaded };
-
-loaded.reset();
-auto restored = weak.Lock();
-```
-
-`Find` 只查询当前已加载资产，不访问磁盘。
-
-`asset->Save()` 返回 `plastic::concurrency::SerialTask<void>`，用于观察异步保存是否完成及其异常，同时不会卸载资产。调用 `Wait()` 会等待该保存任务的完成通知，并在保存失败时抛出异常。异步任务需要独立数据快照，因此 `Save()` 要求资产数据类型可复制。任务完成前必须保留返回的协程句柄。
-
-### 生命周期与自动保存
-
-最后一个强引用释放时：
-
-1. 从已加载注册表移除资产。
-2. 将资产数据移动到序列化线程。
-3. 转移序列化所有权后销毁原数据。
-4. 已存在的弱引用可以继续存在，但不能复活数据。
-
-系统有意不提供 `Unload`。释放所有权就是卸载。序列化在库内单线程异步执行；错误只写入日志，不会返回到释放引用的线程。
-
-如果其他进程需要立即读取刚保存的文件，不要在释放资产后立刻结束进程。
-
-### 加载资产
-
-```cpp
-fyuu_asset::execution::AssetLoader loader;
-auto shader = loader.Load<fyuu_asset::Shader>(id);
-```
-
-`Load<T>` 首先调用 `Asset<T>::Find`。未找到时从资产根目录读取并注册实例。文件不存在或内容非法时会抛出异常。
-
-`AssetScheduler` 是 execution 集成使用的单线程调度原语；普通同步 `Load` 不需要它。
-
-### 定义普通 JSON 资产
-
-公开字段会被保存为 JSON。优先使用 C++26 静态反射；不支持静态反射时使用 Boost.Describe：
-
-```cpp
-struct Settings {
-    int width = 1280;
-    std::string title;
+auto fields = fyuu_asset::Object{
+    {"enabled", fyuu_asset::Value{true}},
+    {"count", fyuu_asset::Value{std::uint64_t{4u}}}
 };
 
-#if !defined(__cpp_lib_reflection)
-BOOST_DESCRIBE_STRUCT(
-    Settings,
-    (),
-    (width, title)
-)
-#endif
+auto const enabled = fields.at("enabled").As<bool>();
 ```
 
-fallback 加载逻辑会默认构造对象，然后给公开描述字段赋值。不适合这种方式的类型可以提供自定义持久化函数。
+`Binary` is embedded in JSON. `File` carries a logical filename and is persisted
+under a category directory such as `mesh`, `texture`, `anime`, `skeleton`,
+`audio`, or `shader`. UUID values are non-owning asset references.
 
-### 自定义持久化
+## Importing assets
 
-类型提供以下签名时，优先于反射逻辑：
+`Importer` is an awaitable parser that produces a neutral `Object`.
+`Factory` persists the application-defined final fields. Both operations
+run on the shared asset worker:
 
 ```cpp
-void Serialize(std::filesystem::path const& json_path) const;
-static T Deserialize(std::filesystem::path const& json_path);
+fyuu_asset::Importer::Register("miku_model", ImportMikuModel);
+auto fields = co_await fyuu_asset::Importer{"miku_model", "sources/character.zip"};
+/** Transform fields into the schema owned by the application. */
+auto asset = co_await fyuu_asset::Factory{"miku_model", "miku", fields};
+auto uuid = asset.GetUUID();
 ```
 
-传入路径是最终的 `类型名/uuid.json`。类型可以通过 `replace_extension` 生成附属文件，Bitmap、Audio 和 Mesh 都使用这种方式。建议先原子发布二进制文件，最后发布 JSON 元数据。
+`ImportMikuModel` is a plain function pointer returning `Object`; it runs on the
+asset worker and may throw. Registration is keyed by the open runtime type
+string. `RegisterBuiltIn(type)` explicitly assigns FyuuAsset's current
+format-detecting parser when an application wants that parser. An unregistered
+type is rejected instead of silently receiving a fixed field schema.
 
-### 内置资产
+Awaiting suspends the caller until parsing finishes on the asset worker;
+`await_resume()` returns the parsed Object or rethrows the parser exception.
+The Importer object is the operation state and remains alive in the awaiting
+coroutine frame until the await expression completes.
 
-| 类型 | 内容 | 存储方式 |
-|---|---|---|
-| `Bitmap` | 尺寸、像素格式、解码后的紧密排列像素 | JSON + `.bin` |
-| `Audio` | 采样率、声道、PCM 格式、交错采样数据 | JSON + `.bin` |
-| `Shader` | Slang 模块名和源码 | JSON |
-| `Pipeline` | 图形/计算类型、Shader UUID 和入口点 | JSON |
-| `Mesh` | 顶点步长、顶点字节、索引格式、索引字节 | JSON + `.bin` |
-| `Material` | Pipeline UUID、数值参数、Bitmap UUID 绑定 | JSON |
-| `Scene` | 实体层级、Transform、Mesh/Material UUID 引用 | JSON |
+Imports accept a regular file, directory, or ZIP package. A package may declare
+one or several entry points in `asset.json`:
 
-二进制数据统一使用 `std::vector<std::byte>`。数据含义由格式和元数据决定，不会转换成 JSON 数字数组。
+```json
+{"entry":"model/character.fbx"}
+```
 
-### Bitmap 示例
+```json
+{"entries":["body.fbx","accessory.obj"]}
+```
+
+Without a manifest, FyuuAsset discovers supported model entries or one
+unambiguous JSON entry. Multiple model entries become one asset's `models`
+array. Virtual paths are UTF-8, including paths inside ZIP packages.
+
+JSON becomes dynamic fields. Supported model formats are parsed through Assimp,
+with an internal PMD fallback. Model textures are decoded, mipmapped, and
+converted to GPU-consumable BC data. Unknown formats are retained losslessly in
+the parser result's `binary` field. FyuuAsset never injects parser fields into an
+Asset: the application explicitly selects the complete Object passed to
+`Factory`.
+
+## Built-in importer fields
+
+The dynamic value system is open. The following fields describe only the
+neutral output protocols of the built-in parsers; they are not Asset schemas.
+
+| Source | Top-level fields |
+| --- | --- |
+| JSON object | The JSON object's own fields; no fields are added |
+| Unknown or standalone binary/image | `binary: Binary` |
+| One model | `geometry`, `meshes`, `materials`, `textures`, `animation_count` |
+| Several model entries | `models: Array<Object>`; every element also has `name` equal to `model_N` |
+
+The model fields are:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `geometry` | `File` | One `geometry.mesh` byte buffer shared by every mesh |
+| `meshes` | `Array<Object>` | Mesh descriptions whose stream ranges address `geometry` |
+| `materials` | `Array<Object>` | Material values referenced by mesh material indexes |
+| `textures` | `Array<Object>` | Decoded, mipmapped, BC-compressed textures |
+| `animation_count` | `std::uint64_t` | Number reported by the source model |
+
+An Assimp mesh contains `name`, `material`, `vertex_count`, `index_count`,
+`positions`, and `indices`. `normals`, `texcoords`, `tangents`, and `bitangents`
+are present only when the source provides them. `material` indexes the same
+model object's `materials` array. Every stream is an object containing byte
+`offset` and byte `size` within `geometry`: positions, normals, tangents, and
+bitangents are packed `float3`; texture coordinates are packed `float2`; indices
+are packed `std::uint32_t`.
+
+The internal PMD fallback additionally emits `bone_indices` as two packed
+`std::uint32_t` values per vertex and `bone_weights` as packed `float2`. Its
+mesh objects do not currently contain `name`.
+
+An Assimp material contains `name` and `textures`. Each texture binding contains
+`semantic`, the numeric Assimp texture semantic, and `texture`, an index into
+the same model object's `textures` array. A PMD fallback material instead also
+contains `diffuse`, `alpha`, `specularity`, `specular`, and `ambient`.
+
+Each texture object contains `name`, base `width`, base `height`, `format`,
+`mip_levels`, and `pixels`. Every mip-level object contains `width`, `height`,
+byte `offset`, and byte `size` within the `pixels` file. Current format strings
+are `bc1_rgba_unorm`, `bc1_rgba_unorm_srgb`, `bc3_rgba_unorm`,
+`bc3_rgba_unorm_srgb`, and `bc5_rg_unorm`.
+
+`animation_count` is currently metadata only: animation channels, nodes, and
+skeletons are not retained by the Assimp path. Likewise, a standalone PNG or
+JPEG is currently stored in `binary`; BC conversion is applied to textures
+referenced by an imported model. Runtime must not infer fields that are not
+listed above.
+
+## Loading assets
+
+Assets can be loaded by UUID or by runtime type and name:
 
 ```cpp
-auto bitmap = fyuu_asset::Asset<fyuu_asset::Bitmap>::Create(
-    1u,
-    1u,
-    fyuu_asset::BitmapFormat::R8G8B8A8,
-    std::vector<std::byte>{
-        std::byte{ 255 }, std::byte{ 0 }, std::byte{ 0 }, std::byte{ 255 }
-    }
-);
+auto by_uuid = co_await fyuu_asset::Factory{uuid};
+auto by_name = co_await fyuu_asset::Factory{"miku_model", "miku"};
+auto& meshes = by_name.GetField("meshes").As<fyuu_asset::Array>();
 ```
 
-### Material 示例
+`GetField()` preserves the Asset's constness and value category. A missing field
+throws `std::out_of_range`; an incorrect `As<T>()` throws
+`std::bad_variant_access`.
+
+## Deleting assets
+
+Deletion is asynchronous and returns the removed UUID:
 
 ```cpp
-fyuu_asset::Material material{
-    .pipeline = pipeline_id,
-    .parameters = {
-        { "base_color", { 1.0f, 1.0f, 1.0f, 1.0f } }
-    },
-    .bitmaps = {
-        { "albedo", bitmap_id }
-    }
-};
+auto deleted_uuid = co_await fyuu_asset::Deleter{uuid};
 ```
 
-资产间引用保存 UUID，而不是强指针。加载 Material 或 Pipeline 时不会自动加载其依赖资产。
-
----
-
-## English
-
-FyuuAsset is a small C++ module-based asset library. It provides UUID identity, intrusive strong/weak ownership, an in-memory registry, automatic asynchronous persistence when the last strong reference is released, and synchronous loading by UUID.
-
-## Setup
-
-Link `FyuuAsset` and import the primary module:
-
-```cmake
-target_link_libraries(MyTarget PRIVATE FyuuAsset)
-```
+The type-and-name overload is also available:
 
 ```cpp
-import fyuu_asset;
+auto deleted_uuid = co_await fyuu_asset::Deleter{"miku_model", "miku"};
 ```
 
-Set the asset root before creating or loading assets. The default is `./asset`.
-
-```cpp
-fyuu_asset::SetRoot("assets");
-```
-
-Files use this layout:
-
-```text
-asset_root/TypeName/uuid.json
-asset_root/TypeName/uuid.bin   # assets with binary payloads
-```
-
-Type names come from C++26 reflection when available. The fallback uses Boost.TypeIndex and removes namespace, module suffix, and characters that are not letters, digits, or underscores.
-
-## Create and access an asset
-
-`Asset<T>::Create` forwards its arguments directly to `T`.
-
-```cpp
-auto shader = fyuu_asset::Asset<fyuu_asset::Shader>::Create(
-    std::string{ "triangle" },
-    std::string{ "[shader(\"vertex\")] void vertexMain() {}" }
-);
-
-auto id = shader->GetID();
-shader->Get().source += "\n";
-```
-
-`ManagedAsset` is a `boost::intrusive_ptr`. The asset object, reference counters, UUID, and payload share one allocation.
-
-```cpp
-using ShaderAsset = fyuu_asset::Asset<fyuu_asset::Shader>;
-
-auto loaded = ShaderAsset::Find(id);
-ShaderAsset::Weak weak{ loaded };
-
-loaded.reset();
-auto restored = weak.Lock();
-```
-
-`Find` only searches currently loaded assets. It does not access storage.
-
-`asset->Save()` returns `plastic::concurrency::SerialTask<void>` for observing asynchronous completion and errors without unloading the asset. `Wait()` waits for that save task's completion notification and throws if saving failed. The asynchronous task needs an independent snapshot, so `Save()` requires a copy-constructible data type. Keep the returned coroutine handle alive until completion.
+Deletion commits the catalog removal before cleaning the independent asset
+directory. Existing in-memory Asset values remain snapshots, but their
+destructors cannot recreate the deleted entry. If directory cleanup fails after
+the catalog commit, the task reports the filesystem error while the identity
+remains deleted.
 
 ## Lifetime and persistence
 
-When the final strong reference is released:
+`Asset` is a copyable and movable owning value. Mutable `GetField()` access may
+edit fields. Destruction submits the final snapshot to the shared worker;
+moving transfers that persistence responsibility.
 
-1. The asset is removed from the loaded registry.
-2. Its payload is moved to the serialization worker.
-3. The payload is destroyed after serialization ownership is transferred.
-4. Existing weak references remain valid but cannot resurrect the payload.
+Copies are independent snapshots. If several mutable copies are destroyed, the
+last executed save becomes the persisted state; copies are not concurrent edit
+transactions. Destruction-time persistence is asynchronous and `noexcept`.
+Successful Factory creation already persists fields and catalog identity. `Importer`
+only parses source data and never changes the catalog.
 
-There is intentionally no `Unload` function. Releasing ownership unloads the asset. Serialization runs asynchronously on the library worker; failures are logged and are not reported to the releasing thread.
+## Storage layout
 
-Do not terminate the process immediately after dropping an asset if the resulting file must be consumed by another process at once.
+Each asset name owns one workspace-wide directory. Runtime type remains catalog
+metadata and does not create another directory level:
 
-## Load an asset
-
-```cpp
-fyuu_asset::execution::AssetLoader loader;
-auto shader = loader.Load<fyuu_asset::Shader>(id);
+```text
+asset_root/
+  catalog.json
+  miku/
+    asset.json
+    mesh/
+      asset_0_geometry.mesh
+    texture/
+      asset_1_albedo.texture
+    anime/
+    skeleton/
 ```
 
-`Load<T>` first checks `Asset<T>::Find`. If absent, it reads the asset from the configured root and registers the loaded instance. Missing or malformed files throw.
+The catalog contains only identity metadata:
 
-`AssetScheduler` is the single-thread scheduling primitive used by the execution integration. It is not required for ordinary synchronous `Load` calls.
-
-## Define a JSON asset
-
-Public fields are serialized to JSON. C++26 reflection is preferred. On compilers without static reflection, describe the type with Boost.Describe:
-
-```cpp
-struct Settings {
-    int width = 1280;
-    std::string title;
-};
-
-#if !defined(__cpp_lib_reflection)
-BOOST_DESCRIBE_STRUCT(
-    Settings,
-    (),
-    (width, title)
-)
-#endif
-```
-
-The fallback loader default-constructs the object and assigns its public described fields. A type that cannot use this path may provide custom persistence.
-
-## Custom persistence
-
-Types with these signatures take precedence over reflection:
-
-```cpp
-void Serialize(std::filesystem::path const& json_path) const;
-static T Deserialize(std::filesystem::path const& json_path);
-```
-
-The path is the final `TypeName/uuid.json` path. A custom type may derive sidecar paths with `replace_extension`, as Bitmap, Audio, and Mesh do. Writers should publish temporary files atomically and publish JSON metadata after its binary payload.
-
-## Built-in assets
-
-| Type | Contents | Storage |
-|---|---|---|
-| `Bitmap` | Dimensions, pixel format, decoded tightly packed pixels | JSON + `.bin` |
-| `Audio` | Sample rate, channels, PCM format, interleaved samples | JSON + `.bin` |
-| `Shader` | Slang module name and source | JSON |
-| `Pipeline` | Graphics/compute type and Shader UUID entry points | JSON |
-| `Mesh` | Vertex stride, vertex bytes, index format, index bytes | JSON + `.bin` |
-| `Material` | Pipeline UUID, numeric parameters, Bitmap UUID bindings | JSON |
-| `Scene` | Entity hierarchy, transforms, and Mesh/Material UUID references | JSON |
-
-Binary payloads use `std::vector<std::byte>`. Their interpretation is determined by the corresponding format and metadata; bytes are never converted to JSON numbers.
-
-## Example: Bitmap
-
-```cpp
-auto bitmap = fyuu_asset::Asset<fyuu_asset::Bitmap>::Create(
-    1u,
-    1u,
-    fyuu_asset::BitmapFormat::R8G8B8A8,
-    std::vector<std::byte>{
-        std::byte{ 255 }, std::byte{ 0 }, std::byte{ 0 }, std::byte{ 255 }
+```json
+{
+  "assets": [
+    {
+      "uuid": "522d3fbb-c34c-4100-9425-8e447fbdc86f",
+      "type": "miku_model",
+      "name": "miku"
     }
-);
+  ]
+}
 ```
 
-## Example: Material
+`asset.json` contains dynamic fields and internal type tags required for
+lossless reconstruction. Those tags are persistence details, not a public
+interchange schema. Catalog changes are committed immediately through native
+replacement and durability operations on Windows and POSIX platforms.
 
-```cpp
-fyuu_asset::Material material{
-    .pipeline = pipeline_id,
-    .parameters = {
-        { "base_color", { 1.0f, 1.0f, 1.0f, 1.0f } }
-    },
-    .bitmaps = {
-        { "albedo", bitmap_id }
-    }
-};
+## Identity and runtime ownership
+
+`UUID` is an owned 16-byte value, and `GetUUID()` returns it by value.
+`ParseUUID()` and `FormatUUID()` convert text. The all-zero UUID is nil and is
+never persisted in the catalog.
+
+UUID fields express identity without strong ownership. Runtime loads referenced
+assets according to scene demand and owns loaded/GPU resource caches. FyuuAsset
+performs CPU-side import, dynamic representation, and persistence; it does not
+create RHI resources.
+
+## Validation
+
+With `BUILD_TESTING` enabled, `FyuuAsset.Import` covers JSON and binary fallback,
+model and texture import, directory packages, UTF-8 paths, multiple model
+entries, catalog loading, destruction persistence, and deletion:
+
+```text
+ctest --test-dir <build-directory> -R ^FyuuAsset.Import$ --output-on-failure
 ```
 
-Asset references are UUIDs rather than strong pointers. Loading a Material or Pipeline does not automatically load its dependencies.
+Completion observers may run on the internal worker and must synchronize shared
+state. The asset context is process-wide and its root cannot be changed after
+the first initialization.

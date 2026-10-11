@@ -1,19 +1,8 @@
-project(FyuuAssetTests LANGUAGES CXX)
+project(FyuuAssetImportTests LANGUAGES CXX)
 
-find_package(Boost REQUIRED)
-find_package(nlohmann_json CONFIG REQUIRED)
-
-add_executable(${PROJECT_NAME} main.cpp)
-
-target_include_directories(${PROJECT_NAME} PRIVATE ${Boost_INCLUDE_DIRS})
-
-target_link_libraries(
-	${PROJECT_NAME}
-	PRIVATE
-		FyuuAsset
-		nlohmann_json::nlohmann_json
-)
-
+add_executable(${PROJECT_NAME} import.cpp)
+target_link_libraries(${PROJECT_NAME} PRIVATE FyuuAsset Boost::uuid)
 disable_rtti(${PROJECT_NAME})
 
-add_test(NAME ${PROJECT_NAME} COMMAND ${PROJECT_NAME})
+add_test(NAME FyuuAsset.Import COMMAND ${PROJECT_NAME})
+set_tests_properties(FyuuAsset.Import PROPERTIES TIMEOUT 30)

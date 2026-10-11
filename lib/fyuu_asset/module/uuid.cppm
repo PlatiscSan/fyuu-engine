@@ -2,17 +2,13 @@ module;
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <cstddef>
-#include <cstdint>
-#include <cstring>
-#include <functional>
+
 #include <string>
+
+#include <array>
+
 #include <string_view>
-#include <compare>
 #endif // !defined(__cpp_lib_modules)
-#include <boost/uuid.hpp>
-#include <boost/uuid/string_generator.hpp>
-#include <boost/uuid/uuid_generators.hpp>
-#include <boost/uuid/uuid_io.hpp>
 
 export module fyuu_asset:uuid;
 #if defined(__cpp_lib_modules)
@@ -21,69 +17,41 @@ import std;
 
 export namespace fyuu_asset {
 
-	class UUID {
-	private:
-		boost::uuids::uuid m_impl{};
-		friend struct std::hash<UUID>;
+	/**
+	 * @brief Stable asset uuid stored as 16 network-order bytes.
+	 *
+	 * An all-zero value is the nil uuid and is never persisted by the asset
+	 * catalog. The representation owns no memory, so copying an uuid never
+	 * allocates and comparison is one 16-byte value comparison.
+	 */
+	using UUID = std::array<std::byte, 16u>;
 
-	public:
-		UUID() noexcept = default;
+	/**
+	 * @brief Parses the text form of one asset uuid.
+	 *
+	 * Accepts the hyphenated form in either letter case, the hyphen-free form and
+	 * the braced form written by catalog files.
+	 *
+	 * @param text Text form of one asset uuid.
+	 * @return Parsed uuid bytes.
+	 * @throws std::invalid_argument if @p text is not a well-formed UUID.
+	 */
+	[[nodiscard]] UUID ParseUUID(std::string_view text);
 
-		[[nodiscard]] static UUID Generate() {
-			UUID result;
-			result.m_impl = boost::uuids::random_generator{}();
-			return result;
-		}
+	/**
+	 * @brief Formats one asset uuid as lowercase hyphenated text.
+	 * @param uuid Asset uuid bytes.
+	 * @return Canonical 36-character text form.
+	 */
+	[[nodiscard]] std::string FormatUUID(UUID const& uuid);
 
-		[[nodiscard]] static UUID Parse(std::string_view value) {
-			UUID result;
-			result.m_impl = boost::uuids::string_generator{}(value.begin(), value.end());
-			return result;
-		}
-
-		[[nodiscard]] static UUID FromBytes(std::uint8_t const (&source)[16]) noexcept {
-			UUID result;
-			std::memcpy(result.m_impl.data, source, 16u);
-			return result;
-		}
-
-		[[nodiscard]] static UUID FromBytes(std::byte const (&source)[16]) noexcept {
-			UUID result;
-			std::memcpy(result.m_impl.data, source, 16u);
-			return result;
-		}
-
-		[[nodiscard]] bool IsNil() const noexcept {
-			return m_impl.is_nil();
-		}
-
-		[[nodiscard]] std::string ToString() const {
-			return boost::uuids::to_string(m_impl);
-		}
-
-		void ToBytes(std::uint8_t (&output)[16]) const noexcept {
-			std::memcpy(output, m_impl.data, 16u);
-		}
-
-		void ToBytes(std::byte (&output)[16]) const noexcept {
-			std::memcpy(output, m_impl.data, 16u);
-		}
-
-		[[nodiscard]] std::strong_ordering operator<=>(UUID const& other) const noexcept {
-			return std::memcmp(m_impl.data, other.m_impl.data, 16u) <=> 0;
-		}
-	};
-
-}
-
-export template <> struct std::hash<fyuu_asset::UUID> {
-	[[nodiscard]] std::size_t operator()(fyuu_asset::UUID const& value) const noexcept {
-		return boost::uuids::hash_value(value.m_impl);
+	/**
+	 * @brief Returns the nil uuid with all bytes set to zero.
+	 * @return Nil uuid.
+	 */
+	[[nodiscard]]
+	constexpr UUID NilUUID() noexcept {
+		return UUID{};
 	}
-};
 
-export template <> struct std::equal_to<fyuu_asset::UUID> {
-	[[nodiscard]] bool operator()(fyuu_asset::UUID const& left, fyuu_asset::UUID const& right) const noexcept {
-		return std::is_eq(left <=> right);
-	}
-};
+} // namespace fyuu_asset

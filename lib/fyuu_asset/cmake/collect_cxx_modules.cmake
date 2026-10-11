@@ -1,18 +1,32 @@
-function(collect_cxx_modules base_dir group_name out_public_var out_internal_var)
-	file(GLOB_RECURSE public_modules CONFIGURE_DEPENDS
+function(collect_cxx_modules
+	base_dir
+	group_name
+	out_interface_var
+	out_internal_var
+	out_implementation_var
+)
+	file(GLOB_RECURSE interface_modules CONFIGURE_DEPENDS
 		"${base_dir}/*.ixx"
 		"${base_dir}/*.cppm"
 		"${base_dir}/*.mpp"
 		"${base_dir}/*.cxxm"
 		"${base_dir}/*.mxx"
 	)
-	# Internal module partitions use .cpp by project convention. Keeping this
-	# collection under module/internal prevents ordinary translation units from
-	# being mistaken for CXX_MODULES file-set members.
 	file(GLOB_RECURSE internal_modules CONFIGURE_DEPENDS
+		"${base_dir}/internal/*.ixx"
+		"${base_dir}/internal/*.cppm"
+		"${base_dir}/internal/*.mpp"
+		"${base_dir}/internal/*.cxxm"
+		"${base_dir}/internal/*.mxx"
 		"${base_dir}/internal/*.cpp"
 	)
-	foreach(module_file IN LISTS public_modules internal_modules)
+	file(GLOB implementation_units CONFIGURE_DEPENDS
+		"${base_dir}/*.cpp"
+		"${base_dir}/impl/*.cpp"
+	)
+	list(REMOVE_ITEM interface_modules ${internal_modules})
+
+	foreach(module_file IN LISTS interface_modules internal_modules implementation_units)
 		file(RELATIVE_PATH relative_path "${base_dir}" "${module_file}")
 		get_filename_component(directory_path "${relative_path}" DIRECTORY)
 		if(group_name AND directory_path)
@@ -28,6 +42,8 @@ function(collect_cxx_modules base_dir group_name out_public_var out_internal_var
 			source_group("Module" FILES "${module_file}")
 		endif()
 	endforeach()
-	set(${out_public_var} ${public_modules} PARENT_SCOPE)
+
+	set(${out_interface_var} ${interface_modules} PARENT_SCOPE)
 	set(${out_internal_var} ${internal_modules} PARENT_SCOPE)
+	set(${out_implementation_var} ${implementation_units} PARENT_SCOPE)
 endfunction()

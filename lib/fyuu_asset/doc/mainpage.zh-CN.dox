@@ -1,0 +1,140 @@
+/**
+@mainpage FyuuAsset API 使用指南
+
+@tableofcontents
+
+FyuuAsset 负责动态类型资产的导入与持久化。资产类型是开放的 UTF-8 字符串，不是固定
+枚举。每个资产拥有一个稳定的 fyuu_asset::UUID、一个运行时类型名、一个工作区级名称，
+以及保存类型专有字段的 fyuu_asset::Object。
+
+@section context 上下文与诊断
+
+导入、加载或删除资产前，调用 fyuu_asset::InitializeAssetContext。第一次调用确定进程级
+规范化资产根目录。可选的 fyuu_asset::log::Sink 由应用持有，可能从工作线程同步调用，
+必须活到最后一次资产系统操作结束。
+
+@code
+fyuu_asset::InitializeAssetContext("assets", &sink);
+@endcode
+
+@section values 动态值
+
+fyuu_asset::Value 可以拥有 null、布尔、有符号或无符号 64 位整数、浮点数、字符串、
+fyuu_asset::Binary、fyuu_asset::File、fyuu_asset::Array、fyuu_asset::Object 或
+fyuu_asset::UUID。Is<T>() 检查活动类型，As<T>() 访问值；类型不匹配时抛出
+std::bad_variant_access。
+
+Binary 直接编码进资产 JSON。File 根据逻辑文件名保存到 JSON 旁边的分类目录。UUID
+只表达资产身份，不会保持目标资产已加载。
+
+@section import 导入
+
+fyuu_asset::Importer 是处理普通文件、目录或 ZIP 包的可等待解析器，等待结果是中立的
+fyuu_asset::Object。fyuu_asset::Factory 持久化由应用层确定的完整字段对象。
+两者都在共享资产工作线程执行。
+
+@code
+fyuu_asset::Importer::Register("miku_model", ImportMikuModel);
+auto fields = co_await fyuu_asset::Importer{"miku_model", "sources/character.zip"};
+auto asset = co_await fyuu_asset::Factory{"miku_model", "miku", fields};
+auto uuid = asset.GetUUID();
+@endcode
+
+注册表把开放的运行时类型字符串映射到普通 ImportFunction。RegisterBuiltIn 用于显式
+选择 FyuuAsset 的格式探测解析器；未注册类型会被拒绝，不会隐式获得固定字段架构。
+
+包可以在 `asset.json` 中用 `entry` 声明一个入口，或用 `entries` 声明多个入口。没有
+清单时，导入器会发现受支持的模型入口或唯一且无歧义的 JSON 入口。包内虚拟路径统一
+使用 UTF-8。
+
+JSON 会转换成动态字段。受支持的模型由 Assimp 解析，PMD 提供内部回退解析器。模型
+纹理会解码、生成 mip 链并转换为供 Runtime 上传的 BC 数据。未知格式保存在 `binary`
+字段中。
+
+@section importer_fields 内置导入器的预设字段
+
+动态值系统是开放的。内置解析器只产生下列中立输出协议；它们不是 Asset 字段架构：
+
+- JSON 对象保留自身顶层字段；
+- 未识别格式、独立二进制或图片产生 `binary`；
+- 单模型产生 `geometry`、`meshes`、`materials`、`textures` 和
+  `animation_count`；
+- 多模型入口产生 `models`，每个模型对象另有值为 `model_N` 的稳定 `name`。
+
+`geometry` 是保存 `geometry.mesh` 的 File。Mesh 数据流字段使用字节 `offset` 和
+`size` 引用该文件。Assimp Mesh 包含 `name`、`material`、`vertex_count`、
+`index_count`、`positions` 和 `indices`，并按源数据选择性包含 `normals`、
+`texcoords`、`tangents` 和 `bitangents`。`material` 是模型 `materials` 数组的
+下标。向量流是紧密排列的 float3，UV 是 float2，索引是 std::uint32_t。
+
+PMD 回退路径还为每个顶点提供两个 std::uint32_t `bone_indices` 和 float2
+`bone_weights`。Assimp Material 包含 `name` 与 `textures`。每个绑定包含 Assimp
+数值 `semantic` 和指向模型 `textures` 数组的 `texture` 下标。PMD Material 还包含
+`diffuse`、`alpha`、`specularity`、`specular` 和 `ambient`。
+
+Texture 对象包含 `name`、`width`、`height`、`format`、`mip_levels` 和
+`pixels`。每个 mip 使用 `width`、`height`、字节 `offset` 和字节 `size` 引用
+pixels File。当前保存 BC1、BC3 和 BC5 格式，具体字符串见 README.zh-CN.md。
+
+`animation_count` 当前只是元数据；Assimp 动画通道、节点和骨骼数据尚未保存。独立图片
+当前产生 `binary`，只有模型引用纹理会进入 BC 转换路径。
+
+@section load 加载与字段访问
+
+Factory 可以按稳定 UUID，或按运行时类型名和名称加载。两种形式都是在资产工作线程
+执行的原生 Awaitable。
+
+@code
+auto asset = co_await fyuu_asset::Factory{"miku_model", "miku"};
+auto& meshes = asset.GetField("meshes").As<fyuu_asset::Array>();
+@endcode
+
+GetField() 保留 Asset 的 const 属性和值类别。字段不存在时抛出 std::out_of_range。
+
+@section deletion 删除
+
+可以按 UUID，或按运行时类型名和名称删除。等待 Deleter 会返回实际删除的 UUID。系统先提交
+catalog 删除，再清理独立资产目录。已经加载的 Asset 快照析构时不能重新创建已删除的
+catalog 条目。
+
+@code
+auto deleted_uuid = co_await fyuu_asset::Deleter{uuid};
+@endcode
+
+如果 catalog 已提交，而目录清理随后失败，Deleter 会报告文件系统异常，但资产身份仍保持
+删除状态。
+
+@section lifetime 生命周期与持久化
+
+fyuu_asset::Asset 可复制、可移动。非 const GetField() 可以修改字段。析构会异步提交
+最终快照，移动操作会转移持久化责任。副本是互相独立的快照，不是并发编辑事务；最后
+执行的保存成为磁盘状态。
+
+Factory 创建成功时已经保存字段与 catalog 身份。Importer 只解析源数据，不修改 catalog。
+析构保存是 noexcept，无法向正在析构对象的调用方报告后台失败。
+
+@section storage 磁盘布局
+
+每个资产名称在整个工作区中拥有一个独立目录。类型只作为 catalog 元数据，不增加目录
+层级。
+
+@code
+asset_root/
+  catalog.json
+  miku/
+    asset.json
+    mesh/
+    texture/
+    anime/
+    skeleton/
+@endcode
+
+catalog.json 只保存 `uuid`、`type` 和 `name`。asset.json 使用内部类型标签保存动态字段；
+这些标签是持久化细节，不是公开交换格式。Windows 和 POSIX 平台使用原生持久替换操作
+提交 catalog 变更。
+
+@section ownership Runtime所有权
+
+FyuuAsset 负责 CPU 侧导入、动态表示和持久化，不创建 RHI 资源。Runtime 根据需求加载
+UUID 引用，并管理已加载资产和 GPU 资源缓存。
+*/

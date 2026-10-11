@@ -1,0 +1,23 @@
+PROJECT_NAME           = FyuuAsset
+PROJECT_BRIEF          = "FyuuEngine dynamic asset import and persistence library"
+
+EXTRACT_ALL            = YES
+EXTRACT_PRIVATE        = NO
+EXTRACT_STATIC         = NO
+JAVADOC_AUTOBRIEF      = YES
+MARKDOWN_SUPPORT       = YES
+FULL_PATH_NAMES        = NO
+STRIP_FROM_PATH        = lib/fyuu_asset
+WARN_IF_UNDOCUMENTED   = NO
+
+GENERATE_HTML          = YES
+GENERATE_XML           = NO
+GENERATE_LATEX         = NO
+RECURSIVE              = NO
+FILE_PATTERNS          = *.cppm *.dox
+EXTENSION_MAPPING      = cppm=C++
+
+INPUT                  = lib/fyuu_asset/module/core.cppm \
+                         lib/fyuu_asset/module/uuid.cppm \
+                         lib/fyuu_asset/module/value.cppm \
+                         lib/fyuu_asset/module/asset.cppm

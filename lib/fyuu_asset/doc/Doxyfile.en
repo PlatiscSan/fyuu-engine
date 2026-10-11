@@ -1,0 +1,3 @@
+@INCLUDE               = lib/fyuu_asset/doc/Doxyfile
+OUTPUT_DIRECTORY       = build/asset-api/en
+INPUT                 += lib/fyuu_asset/doc/mainpage.dox
