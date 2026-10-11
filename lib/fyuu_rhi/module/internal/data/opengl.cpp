@@ -113,7 +113,8 @@ namespace fyuu_rhi::opengl {
 		std::deque<RetiredObject> objects;
 		{
 			std::unique_lock lock(RetiredObjectsMutex());
-			objects.swap(RetiredObjects());
+			objects = std::move(RetiredObjects());
+			RetiredObjects().clear();
 		}
 		for (auto const& object : objects) {
 			if (object.sync) {
@@ -277,6 +278,13 @@ namespace fyuu_rhi::opengl {
 	struct Submission;
 
 	struct CommandSchedulerContext {
+		/** @brief Context-local VAO keyed by its complete attribute and divisor layout. */
+		struct VertexArray {
+			std::vector<pipeline::VertexBufferLayout> buffers;
+			std::vector<pipeline::VertexAttribute> attributes;
+			GLuint impl = 0u;
+		};
+
 		struct PendingSync {
 			GLsync sync;
 			std::shared_ptr<CompletionState> state;
@@ -298,11 +306,14 @@ namespace fyuu_rhi::opengl {
 		std::atomic<std::condition_variable*> submission_condition = nullptr;
 		std::atomic<std::deque<Submission>*> submissions = nullptr;
 		std::deque<PendingSync> pending;
-		std::unordered_map<GLuint, GLuint> vertex_arrays;
+		/// @brief Layouts, not reusable GL program names, identify cached vertex arrays.
+		std::vector<VertexArray> vertex_arrays;
 		/// Read framebuffer reused by Present for its blit source, created on first use and
 		/// released with the rest of the scheduler objects.
 		GLuint present_read_framebuffer = 0u;
 		std::vector<PresentTarget> present_targets;
+		/// @brief Recent graph demand for idle presentation-target retention.
+		std::size_t present_target_demand = 0u;
 		std::exception_ptr fatal_error;
 		std::atomic_bool context_ready = false;
 		std::jthread thread;
@@ -612,16 +623,16 @@ namespace fyuu_rhi::opengl {
 		struct PipelineSnapshot {
 			GLuint impl;
 			bool compute;
-			std::vector<pipeline::VertexBufferLayout> vertex_buffers;
-			std::vector<pipeline::VertexAttribute> vertex_attributes;
+			std::span<pipeline::VertexBufferLayout const> vertex_buffers;
+			std::span<pipeline::VertexAttribute const> vertex_attributes;
 			pipeline::PrimitiveState primitive;
 			pipeline::RasterizationState rasterization;
 			std::optional<pipeline::DepthStencilState> depth_stencil;
 			std::optional<pipeline::BlendState> blend;
 			pipeline::ColorWriteMask write_mask;
-			std::vector<pipeline::BindingMetadata> bindings;
-			std::vector<BindingUnit> binding_units;
-			std::vector<Pipeline::ConstantRange> constant_ranges;
+			std::span<pipeline::BindingMetadata const> bindings;
+			std::span<BindingUnit const> binding_units;
+			std::span<Pipeline::ConstantRange const> constant_ranges;
 		};
 
 		struct GroupBindingSnapshot {
@@ -648,6 +659,15 @@ namespace fyuu_rhi::opengl {
 		std::vector<ViewSnapshot> views;
 		std::vector<SamplerSnapshot> samplers;
 		std::vector<PipelineSnapshot> pipelines;
+		/** @brief Contiguous owned snapshots keep asynchronous replay independent of callers.
+		 * Each array is reserved once before spans are published; moving Submission
+		 * transfers its allocations without invalidating those spans.
+		 */
+		std::vector<pipeline::VertexBufferLayout> vertex_buffers;
+		std::vector<pipeline::VertexAttribute> vertex_attributes;
+		std::vector<pipeline::BindingMetadata> bindings;
+		std::vector<BindingUnit> binding_units;
+		std::vector<Pipeline::ConstantRange> constant_ranges;
 		std::vector<GroupSnapshot> groups;
 		std::vector<execution::PlatformHandle> presentation_targets;
 		std::shared_ptr<CompletionState> state;

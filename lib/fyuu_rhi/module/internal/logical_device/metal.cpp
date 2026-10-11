@@ -71,6 +71,7 @@ namespace {
 		case ResourceFlagBits::R32G32Uint: return MTL::VertexFormatUInt2;
 		case ResourceFlagBits::R32G32Sint: return MTL::VertexFormatInt2;
 		case ResourceFlagBits::R32G32Float: return MTL::VertexFormatFloat2;
+		case ResourceFlagBits::R32G32B32Float: return MTL::VertexFormatFloat3;
 		case ResourceFlagBits::R32G32B32A32Uint: return MTL::VertexFormatUInt4;
 		case ResourceFlagBits::R32G32B32A32Sint: return MTL::VertexFormatInt4;
 		case ResourceFlagBits::R32G32B32A32Float: return MTL::VertexFormatFloat4;

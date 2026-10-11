@@ -84,6 +84,12 @@ namespace {
 		std::uint64_t generation;
 	};
 
+	/** @brief Owns this thread's drawable and context independently of the sharing root. */
+	std::variant<std::monostate, ThreadContext>& CurrentThreadContext() {
+		thread_local std::variant<std::monostate, ThreadContext> storage;
+		return storage;
+	}
+
 	fyuu_rhi::opengl::Window CreateInstanceWindow() {
 		static constexpr TCHAR class_name[] = TEXT("FyuuRHI.OpenGL.Instance");
 		static std::once_flag registration;
@@ -177,7 +183,23 @@ namespace {
 			native_device_context,
 			DeviceContextDeleter{ window.get() }
 		);
-		ConfigurePixelFormat(native_device_context);
+		/// @brief A shared context uses the root's exact pixel format, not a new choice.
+		auto pixel_format = GetPixelFormat(instance->device_context);
+		PIXELFORMATDESCRIPTOR description{};
+		if (pixel_format == 0 ||
+			DescribePixelFormat(
+				instance->device_context,
+				pixel_format,
+				sizeof(description),
+				&description
+			) == 0 ||
+			!SetPixelFormat(native_device_context, pixel_format, &description)) {
+			throw std::system_error(
+				static_cast<int>(GetLastError()),
+				std::system_category(),
+				"Failed to configure the shared WGL pixel format"
+			);
+		}
 
 		auto native_context = wglCreateContextAttribsARB(
 			native_device_context,
@@ -185,7 +207,11 @@ namespace {
 			context_attributes
 		);
 		if (!native_context) {
-			throw std::runtime_error("Failed to create the shared WGL context");
+			throw std::system_error(
+				static_cast<int>(GetLastError()),
+				std::system_category(),
+				"Failed to create the shared WGL context"
+			);
 		}
 		ManagedRenderingContext context(
 			native_context,
@@ -258,13 +284,47 @@ namespace fyuu_rhi {
 			}
 			wglDeleteContext(bootstrap);
 			opengl::InitializeOpenGL();
-			return {
+			opengl::Instance result{
 				std::move(window),
 				device_context,
 				context,
 				GetCurrentThreadId(),
 				NextInstanceGeneration()
 			};
+			/// @brief Retire the raw root handles if owner-thread initialization fails.
+			bool initialized = false;
+			boost::scope::defer_guard cleanup_root(
+				[&]() noexcept {
+					if (!initialized) {
+						if (wglGetCurrentContext() == result.context) {
+							(void)wglMakeCurrent(nullptr, nullptr);
+						}
+						(void)wglDeleteContext(result.context);
+						(void)ReleaseDC(result.window.get(), result.device_context);
+					}
+				}
+			);
+			/// @brief The root is never kept current after initialization. Drivers may
+			/// reject sharing with a root current on another thread; the owner uses TLS too.
+			if (!wglMakeCurrent(nullptr, nullptr)) {
+				throw std::system_error(
+					static_cast<int>(GetLastError()),
+					std::system_category(),
+					"Failed to detach the WGL sharing root"
+				);
+			}
+			auto& storage = CurrentThreadContext();
+			storage.emplace<ThreadContext>(CreateThreadContext(&result));
+			auto& current = std::get<ThreadContext>(storage);
+			if (!wglMakeCurrent(current.device_context.get(), current.context.get())) {
+				throw std::system_error(
+					static_cast<int>(GetLastError()),
+					std::system_category(),
+					"Failed to bind the WGL owner thread context"
+				);
+			}
+			initialized = true;
+			return result;
 		}
 	};
 
@@ -273,7 +333,7 @@ namespace fyuu_rhi {
 		opengl::Instance const* instance;
 
 		void operator()() const {
-			thread_local std::variant<std::monostate, ThreadContext> storage;
+			auto& storage = CurrentThreadContext();
 			if (
 				std::holds_alternative<std::monostate>(storage) ||
 				std::get<ThreadContext>(storage).generation != instance->generation

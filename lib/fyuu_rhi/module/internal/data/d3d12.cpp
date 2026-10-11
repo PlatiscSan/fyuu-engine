@@ -91,6 +91,8 @@ namespace fyuu_rhi::d3d12 {
 			std::vector<ManagedDescriptorRange> descriptors;
 			std::uint64_t fence_value = 0u;
 			bool is_open = false;
+			/// @brief Recent graph demand used only to retain already-retired lists.
+			std::size_t retention_demand = 1u;
 
 			ManagedCommandList(
 				std::shared_ptr<QueueContext> const& owner,
@@ -110,10 +112,9 @@ namespace fyuu_rhi::d3d12 {
 				: owner(std::move(other.owner)),
 				impl(std::move(other.impl)),
 				descriptors(std::move(other.descriptors)),
-				fence_value(other.fence_value),
-				is_open(other.is_open) {
-				other.fence_value = 0u;
-				other.is_open = false;
+				fence_value(std::exchange(other.fence_value, 0u)),
+				is_open(std::exchange(other.is_open, false)),
+				retention_demand(std::exchange(other.retention_demand, 0u)) {
 			}
 			ManagedCommandList& operator=(ManagedCommandList&& other) noexcept;
 			~ManagedCommandList() noexcept;

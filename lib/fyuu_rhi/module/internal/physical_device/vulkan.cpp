@@ -366,7 +366,32 @@ namespace fyuu_rhi {
 				);
 			}
 
-			// Mesh shaders (never promoted to core).
+			/** @brief Mesh primitive shading rates require the fragment-shading-rate feature chain.
+			 * @note Before Vulkan 1.2, create_renderpass2 is an extension dependency;
+			 * Vulkan 1.1 supplies its multiview and maintenance2 prerequisites.
+			 */
+			if (device_version >= vk::ApiVersion11 &&
+				supported_extensions.contains(vk::KHRFragmentShadingRateExtensionName)) {
+				AddOptionalExtension(
+					device_version,
+					supported_extensions,
+					enabled_extensions,
+					vk::KHRCreateRenderpass2ExtensionName,
+					vk::ApiVersion12
+				);
+				if (device_version >= vk::ApiVersion12 ||
+					supported_extensions.contains(vk::KHRCreateRenderpass2ExtensionName)) {
+					AddOptionalExtension(
+						device_version,
+						supported_extensions,
+						enabled_extensions,
+						vk::KHRFragmentShadingRateExtensionName,
+						(std::numeric_limits<std::uint32_t>::max)()
+					);
+				}
+			}
+
+			/// @brief Mesh shaders are enabled through EXT_mesh_shader, not a core promotion.
 			AddOptionalExtension(
 			    device_version,
 			    supported_extensions,
@@ -418,14 +443,11 @@ namespace fyuu_rhi {
 			    (std::numeric_limits<std::uint32_t>::max)()
 			);
 
-			// Phase 3: probe and enable device features. A candidate feature struct is
-			// chained into PhysicalDeviceFeatures2 only when its extension (or the core
-			// version that promoted it) is available; getFeatures2 then fills the bools
-			// with what the device actually supports. enabled_features records what
-			// survived, so runtime code can branch on it later. Because that same chain
-			// is what createDevice receives, every feature the device supports inside a
-			// chained struct ends up enabled: the selection is which structs to chain,
-			// not which members to set.
+			/** @brief Phase 3 queries features from available extensions and promoted core structs.
+			 * @note The queried chain is reused for createDevice after resolving feature
+			 * dependencies. A supported member is disabled if its prerequisite is not
+			 * enabled; enabled_features records the selected capabilities for runtime use.
+			 */
 			auto IsDeviceExtensionEnabled = [&](std::string_view extension) {
 				return std::ranges::find_if(enabled_extensions, [extension](char const* name) {
 					       return std::string_view(name) == extension;
@@ -646,6 +668,13 @@ namespace fyuu_rhi {
 			    vk::StructureType::ePhysicalDeviceRayQueryFeaturesKHR,
 			    &ray_query.rayQuery
 			);
+			vk::PhysicalDeviceFragmentShadingRateFeaturesKHR fragment_shading_rate;
+			AddFeature(
+				fragment_shading_rate,
+				IsDeviceExtensionEnabled(vk::KHRFragmentShadingRateExtensionName),
+				vk::StructureType::ePhysicalDeviceFragmentShadingRateFeaturesKHR,
+				&fragment_shading_rate.primitiveFragmentShadingRate
+			);
 			vk::PhysicalDeviceMeshShaderFeaturesEXT mesh_shader{vk::True};
 			AddFeature(
 			    mesh_shader,
@@ -720,6 +749,14 @@ namespace fyuu_rhi {
 				feature_chain = &core_features;
 			}
 			physical_device->impl->getFeatures2(&core_features, *physical_device->dispatcher);
+
+			/** @brief Support queries are not an enablement policy for dependent features.
+			 * @note VUID 07033 requires primitiveFragmentShadingRate whenever its mesh
+			 * counterpart is enabled. An absent extension leaves the prerequisite false.
+			 */
+			if (!fragment_shading_rate.primitiveFragmentShadingRate) {
+				mesh_shader.primitiveFragmentShadingRateMeshShader = vk::False;
+			}
 
 			std::unordered_set<vk::StructureType> enabled_features;
 			// Every probed feature (core via the promoted structs, the rest via their

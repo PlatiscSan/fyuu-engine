@@ -207,6 +207,7 @@ namespace fyuu_rhi {
 				std::string_view label;
 			};
 			static constexpr FeatureRequest requests[] = {
+				{ wgpu::FeatureName::ImplicitDeviceSynchronization, "ImplicitDeviceSynchronization" },
 				{ wgpu::FeatureName::TextureCompressionBC, "TextureCompressionBC" },
 				{ wgpu::FeatureName::Unorm16TextureFormats, "Unorm16TextureFormats" },
 				{ wgpu::FeatureName::TextureFormatsTier1, "TextureFormatsTier1" },
@@ -221,10 +222,38 @@ namespace fyuu_rhi {
 				{ wgpu::FeatureName::Subgroups, "Subgroups" }
 			};
 			std::vector<wgpu::FeatureName> required_features;
+			/// @brief Test switch exercises the same external-lock path as unsupported adapters.
+			bool force_external_synchronization = false;
+			/// @brief Omits the native feature so tests cannot accidentally decode BC in hardware.
+			bool disable_bc = false;
+#if defined(_WIN32)
+			char external_sync_setting[2]{};
+			force_external_synchronization = GetEnvironmentVariableA(
+				"FYUU_RHI_WEBGPU_FORCE_EXTERNAL_SYNC",
+				external_sync_setting,
+				sizeof(external_sync_setting)
+			) == 1u && external_sync_setting[0] == '1';
+			char bc_setting[2]{};
+			disable_bc = GetEnvironmentVariableA(
+				"FYUU_RHI_WEBGPU_DISABLE_BC",
+				bc_setting,
+				sizeof(bc_setting)
+			) == 1u && bc_setting[0] == '1';
+#endif // defined(_WIN32)
 			required_features.reserve(std::size(requests));
 			for (auto const& request : requests) {
+				if (disable_bc && request.name == wgpu::FeatureName::TextureCompressionBC) {
+					continue;
+				}
+				if (force_external_synchronization &&
+					request.name == wgpu::FeatureName::ImplicitDeviceSynchronization) {
+					continue;
+				}
 				if (HasFeature(supported_features, request.name)) {
 					required_features.push_back(request.name);
+					if (request.name == wgpu::FeatureName::ImplicitDeviceSynchronization) {
+						errors->implicit_synchronization = true;
+					}
 					continue;
 				}
 				try {
@@ -240,6 +269,9 @@ namespace fyuu_rhi {
 				}
 			}
 			descriptor.requiredFeatureCount = required_features.size();
+			if (!errors->implicit_synchronization) {
+				log::Warning("[WebGPU] ImplicitDeviceSynchronization unavailable; using external device API synchronization");
+			}
 			descriptor.requiredFeatures = required_features.data();
 
 			// The WebGPU default limits are deliberately conservative for the

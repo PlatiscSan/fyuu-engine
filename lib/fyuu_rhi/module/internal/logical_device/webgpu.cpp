@@ -33,6 +33,7 @@ import :sampler_factory;
 import :slang;
 import :webgpu_data;
 import :webgpu_utility;
+import :webgpu_bc;
 
 namespace {
 
@@ -192,6 +193,7 @@ namespace {
 		case ResourceFlagBits::R32G32Uint: return wgpu::VertexFormat::Uint32x2;
 		case ResourceFlagBits::R32G32Sint: return wgpu::VertexFormat::Sint32x2;
 		case ResourceFlagBits::R32G32Float: return wgpu::VertexFormat::Float32x2;
+		case ResourceFlagBits::R32G32B32Float: return wgpu::VertexFormat::Float32x3;
 		case ResourceFlagBits::R32G32B32A32Uint: return wgpu::VertexFormat::Uint32x4;
 		case ResourceFlagBits::R32G32B32A32Sint: return wgpu::VertexFormat::Sint32x4;
 		case ResourceFlagBits::R32G32B32A32Float: return wgpu::VertexFormat::Float32x4;
@@ -264,6 +266,7 @@ namespace fyuu_rhi {
 		webgpu::LogicalDevice* logical_device;
 
 		Resource operator()(std::size_t size_in_bytes, ResourceFlags const& flags) const {
+			auto api_lock = logical_device->errors->LockApi();
 			auto usage = webgpu::BufferUsage(flags);
 			// Created unmapped, including the host-visible upload buffers a WriteBuffer targets.
 			// The scheduler's pre-map pass owns mapping those and releasing them before the
@@ -299,6 +302,7 @@ namespace fyuu_rhi {
 			std::size_t mip_levels,
 			ResourceFlags const& flags
 		) const {
+			auto api_lock = logical_device->errors->LockApi();
 			wgpu::TextureDescriptor descriptor{
 				nullptr,
 				{},
@@ -315,10 +319,103 @@ namespace fyuu_rhi {
 				0,
 				nullptr
 			};
+			auto compressed_format = descriptor.format;
+			bool compressed = webgpu::BCBlockBytes(compressed_format) != 0u;
+			if (compressed) {
+				wgpu::Limits limits;
+				if (!logical_device->impl.GetLimits(&limits)) {
+					throw std::runtime_error("Failed to query WebGPU BC texture limits");
+				}
+				std::uint32_t mip_limit = 0u;
+				for (auto extent = (std::max)(width, height); extent != 0u; extent >>= 1u) {
+					++mip_limit;
+				}
+				if (width == 0u || height == 0u || depth_or_array_layers == 0u ||
+					mip_levels == 0u || mip_levels > mip_limit ||
+					width > limits.maxTextureDimension2D || height > limits.maxTextureDimension2D ||
+					depth_or_array_layers > limits.maxTextureArrayLayers) {
+					throw std::invalid_argument("Invalid BC texture extent or mip count");
+				}
+				bool software = !logical_device->impl.HasFeature(wgpu::FeatureName::TextureCompressionBC);
+				auto kind = webgpu::SoftwareBCKind(compressed_format);
+				bool decoded = software || width % 4u != 0u || height % 4u != 0u;
+				std::uint32_t vendor_id = 0u;
+				if (decoded && kind <= 7u) {
+					/// @brief Query once for the decoder and sampling representation decisions made below.
+					wgpu::AdapterInfo adapter_info;
+					if (!logical_device->impl.GetAdapterInfo(&adapter_info)) {
+						throw std::runtime_error("Failed to query the WebGPU BC decoding profile");
+					}
+					vendor_id = adapter_info.vendorID;
+				}
+				if (software && kind == 0u) {
+					throw std::invalid_argument("This WebGPU software BC decoder is not implemented");
+				}
+				if (software && kind <= 7u) {
+					/// @brief Do not substitute another vendor's interpolation profile for an unknown decoder.
+					if (vendor_id != 0x10deu && vendor_id != 0x8086u && vendor_id != 0x1002u) {
+						throw std::invalid_argument("Exact software BC1-BC5 interpolation is not implemented for this adapter");
+					}
+				}
+				if (descriptor.dimension != wgpu::TextureDimension::e2D || descriptor.sampleCount != 1u ||
+					(descriptor.usage & (wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::StorageBinding |
+						wgpu::TextureUsage::TransientAttachment))) {
+					throw std::invalid_argument("BC textures require single-sampled 2D sampled storage");
+				}
+				/// @brief Odd extents and absent native BC support use decoded
+				/// storage; other aligned textures retain native compressed sampling.
+				if (decoded) {
+					descriptor.format = webgpu::BCDecodedFormat(compressed_format);
+					if (kind >= 4u && kind <= 7u) {
+						if (vendor_id == 0x8086u) {
+							/// @brief Match Intel BC4/BC5's channel count as well as normalized precision.
+							switch (compressed_format) {
+								case wgpu::TextureFormat::BC4RUnorm:
+									descriptor.format = wgpu::TextureFormat::R16Unorm;
+									break;
+								case wgpu::TextureFormat::BC4RSnorm:
+									descriptor.format = wgpu::TextureFormat::R16Snorm;
+									break;
+								case wgpu::TextureFormat::BC5RGUnorm:
+									descriptor.format = wgpu::TextureFormat::RG16Unorm;
+									break;
+								default:
+									descriptor.format = wgpu::TextureFormat::RG16Snorm;
+									break;
+							}
+						}
+						if (vendor_id == 0x1002u) {
+							/** @brief Preserve AMD's normalized14 float32 values, including rounding exceptions.
+							 * @note Neither half-float nor normalized16 can represent every decoded value.
+							 * Filtering must remain available without changing the user's sampler semantics.
+							 */
+							if (!logical_device->impl.HasFeature(wgpu::FeatureName::Float32Filterable)) {
+								throw std::invalid_argument("Exact AMD BC4/BC5 decoded sampling requires Float32Filterable");
+							}
+							descriptor.format = wgpu::TextureFormat::RGBA32Float;
+						}
+					}
+					if ((descriptor.format == wgpu::TextureFormat::RGBA16Unorm ||
+						descriptor.format == wgpu::TextureFormat::RGBA16Snorm ||
+						descriptor.format == wgpu::TextureFormat::R16Unorm ||
+						descriptor.format == wgpu::TextureFormat::R16Snorm ||
+						descriptor.format == wgpu::TextureFormat::RG16Unorm ||
+						descriptor.format == wgpu::TextureFormat::RG16Snorm) &&
+						!logical_device->impl.HasFeature(wgpu::FeatureName::TextureFormatsTier1)) {
+						throw std::invalid_argument("Exact BC4/BC5 decoded sampling requires TextureFormatsTier1");
+					}
+					descriptor.usage |= wgpu::TextureUsage::RenderAttachment;
+				}
+				descriptor.usage |= wgpu::TextureUsage::CopySrc | wgpu::TextureUsage::CopyDst;
+			}
+			auto texture = logical_device->impl.CreateTexture(&descriptor);
+			auto bc = compressed ? webgpu::CreateBCStorage(logical_device->impl, texture, compressed_format) :
+				webgpu::Resource::BCStorage{};
 			return MakeResource(
 				webgpu::Resource{
-					logical_device->impl.CreateTexture(&descriptor),
-					logical_device->errors
+					std::move(texture),
+					logical_device->errors,
+					std::move(bc)
 				},
 				ResourceTextureExtent{
 					.width = static_cast<std::uint32_t>(width),
@@ -336,6 +433,7 @@ namespace fyuu_rhi {
 		webgpu::LogicalDevice* logical_device;
 
 		Sampler operator()(SamplerDescriptor const& descriptor) const {
+			auto api_lock = logical_device->errors->LockApi();
 			wgpu::SamplerDescriptor native_descriptor = {
 				.addressModeU = webgpu::SamplerAddressMode(descriptor.address_mode_u),
 				.addressModeV = webgpu::SamplerAddressMode(descriptor.address_mode_v),
@@ -363,6 +461,7 @@ namespace fyuu_rhi {
 				descriptor.program,
 				"webgpu-wgsl"
 			);
+			auto api_lock = logical_device->errors->LockApi();
 			bool has_pipeline_constants = !program.GetInterface().push_constants.empty();
 			bool native_immediates =
 				has_pipeline_constants &&
@@ -590,6 +689,7 @@ namespace fyuu_rhi {
 			);
 			return MakePipeline(
 				webgpu::Pipeline{
+					logical_device->errors,
 					logical_device->impl,
 					std::move(bind_group_layouts),
 					pipeline::MakePipelineBindingMetadata(program.GetInterface()),
@@ -613,6 +713,7 @@ namespace fyuu_rhi {
 				descriptor.program,
 				"webgpu-wgsl"
 			);
+			auto api_lock = logical_device->errors->LockApi();
 			bool has_pipeline_constants = !program.GetInterface().push_constants.empty();
 			bool native_immediates =
 				has_pipeline_constants &&
@@ -672,6 +773,7 @@ namespace fyuu_rhi {
 			);
 			return MakePipeline(
 				webgpu::Pipeline{
+					logical_device->errors,
 					logical_device->impl,
 					std::move(bind_group_layouts),
 					pipeline::MakePipelineBindingMetadata(program.GetInterface()),

@@ -13,6 +13,8 @@ module;
 #include <stdexcept>
 #include <utility>
 
+#include <variant>
+
 #endif // !defined(__cpp_lib_modules)
 #if !defined(__APPLE__)
 #if defined(__clang__) && defined(_MSVC_STL_VERSION)

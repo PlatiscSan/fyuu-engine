@@ -27,11 +27,28 @@ import std;
 
 namespace {
 
-	class DescriptorHeap final : public DirectX::DescriptorHeap {
+	class DescriptorHeap final {
 	private:
+		/// @brief Retains the device only until the native heap is first needed.
+		mutable Microsoft::WRL::ComPtr<ID3D12Device> m_device;
+		D3D12_DESCRIPTOR_HEAP_TYPE m_type;
+		D3D12_DESCRIPTOR_HEAP_FLAGS m_flags;
+		mutable std::optional<DirectX::DescriptorHeap> m_impl;
+		mutable std::once_flag m_initialization;
 		std::vector<bool> m_allocated;
 		std::mutex m_mutex;
 		std::condition_variable m_condition;
+
+		/** @brief Creates native storage lazily without a separate wrapper allocation.
+		 * @note Failed initialization remains retryable through std::call_once.
+		 */
+		DirectX::DescriptorHeap const& Implementation() const {
+			std::call_once(m_initialization, [this]() {
+				m_impl.emplace(m_device.Get(), m_type, m_flags, m_allocated.size());
+				m_device.Reset();
+			});
+			return *m_impl;
+		}
 
 	public:
 		DescriptorHeap(
@@ -39,13 +56,26 @@ namespace {
 			D3D12_DESCRIPTOR_HEAP_TYPE type,
 			std::size_t descriptor_count,
 			bool shader_visible
-		) : DirectX::DescriptorHeap(
-				device.Get(),
-				type,
-				shader_visible ? D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE : D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
-				descriptor_count
-			),
+		) : m_device(device),
+			m_type(type),
+			m_flags(shader_visible ? D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE : D3D12_DESCRIPTOR_HEAP_FLAG_NONE),
 			m_allocated(descriptor_count, false) {
+		}
+
+		ID3D12DescriptorHeap* Heap() const {
+			return Implementation().Heap();
+		}
+
+		D3D12_CPU_DESCRIPTOR_HANDLE GetCpuHandle(std::size_t index) const {
+			return Implementation().GetCpuHandle(index);
+		}
+
+		D3D12_GPU_DESCRIPTOR_HANDLE GetGpuHandle(std::size_t index) const {
+			return Implementation().GetGpuHandle(index);
+		}
+
+		D3D12_DESCRIPTOR_HEAP_FLAGS Flags() const noexcept {
+			return m_flags;
 		}
 
 		std::size_t Acquire(std::size_t count) {
@@ -54,6 +84,7 @@ namespace {
 					"The D3D12 descriptor count is outside the heap capacity"
 				);
 			}
+			(void)Implementation();
 			std::unique_lock lock(m_mutex);
 			std::vector<bool>::iterator available;
 			m_condition.wait(
@@ -180,7 +211,7 @@ namespace fyuu_rhi::d3d12 {
 			: m_heap(heap) {
 		}
 
-		ID3D12DescriptorHeap* Native() const noexcept {
+		ID3D12DescriptorHeap* Native() const {
 			return m_heap ? m_heap->Heap() : nullptr;
 		}
 	};
@@ -302,7 +333,7 @@ namespace fyuu_rhi::d3d12 {
 			return ManagedDescriptorHeap(m_heap);
 		}
 
-		ID3D12DescriptorHeap* Native() const noexcept {
+		ID3D12DescriptorHeap* Native() const {
 			return m_heap->Heap();
 		}
 	};

@@ -51,6 +51,7 @@ module;
 #endif
 
 module fyuu_rhi:opengl_command_scheduler;
+import :memory_pressure;
 #if !defined(__APPLE__)
 #if defined(__cpp_lib_modules)
 import std;
@@ -89,6 +90,7 @@ namespace {
 		switch (format) {
 		case ResourceFlagBits::R32Float: size = 1; type = GL_FLOAT; attribute_class = AttributeClass::Float; return;
 		case ResourceFlagBits::R32G32Float: size = 2; type = GL_FLOAT; attribute_class = AttributeClass::Float; return;
+		case ResourceFlagBits::R32G32B32Float: size = 3; type = GL_FLOAT; attribute_class = AttributeClass::Float; return;
 		case ResourceFlagBits::R32G32B32A32Float: size = 4; type = GL_FLOAT; attribute_class = AttributeClass::Float; return;
 		case ResourceFlagBits::R16Float: size = 1; type = GL_HALF_FLOAT; attribute_class = AttributeClass::Float; return;
 		case ResourceFlagBits::R16G16Float: size = 2; type = GL_HALF_FLOAT; attribute_class = AttributeClass::Float; return;
@@ -712,10 +714,10 @@ namespace {
 		opengl::CommandSchedulerContext* scheduler,
 		PlatformHandle const& handle
 	) {
-		for (auto& target : scheduler->present_targets) {
-			if (target.handle == handle) {
-				return target;
-			}
+		auto found = std::ranges::find(scheduler->present_targets, handle, &PresentTarget::handle);
+		if (found != scheduler->present_targets.end()) {
+			std::rotate(found, found + 1u, scheduler->present_targets.end());
+			return scheduler->present_targets.back();
 		}
 		PresentTarget target;
 		target.handle = handle;
@@ -862,41 +864,55 @@ namespace {
 #endif
 	}
 
+	/** @brief Releases an idle drawable while the scheduler's own drawable is current. */
+	void DestroyPresentTarget(
+		opengl::CommandSchedulerContext* scheduler,
+		PresentTarget const* target
+	) noexcept {
+#if defined(_WIN32)
+		if (target->device_context) {
+			(void)ReleaseDC(target->handle, target->device_context);
+		}
+#elif defined(__ANDROID__)
+		if (target->surface != EGL_NO_SURFACE) {
+			eglDestroySurface(
+				std::get<opengl::Instance const*>(scheduler->instance)->display.get(),
+				target->surface
+			);
+		}
+#elif defined(__linux__)
+		if (auto egl = std::get_if<opengl::EGLInstance const*>(&scheduler->instance)) {
+			if (target->surface != EGL_NO_SURFACE) {
+				eglDestroySurface((*egl)->display.get(), target->surface);
+			}
+		}
+#endif // platform
+	}
+
+	/** @brief Trims least-recently-used targets only after all submitted work has retired. */
+	void TrimPresentTargets(opengl::CommandSchedulerContext* scheduler) {
+		if (!scheduler->pending.empty()) {
+			return;
+		}
+		auto limit = fyuu_rhi::details::IdleRetentionLimit(scheduler->present_target_demand);
+		while (scheduler->present_targets.size() > limit) {
+			DestroyPresentTarget(scheduler, &scheduler->present_targets.front());
+			scheduler->present_targets.erase(scheduler->present_targets.begin());
+		}
+	}
+
 	void DestroySchedulerObjects(opengl::CommandSchedulerContext* scheduler) noexcept {
-		for (auto const& [program, vertex_array] : scheduler->vertex_arrays) {
-			(void)program;
-			glDeleteVertexArrays(1u, &vertex_array);
+		for (auto const& vertex_array : scheduler->vertex_arrays) {
+			glDeleteVertexArrays(1u, &vertex_array.impl);
 		}
 		scheduler->vertex_arrays.clear();
 		if (scheduler->present_read_framebuffer != 0u) {
 			glDeleteFramebuffers(1u, &scheduler->present_read_framebuffer);
 			scheduler->present_read_framebuffer = 0u;
 		}
-#if defined(_WIN32)
-		for (auto const& target : scheduler->present_targets) {
-			if (target.device_context) {
-				(void)ReleaseDC(target.handle, target.device_context);
-			}
-		}
-#elif defined(__ANDROID__)
-		auto const& instance = *std::get<opengl::Instance const*>(scheduler->instance);
-		for (auto const& target : scheduler->present_targets) {
-			if (target.surface != EGL_NO_SURFACE) {
-				eglDestroySurface(instance.display.get(), target.surface);
-			}
-		}
-#elif defined(__linux__)
-		if (auto egl_reference = std::get_if<opengl::EGLInstance const*>(
-			&scheduler->instance
-		)) {
-			auto const& egl = **egl_reference;
-			for (auto const& target : scheduler->present_targets) {
-				if (target.surface != EGL_NO_SURFACE) {
-					eglDestroySurface(egl.display.get(), target.surface);
-				}
-			}
-		}
-#endif
+		std::ranges::for_each(scheduler->present_targets, [scheduler](auto const& target) {
+			DestroyPresentTarget(scheduler, &target);
+		});
 		scheduler->present_targets.clear();
 	}
 
@@ -976,6 +992,9 @@ namespace fyuu_rhi::opengl {
 		GLuint vao = 0u;
 		GLuint framebuffer = 0u;
 		IndexType index_type = IndexType::Uint16;
+		/// @brief Logical buffer bindings survive pipeline/VAO switches within this submission.
+		std::vector<BindVertexBuffer> vertex_bindings;
+		std::optional<BindIndexBuffer> index_binding;
 		bool rendering = false;
 		ClipSpace clip_space = ClipSpace::YUp;
 		/// Color attachments of the active render pass, for MSAA resolve at EndRendering.
@@ -1193,51 +1212,115 @@ namespace fyuu_rhi::opengl {
 				(value.write_mask & ColorWriteMask::Alpha) != ColorWriteMask::None ? GL_TRUE : GL_FALSE
 			);
 
-			// Vertex array: attributes are fixed by the pipeline; vertex buffers are
-			// rebound through glVertexArrayVertexBuffer on each BindVertexBuffer.
-			auto found = scheduler->vertex_arrays.find(value.impl);
-			if (found == scheduler->vertex_arrays.end()) {
-				GLuint created = 0u;
-				glCreateVertexArrays(1u, &created);
-				for (auto const& attribute : value.vertex_attributes) {
-					GLint size = 0;
-					GLenum type = 0u;
-					AttributeClass attribute_class = AttributeClass::Float;
-					AttributeFormat(attribute.format, size, type, attribute_class);
-					glEnableVertexArrayAttrib(created, attribute.location);
-					if (attribute_class == AttributeClass::Integer) {
-						glVertexArrayAttribIFormat(
-							created,
-							attribute.location,
-							size,
-							type,
-							static_cast<GLuint>(attribute.offset)
-						);
-					}
-					else {
-						glVertexArrayAttribFormat(
-							created,
-							attribute.location,
-							size,
-							type,
-							attribute_class == AttributeClass::Normalized ? GL_TRUE : GL_FALSE,
-							static_cast<GLuint>(attribute.offset)
-						);
-					}
-					glVertexArrayAttribBinding(created, attribute.location, attribute.slot);
-				}
-				for (auto const& buffer : value.vertex_buffers) {
-					glVertexArrayBindingDivisor(
-						created,
-						buffer.slot,
-						buffer.input_rate == VertexInputRate::Instance ? 1u : 0u
+			/** @brief Compare the full layout so program reuse cannot select stale attributes.
+			 * @note Buffer handles/offsets are command state, not part of the layout key.
+			 */
+			auto found = std::ranges::find_if(
+				scheduler->vertex_arrays,
+				[&value](auto const& entry) {
+					return std::ranges::equal(
+						entry.buffers,
+						value.vertex_buffers,
+						[](auto const& left, auto const& right) {
+							return left.slot == right.slot && left.stride == right.stride &&
+								left.input_rate == right.input_rate;
+						}
+					) && std::ranges::equal(
+						entry.attributes,
+						value.vertex_attributes,
+						[](auto const& left, auto const& right) {
+							return left.location == right.location && left.slot == right.slot &&
+								left.offset == right.offset && left.format == right.format;
+						}
 					);
 				}
-				scheduler->vertex_arrays.emplace(value.impl, created);
-				found = scheduler->vertex_arrays.find(value.impl);
+			);
+			if (found == scheduler->vertex_arrays.end()) {
+				/** @brief Bound idle VAO retention by current graph demand and host pressure. */
+				auto limit = (std::max)(
+					std::size_t{1u},
+					fyuu_rhi::details::IdleRetentionLimit(submission.pipelines.size())
+				);
+				while (scheduler->vertex_arrays.size() >= limit) {
+					auto retired = scheduler->vertex_arrays.front().impl;
+					glDeleteVertexArrays(1u, &retired);
+					scheduler->vertex_arrays.erase(scheduler->vertex_arrays.begin());
+				}
+				GLuint created = 0u;
+				glCreateVertexArrays(1u, &created);
+				try {
+					for (auto const& attribute : value.vertex_attributes) {
+						GLint size = 0;
+						GLenum type = 0u;
+						AttributeClass attribute_class = AttributeClass::Float;
+						AttributeFormat(attribute.format, size, type, attribute_class);
+						glEnableVertexArrayAttrib(created, attribute.location);
+						if (attribute_class == AttributeClass::Integer) {
+							glVertexArrayAttribIFormat(
+								created,
+								attribute.location,
+								size,
+								type,
+								static_cast<GLuint>(attribute.offset)
+							);
+						}
+						else {
+							glVertexArrayAttribFormat(
+								created,
+								attribute.location,
+								size,
+								type,
+								attribute_class == AttributeClass::Normalized ? GL_TRUE : GL_FALSE,
+								static_cast<GLuint>(attribute.offset)
+							);
+						}
+						glVertexArrayAttribBinding(created, attribute.location, attribute.slot);
+					}
+					for (auto const& buffer : value.vertex_buffers) {
+						glVertexArrayBindingDivisor(
+							created,
+							buffer.slot,
+							buffer.input_rate == VertexInputRate::Instance ? 1u : 0u
+						);
+					}
+					scheduler->vertex_arrays.push_back(
+						{
+							std::vector<pipeline::VertexBufferLayout>(
+								value.vertex_buffers.begin(), value.vertex_buffers.end()
+							),
+							std::vector<pipeline::VertexAttribute>(
+								value.vertex_attributes.begin(), value.vertex_attributes.end()
+							),
+							created
+						}
+					);
+				}
+				catch (...) {
+					glDeleteVertexArrays(1u, &created);
+					throw;
+				}
+				found = std::prev(scheduler->vertex_arrays.end());
 			}
-			vao = found->second;
+			vao = found->impl;
 			glBindVertexArray(vao);
+			/// @brief A cached VAO may contain another draw's buffers; replace every active binding.
+			for (auto const& layout : value.vertex_buffers) {
+				auto binding = std::ranges::find(
+					vertex_bindings,
+					layout.slot,
+					&BindVertexBuffer::slot
+				);
+				if (binding == vertex_bindings.end()) {
+					glVertexArrayVertexBuffer(vao, layout.slot, 0u, 0, 0);
+				}
+				else {
+					ApplyVertexBinding(*binding);
+				}
+			}
+			glVertexArrayElementBuffer(
+				vao,
+				index_binding ? ResourceAt(index_binding->resource).impl : 0u
+			);
 		}
 
 		/// Attaches a texture view to the current framebuffer. Layered targets use
@@ -1264,6 +1347,11 @@ namespace fyuu_rhi::opengl {
 				throw std::logic_error("OpenGL BeginRendering cannot be nested");
 			}
 			ApplyClipSpace(ClipSpace::YUp);
+			/** @brief Match native sRGB attachment semantics for clears, blending and draws.
+			 * OpenGL applies conversion per attachment only when its encoding is sRGB;
+			 * linear and integer attachments remain unchanged, including mixed MRTs.
+			 */
+			glEnable(GL_FRAMEBUFFER_SRGB);
 			if (!value.colors.empty() || value.depth_stencil) {
 				glGenFramebuffers(1u, &framebuffer);
 				glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
@@ -1614,10 +1702,8 @@ namespace fyuu_rhi::opengl {
 			ApplyConstant(*state);
 		}
 
-		void operator()(BindVertexBuffer const& value) {
-			if (!pipeline || vao == 0u) {
-				throw std::logic_error("OpenGL vertex buffer requires a bound graphics pipeline");
-			}
+		/// @brief Apply an already validated logical binding to the currently selected VAO.
+		void ApplyVertexBinding(BindVertexBuffer const& value) const {
 			auto const& resource = ResourceAt(value.resource);
 			glVertexArrayVertexBuffer(
 				vao,
@@ -1628,12 +1714,31 @@ namespace fyuu_rhi::opengl {
 			);
 		}
 
+		void operator()(BindVertexBuffer const& value) {
+			if (!pipeline || vao == 0u) {
+				throw std::logic_error("OpenGL vertex buffer requires a bound graphics pipeline");
+			}
+			auto binding = std::ranges::find(
+				vertex_bindings,
+				value.slot,
+				&BindVertexBuffer::slot
+			);
+			if (binding == vertex_bindings.end()) {
+				vertex_bindings.push_back(value);
+			}
+			else {
+				*binding = value;
+			}
+			ApplyVertexBinding(value);
+		}
+
 		void operator()(BindIndexBuffer const& value) {
 			if (!pipeline || vao == 0u) {
 				throw std::logic_error("OpenGL index buffer requires a bound graphics pipeline");
 			}
 			auto const& resource = ResourceAt(value.resource);
 			glVertexArrayElementBuffer(vao, resource.impl);
+			index_binding = value;
 			index_type = value.type;
 		}
 
@@ -1673,14 +1778,19 @@ namespace fyuu_rhi::opengl {
 			if (!pipeline) {
 				throw std::logic_error("OpenGL indexed draw requires a bound pipeline");
 			}
-			// The index type is carried by the preceding BindIndexBuffer command.
+			if (!index_binding) {
+				throw std::logic_error("OpenGL indexed draw requires a bound index buffer");
+			}
+			/// @brief Preserve the bound byte offset as well as first_index across VAO switches.
 			auto native_index_type = index_type == IndexType::Uint16 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT;
 			auto native_index_size = index_type == IndexType::Uint16 ? 2u : 4u;
+			auto index_offset = index_binding->offset +
+				static_cast<std::size_t>(value.first_index) * native_index_size;
 			glDrawElementsInstancedBaseVertexBaseInstance(
 				PrimitiveMode(pipeline->primitive.topology),
 				static_cast<GLsizei>(value.index_count),
 				native_index_type,
-				reinterpret_cast<void const*>(static_cast<std::uintptr_t>(value.first_index * native_index_size)),
+				reinterpret_cast<void const*>(static_cast<std::uintptr_t>(index_offset)),
 				static_cast<GLsizei>(value.instance_count),
 				static_cast<GLint>(value.vertex_offset),
 				static_cast<GLuint>(value.first_instance)
@@ -1768,7 +1878,7 @@ namespace fyuu_rhi::opengl {
 				);
 				glBindBuffer(GL_PIXEL_UNPACK_BUFFER, source.impl);
 				if (is_2d) {
-					glCompressedTexSubImage2D(
+					glCompressedTextureSubImage2D(
 						destination.impl,
 						static_cast<GLint>(region.mip_level),
 						static_cast<GLint>(region.offset_x),
@@ -1781,7 +1891,7 @@ namespace fyuu_rhi::opengl {
 					);
 				}
 				else {
-					glCompressedTexSubImage3D(
+					glCompressedTextureSubImage3D(
 						destination.impl,
 						static_cast<GLint>(region.mip_level),
 						static_cast<GLint>(region.offset_x),
@@ -2069,6 +2179,7 @@ namespace fyuu_rhi::opengl {
 			// context. Reclaim their native names here while this context is current.
 			CollectRetiredObjects();
 			ReapSignaled();
+			TrimPresentTargets(this);
 			Submission current;
 			{
 				std::unique_lock<std::mutex> lock(local_mutex);
@@ -2101,6 +2212,7 @@ namespace fyuu_rhi::opengl {
 			}
 
 			try {
+				present_target_demand = current.presentation_targets.size();
 				// Error state is context-local. Drain only stale scheduler-context
 				// errors before replay so later checks identify the offending command.
 				while (glGetError() != GL_NO_ERROR) {
@@ -2394,6 +2506,33 @@ namespace fyuu_rhi::execution {
 				}
 				submission.samplers.emplace_back(native->impl.get());
 			}
+			std::size_t buffer_count = 0u, attribute_count = 0u, binding_count = 0u;
+			std::size_t unit_count = 0u, constant_count = 0u;
+			std::ranges::for_each(pipelines, [&](auto const& pipeline) {
+				if (!pipeline.m_impl) {
+					throw std::invalid_argument("An OpenGL execution pipeline is empty");
+				}
+				auto native = std::get_if<opengl::Pipeline>(&pipeline.m_impl->native);
+				if (!native) {
+					throw std::invalid_argument("OpenGL execution received a foreign pipeline");
+				}
+				buffer_count += native->vertex_buffers.size();
+				attribute_count += native->vertex_attributes.size();
+				binding_count += native->bindings.size();
+				unit_count += native->binding_units.size();
+				constant_count += native->constant_ranges.size();
+			}
+			);
+			submission.vertex_buffers.reserve(buffer_count);
+			submission.vertex_attributes.reserve(attribute_count);
+			submission.bindings.reserve(binding_count);
+			submission.binding_units.reserve(unit_count);
+			submission.constant_ranges.reserve(constant_count);
+			auto CopySnapshot = []<class Value>(std::vector<Value> const& source, std::vector<Value>& storage) {
+				auto offset = storage.size();
+				std::ranges::copy(source, std::back_inserter(storage));
+				return std::span<Value const>(storage).subspan(offset, source.size());
+			};
 			submission.pipelines.reserve(pipelines.size());
 			for (auto const& pipeline : pipelines) {
 				if (!pipeline.m_impl) {
@@ -2409,8 +2548,8 @@ namespace fyuu_rhi::execution {
 					opengl::Submission::PipelineSnapshot{
 						.impl = native->impl.get(),
 						.compute = native->compute,
-						.vertex_buffers = native->vertex_buffers,
-						.vertex_attributes = native->vertex_attributes,
+						.vertex_buffers = CopySnapshot(native->vertex_buffers, submission.vertex_buffers),
+						.vertex_attributes = CopySnapshot(native->vertex_attributes, submission.vertex_attributes),
 						.primitive = native->primitive,
 						.rasterization = native->rasterization,
 						.depth_stencil = native->depth_stencil,
@@ -2420,9 +2559,9 @@ namespace fyuu_rhi::execution {
 						.write_mask = native->color_targets.empty()
 							? pipeline::ColorWriteMask::All
 							: native->color_targets.front().write_mask,
-						.bindings = native->bindings,
-						.binding_units = native->binding_units,
-						.constant_ranges = native->constant_ranges
+						.bindings = CopySnapshot(native->bindings, submission.bindings),
+						.binding_units = CopySnapshot(native->binding_units, submission.binding_units),
+						.constant_ranges = CopySnapshot(native->constant_ranges, submission.constant_ranges)
 					}
 				);
 			}

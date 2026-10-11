@@ -41,6 +41,7 @@ import std;
 import :pipeline;
 import :log;
 import :cache;
+import :memory_pressure;
 
 namespace fs = std::filesystem;
 
@@ -308,18 +309,31 @@ namespace fyuu_rhi::shader {
 			return hash.result();
 		}
 
-		// Slang sessions are heavy, so they are cached in memory by the settings
-		// that affect them (target + optimization + include paths + macros).
-		// Multiple compilation units with the same settings share one session.
+		/** @brief Retains recent compiler configurations, reducing the budget under memory pressure.
+		 * Eviction drops only the cache reference; compiling programs retain their
+		 * own session reference, so active compilation is never invalidated.
+		 */
 		static Slang::ComPtr<slang::ISession> RequestSession(slang::TargetDesc const& target, SlangPipelineProgramDescriptor const& desc) {
 			static std::unordered_map<std::uint64_t, Slang::ComPtr<slang::ISession>> session_cache;
+			static std::vector<std::uint64_t> recent;
 			static std::shared_mutex mutex;
 			auto key = SessionHash(target, desc);
+			auto limit = details::IdleRetentionLimit(8u);
+			auto TrimCache = [&]() {
+				while (recent.size() > limit) {
+					session_cache.erase(recent.front());
+					recent.erase(recent.begin());
+				}
+			};
 
 			{
-				std::shared_lock lock(mutex);
+				std::unique_lock lock(mutex);
 				if (auto it = session_cache.find(key); it != session_cache.end()) {
-					return it->second;
+					auto position = std::ranges::find(recent, key);
+					std::rotate(position, position + 1u, recent.end());
+					auto session = it->second;
+					TrimCache();
+					return session;
 				}
 			}
 
@@ -379,8 +393,18 @@ namespace fyuu_rhi::shader {
 			Check(result, nullptr, "Creating Slang session");
 
 			std::unique_lock lock(mutex);
+			recent.reserve(8u);
 			auto [it, inserted] = session_cache.try_emplace(key, created);
-			return it->second;
+			auto session = it->second;
+			if (inserted) {
+				if (recent.size() == 8u) {
+					session_cache.erase(recent.front());
+					recent.erase(recent.begin());
+				}
+				recent.emplace_back(key);
+			}
+			TrimCache();
+			return session;
 		}
 
 		// Reads a whole binary file; returns false instead of throwing when the

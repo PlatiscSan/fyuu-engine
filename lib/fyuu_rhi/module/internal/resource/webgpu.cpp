@@ -34,6 +34,7 @@ namespace fyuu_rhi {
 
 		static void Unmap(void* context, ResourceDataRange, bool) noexcept {
 			auto native = static_cast<webgpu::Resource*>(context);
+			auto api_lock = native->errors->LockApi();
 			std::get<wgpu::Buffer>(native->impl).Unmap();
 		}
 
@@ -44,6 +45,7 @@ namespace fyuu_rhi {
 		static constexpr auto MappingTimeout = std::chrono::seconds(30);
 
 		ResourceMapScope operator()(ResourceDataRange range, bool writable) const {
+			auto api_lock = resource->errors->LockApi();
 			auto const& buffer = std::get<wgpu::Buffer>(resource->impl);
 			// Host-visible buffers are created unmapped, so this maps one on demand; a buffer
 			// the caller already mapped is left alone. Either way the returned scope unmaps on
@@ -81,6 +83,9 @@ namespace fyuu_rhi {
 						state->condition.notify_one();
 					}
 				);
+				if (api_lock.owns_lock()) {
+					api_lock.unlock();
+				}
 				{
 					std::unique_lock lock(state->mutex);
 					// Bounded: the device's own latch is checked again on the way out, because a
@@ -109,6 +114,7 @@ namespace fyuu_rhi {
 						);
 					}
 				}
+				api_lock = resource->errors->LockApi();
 			}
 			void* data = writable
 				? buffer.GetMappedRange(range.offset, range.size)
@@ -158,9 +164,13 @@ namespace fyuu_rhi {
 			std::size_t arr_layer_cnt,
 			ResourceFlags const& flags
 		) const {
+			auto api_lock = resource->errors->LockApi();
 			auto const& tex = std::get<wgpu::Texture>(resource->impl);
+			if (resource->bc.blocks && webgpu::ResourceFormat(flags) != resource->bc.format) {
+				throw std::invalid_argument("A BC texture view must preserve its compressed format");
+			}
 			wgpu::TextureViewDescriptor view_desc = {
-				.format = webgpu::ResourceFormat(flags),
+				.format = resource->bc.blocks ? tex.GetFormat() : webgpu::ResourceFormat(flags),
 				.dimension = webgpu::TextureViewDimension(flags),
 				.baseMipLevel = static_cast<std::uint32_t>(base_mip_lvl),
 				.mipLevelCount = static_cast<std::uint32_t>(mip_lvl_cnt),

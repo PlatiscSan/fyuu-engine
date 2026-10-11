@@ -19,6 +19,8 @@ module;
 
 #include <cstdint>
 
+#include <array>
+
 #include <chrono>
 
 #include <atomic>
@@ -63,6 +65,7 @@ import :resource_factory;
 import :sampler_factory;
 import :view_factory;
 import :webgpu_data;
+import :webgpu_bc;
 import :webgpu_utility;
 
 extern "C" void ParallelFor(
@@ -186,6 +189,7 @@ namespace fyuu_rhi::webgpu {
 		std::size_t presentation_cursor = 0u;
 
 		wgpu::Instance instance;
+		wgpu::Device device;
 		wgpu::CommandEncoder encoder;
 		wgpu::RenderPassEncoder render_pass;
 		wgpu::ComputePassEncoder compute_pass;
@@ -228,9 +232,12 @@ namespace fyuu_rhi::webgpu {
 			std::uint32_t index;
 			wgpu::BindGroup group;
 		};
-		// Bounded, inline cache: only the last applied group, owned by this pass.
-		// Constant fallback uses the same path, so it cannot leave a stale cache.
-		std::optional<BindGroupPending> applied_bind_group;
+		/** @brief Inline cache for the four baseline WebGPU bind-group slots.
+		 * Higher device-specific slots remain valid and simply bypass this cache.
+		 * Handles are borrowed from bound objects retained for this recording;
+		 * every native pass boundary clears the cache.
+		 */
+		std::array<decltype(wgpu::BindGroup{}.Get()), 4u> applied_bind_groups{};
 		struct ConstantState {
 			webgpu::Pipeline::ConstantRange const* range;
 			std::vector<std::byte> data;
@@ -245,12 +252,23 @@ namespace fyuu_rhi::webgpu {
 		std::vector<SetPipelineConstants const*> pending_constants;
 		std::vector<ConstantState> constants;
 		std::vector<wgpu::Buffer> constant_buffers;
+		/// @brief Recording-local mapped pages; each draw receives its own immutable slice.
+		std::byte* constant_page_data = nullptr;
+		std::uint64_t constant_page_capacity = 0u;
+		std::uint64_t constant_page_offset = 0u;
+		std::uint64_t constant_alignment = 0u;
+		std::uint64_t constant_max_buffer_size = 0u;
 		std::vector<wgpu::BindGroup> constant_groups;
 		std::vector<wgpu::BindGroup> dynamic_groups;
+		/** @brief Reuse the last dynamic group only when its object and offsets match.
+		 * Offset storage belongs to the immutable execution plan, which outlives
+		 * recording. No resource identity or cache survives this replayer.
+		 */
+		webgpu::PipelineResourceGroup const* dynamic_group_source = nullptr;
+		std::span<std::size_t const> dynamic_group_offsets;
 
 		void ApplyBindGroup(std::uint32_t index, wgpu::BindGroup const& group) {
-			if (applied_bind_group && applied_bind_group->index == index &&
-				applied_bind_group->group.Get() == group.Get()) {
+			if (index < applied_bind_groups.size() && applied_bind_groups[index] == group.Get()) {
 				return;
 			}
 			if (render_pass) {
@@ -258,7 +276,9 @@ namespace fyuu_rhi::webgpu {
 			} else {
 				compute_pass.SetBindGroup(index, group);
 			}
-			applied_bind_group = BindGroupPending{index, group};
+			if (index < applied_bind_groups.size()) {
+				applied_bind_groups[index] = group.Get();
+			}
 		}
 
 		wgpu::BindGroup BindGroup(
@@ -280,6 +300,10 @@ namespace fyuu_rhi::webgpu {
 			}
 			)) {
 				return group.impl;
+			}
+			if (dynamic_group_source == &group &&
+				std::ranges::equal(dynamic_group_offsets, dynamic_offsets)) {
+				return dynamic_groups.back();
 			}
 			auto entries = group.entries;
 			std::ranges::for_each(
@@ -304,6 +328,8 @@ namespace fyuu_rhi::webgpu {
 			};
 			auto result = group.device.CreateBindGroup(&descriptor);
 			dynamic_groups.emplace_back(result);
+			dynamic_group_source = &group;
+			dynamic_group_offsets = dynamic_offsets;
 			return result;
 		}
 
@@ -330,6 +356,58 @@ namespace fyuu_rhi::webgpu {
 				);
 			}
 			return *range;
+		}
+
+		/** @brief Copies one constant snapshot into an aligned recording-local page.
+		 * @note Pages grow with actual writes and never outlive the encoded work.
+		 * Distinct slices preserve earlier draws when constants are updated again.
+		 */
+		std::uint64_t UploadConstants(std::span<std::byte const> data) {
+			if (constant_alignment == 0u) {
+				wgpu::Limits limits;
+				if (!device.GetLimits(&limits)) {
+					throw std::runtime_error("Failed to query WebGPU constant-buffer limits");
+				}
+				constant_alignment = limits.minUniformBufferOffsetAlignment;
+				constant_max_buffer_size = limits.maxBufferSize;
+			}
+			if (data.size() > constant_max_buffer_size ||
+				constant_max_buffer_size - data.size() < constant_alignment - 1u) {
+				throw std::out_of_range("WebGPU constant snapshot exceeds the buffer limit");
+			}
+			auto stride = (data.size() + constant_alignment - 1u) /
+				constant_alignment * constant_alignment;
+			if (!constant_page_data || stride > constant_page_capacity - constant_page_offset) {
+				auto growth = constant_page_capacity > constant_max_buffer_size / 2u ?
+					constant_max_buffer_size : constant_page_capacity * 2u;
+				auto capacity = (std::max)(stride, growth);
+				wgpu::BufferDescriptor descriptor{
+					.usage = wgpu::BufferUsage::Uniform,
+					.size = capacity,
+					.mappedAtCreation = true
+				};
+				auto buffer = device.CreateBuffer(&descriptor);
+				auto mapped = static_cast<std::byte*>(buffer.GetMappedRange());
+				if (!mapped) {
+					throw std::runtime_error("Failed to map the WebGPU constant page");
+				}
+				constant_buffers.emplace_back(std::move(buffer));
+				constant_page_data = mapped;
+				constant_page_capacity = capacity;
+				constant_page_offset = 0u;
+			}
+			auto offset = constant_page_offset;
+			std::ranges::copy(data, constant_page_data + offset);
+			constant_page_offset += stride;
+			return offset;
+		}
+
+		/** @brief Makes all constant pages usable by the GPU before encoder Finish. */
+		void FinishConstantUploads() {
+			std::ranges::for_each(constant_buffers, [](auto const& buffer) {
+				buffer.Unmap();
+			});
+			constant_page_data = nullptr;
 		}
 
 		void SetConstants(SetPipelineConstants const& value) {
@@ -367,26 +445,15 @@ namespace fyuu_rhi::webgpu {
 						    }
 						);
 					}
-					wgpu::BufferDescriptor descriptor{
-					    .usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst,
-					    .size = constant_range.size
-					};
-					auto buffer = pipeline->device.CreateBuffer(&descriptor);
-					pipeline->device.GetQueue().WriteBuffer(
-					    buffer,
-					    0u,
-					    source->data.data(),
-					    source->data.size()
-					);
+					auto offset = UploadConstants(source->data);
 					entries.emplace_back(
 					    wgpu::BindGroupEntry{
 					        .binding = constant_range.binding,
-					        .buffer = buffer,
-					        .offset = 0u,
+					        .buffer = constant_buffers.back(),
+					        .offset = offset,
 					        .size = constant_range.size
 					    }
 					);
-					constant_buffers.emplace_back(std::move(buffer));
 				});
 				wgpu::BindGroupDescriptor descriptor{
 				    .layout = pipeline->bind_group_layouts[pipeline->constant_group],
@@ -478,7 +545,7 @@ namespace fyuu_rhi::webgpu {
 		/// Ends any active pass. Encoder-level commands (copies, presents) are
 		/// invalid inside a pass.
 		void EndPass() {
-			applied_bind_group.reset();
+			applied_bind_groups.fill(nullptr);
 			applied_render_pipeline = nullptr;
 			applied_compute_pipeline = nullptr;
 			if (render_pass) {
@@ -590,7 +657,7 @@ namespace fyuu_rhi::webgpu {
 			render_pass.End();
 			render_pass = nullptr;
 			applied_render_pipeline = nullptr;
-			applied_bind_group.reset();
+			applied_bind_groups.fill(nullptr);
 		}
 
 		void operator()(BindPipeline const& value) {
@@ -778,6 +845,15 @@ namespace fyuu_rhi::webgpu {
 
 		void operator()(CopyBufferToTexture const& value) {
 			EndPass();
+			auto const& resource = resources[value.destination].get();
+			if (resource.bc.blocks) {
+				CopyBCBuffer(
+					encoder, resource, BufferAt(value.source), value.source_layout,
+					value.destination_region, true
+				);
+				DecodeBC(device, encoder, resource, value.destination_region.mip_level);
+				return;
+			}
 			wgpu::TexelCopyBufferInfo source;
 			source.buffer = BufferAt(value.source);
 			source.layout.offset = value.source_layout.offset;
@@ -802,6 +878,14 @@ namespace fyuu_rhi::webgpu {
 
 		void operator()(CopyTextureToBuffer const& value) {
 			EndPass();
+			auto const& resource = resources[value.source].get();
+			if (resource.bc.blocks) {
+				CopyBCBuffer(
+					encoder, resource, BufferAt(value.destination), value.destination_layout,
+					value.source_region, false
+				);
+				return;
+			}
 			wgpu::TexelCopyTextureInfo source;
 			source.texture = TextureAt(value.source);
 			source.mipLevel = value.source_region.mip_level;
@@ -826,6 +910,45 @@ namespace fyuu_rhi::webgpu {
 
 		void operator()(CopyTexture const& value) {
 			EndPass();
+			auto const& from = resources[value.source].get();
+			auto const& to = resources[value.destination].get();
+			if (from.bc.blocks || to.bc.blocks) {
+				if (!from.bc.blocks || !to.bc.blocks || BCCopyFormat(from.bc.format) != BCCopyFormat(to.bc.format)) {
+					throw std::invalid_argument("BC texture copies require matching compressed formats");
+				}
+				auto bytes = BCBlockBytes(from.bc.format);
+				auto const& texture = std::get<wgpu::Texture>(from.impl);
+				if (value.source_region.mip_level >= texture.GetMipLevelCount()) {
+					throw std::out_of_range("BC source mip exceeds texture");
+				}
+				auto layout = BCMipLayout(texture, bytes, value.source_region.mip_level);
+				TextureDataLayout external{
+					layout.offset + (static_cast<std::uint64_t>(value.source_region.base_array_layer) * layout.rows +
+						value.source_region.offset_y / 4u) * layout.pitch + value.source_region.offset_x / 4u * bytes,
+					layout.pitch, layout.rows
+				};
+				if (value.source_region.offset_x % 4u != 0u || value.source_region.offset_y % 4u != 0u ||
+					value.source_region.offset_z != 0u || value.source_region.depth != 1u ||
+					value.source_region.offset_x >= layout.width || value.source_region.offset_y >= layout.height ||
+					value.source_region.width > layout.width - value.source_region.offset_x ||
+					value.source_region.height > layout.height - value.source_region.offset_y ||
+					(value.source_region.width % 4u != 0u &&
+						value.source_region.offset_x + value.source_region.width != layout.width) ||
+					(value.source_region.height % 4u != 0u &&
+						value.source_region.offset_y + value.source_region.height != layout.height) ||
+					value.source_region.base_array_layer >= texture.GetDepthOrArrayLayers() ||
+					value.source_region.array_layer_count > texture.GetDepthOrArrayLayers() - value.source_region.base_array_layer ||
+					value.source_region.width != value.destination_region.width ||
+					value.source_region.height != value.destination_region.height ||
+					value.source_region.array_layer_count != value.destination_region.array_layer_count) {
+					throw std::invalid_argument("Invalid BC texture copy region");
+				}
+				CopyBCBuffer(
+					encoder, to, from.bc.blocks, external, value.destination_region, true
+				);
+				DecodeBC(device, encoder, to, value.destination_region.mip_level);
+				return;
+			}
 			wgpu::TexelCopyTextureInfo source;
 			source.texture = TextureAt(value.source);
 			source.mipLevel = value.source_region.mip_level;
@@ -966,39 +1089,49 @@ namespace fyuu_rhi::webgpu {
 		// event, so it can be waited on together with queue futures at a zero timeout, and
 		// Dawn untracks it once it fires, from which point on every wait reports it as
 		// already complete.
-		auto lost_future = device.GetLostFuture();
+		auto lost_future = [&]() {
+			auto api_lock = errors->LockApi();
+			return device.GetLostFuture();
+		}();
 
 		context_ready.store(true, std::memory_order_release);
 		context_ready.notify_all();
 
 		bool device_lost = false;
 		std::exception_ptr device_lost_error;
+		/** @brief Reuse polling storage instead of allocating it on every progress round. */
+		std::vector<WatchedFuture> pending;
+		std::vector<wgpu::FutureWaitInfo> waits;
 
 		while (!stop.stop_requested()) {
-			std::vector<WatchedFuture> pending;
-			std::vector<wgpu::FutureWaitInfo> waits;
 			try {
 				{
 					std::unique_lock lock(pump_mutex);
-					// Bounded sleep between rounds, not a wait for completion. The wait
-					// below is a zero-timeout poll because that is the only timeout that
-					// does not hold the device-wide lock for its whole duration on the
-					// D3D12 backend, and zero is legal across queues and event kinds. The
-					// destructor notifies this condition after requesting the stop, so the
-					// join does not have to wait the interval out.
-					(void)pump_condition.wait_for(lock, std::chrono::milliseconds(1));
+					/** @brief Sleep only while idle; Watch and shutdown notify this predicate.
+					 * Outstanding work must not depend on an OS-rounded polling timer.
+					 * Device loss is checked again when new work is watched, so an idle
+					 * scheduler needs no periodic device-loss wakeup.
+					 */
+					pump_condition.wait(lock, [this, stop]() {
+						return stop.stop_requested() || !pump_futures.empty();
+					}
+					);
 					if (stop.stop_requested()) {
 						break;
 					}
 					pending = pump_futures;
 				}
 
+				waits.clear();
 				waits.reserve(pending.size() + 1u);
 				std::ranges::for_each(pending, [&waits](WatchedFuture const& watched) {
 					waits.emplace_back(wgpu::FutureWaitInfo{watched.future});
 				});
 				waits.emplace_back(wgpu::FutureWaitInfo{lost_future});
-				(void)instance.WaitAny(waits.size(), waits.data(), 0u);
+				{
+					auto api_lock = errors->LockApi();
+					(void)instance.WaitAny(waits.size(), waits.data(), 0u);
+				}
 
 				if (waits.back().completed && !device_lost) {
 					device_lost = true;
@@ -1025,6 +1158,12 @@ namespace fyuu_rhi::webgpu {
 				std::erase_if(pump_futures, [](WatchedFuture const& watched) {
 					return watched.state->complete.load(std::memory_order_acquire);
 				});
+				lock.unlock();
+				/** @brief Keep Dawn progressing without a timed sleep or device-lock wait.
+				 * Yield permits other runnable threads to execute; busy polling is
+				 * restricted to outstanding work and stops on the next loop check.
+				 */
+				std::this_thread::yield();
 			}
 			catch (...) {
 				// Fail outstanding watches without overwriting terminal callback results
@@ -1070,9 +1209,11 @@ namespace fyuu_rhi::webgpu {
 	}
 
 	CommandSchedulerContext::~CommandSchedulerContext() noexcept {
-		pump_thread.request_stop();
-		// jthread::request_stop does not wake a condition variable, so without this the
-		// join would block until the pump's own bounded wait elapsed.
+		/** @brief Publish stop under the idle-wait mutex to prevent a lost shutdown wakeup. */
+		{
+			std::unique_lock lock(pump_mutex);
+			pump_thread.request_stop();
+		}
 		pump_condition.notify_all();
 	}
 
@@ -1265,6 +1406,7 @@ namespace fyuu_rhi::execution {
 
 			wgpu::Future completion_future{};
 			try {
+				auto api_lock = context->errors->LockApi();
 				// Phase 1: acquire every presentation surface's current texture. This is
 				// a blocking CPU call; doing it up front keeps failures deterministic.
 				std::vector<webgpu::PresentationWork> presentations;
@@ -1391,7 +1533,7 @@ namespace fyuu_rhi::execution {
 								    wgpu::MapMode::Write,
 								    0u,
 								    wgpu::kWholeMapSize,
-								    wgpu::CallbackMode::AllowProcessEvents,
+								    wgpu::CallbackMode::WaitAnyOnly,
 								    [&](wgpu::MapAsyncStatus result, wgpu::StringView message) {
 									    status = result;
 									    if (message.data && message.length != 0u) {
@@ -1403,10 +1545,29 @@ namespace fyuu_rhi::execution {
 								// waiting for it here does not take the device-wide lock that
 								// a long queue-serial wait would. It is also serial: this is
 								// the preparation phase, before any batch records.
-								auto wait_status = context->instance.WaitAny(
-								    future,
-								    (std::numeric_limits<std::uint64_t>::max)()
-								);
+								/// @brief Progress polling releases the fallback mutex between calls;
+								/// a blocking WaitAny must not prevent another thread's submit.
+								if (api_lock.owns_lock()) {
+									api_lock.unlock();
+								}
+								wgpu::WaitStatus wait_status;
+								if (context->errors->implicit_synchronization) {
+									wait_status = context->instance.WaitAny(
+										future,
+										(std::numeric_limits<std::uint64_t>::max)()
+									);
+								} else {
+									do {
+										{
+											auto progress_lock = context->errors->LockApi();
+											wait_status = context->instance.WaitAny(future, 0u);
+										}
+										if (wait_status == wgpu::WaitStatus::TimedOut) {
+											std::this_thread::yield();
+										}
+									} while (wait_status == wgpu::WaitStatus::TimedOut);
+								}
+								api_lock = context->errors->LockApi();
 								if (wait_status != wgpu::WaitStatus::Success) {
 									throw std::runtime_error(
 									    "Failed to wait for a WebGPU upload buffer mapping"
@@ -1462,7 +1623,10 @@ namespace fyuu_rhi::execution {
 				std::atomic_bool cancelled = false;
 				auto record = [&](std::size_t encoding_index) {
 					try {
-						auto encoder = context->device.CreateCommandEncoder();
+						auto encoder = [&]() {
+							auto creation_lock = context->errors->LockApi();
+							return context->device.CreateCommandEncoder();
+						}();
 						auto const first = merge_batches ? std::size_t{0u} : encoding_index;
 						auto const last = merge_batches ? plan.batches.size() : encoding_index + 1u;
 						for (auto batch_index : std::views::iota(first, last)) {
@@ -1480,25 +1644,39 @@ namespace fyuu_rhi::execution {
 								.presentations = presentations,
 								.presentation_cursor = presentation_offsets[batch_index],
 								.instance = context->instance,
+								.device = context->device,
 								.encoder = encoder
 							};
 							for (auto const& node : batch.nodes) {
 								for (auto const& command : node.commands) {
+									/// @brief Unsupported Dawn devices serialize native calls per command,
+									/// not whole graphs; supported devices retain parallel encoding.
+									auto command_lock = context->errors->LockApi();
 									std::visit(replayer, command);
 								}
 							}
-							replayer.EndPass();
+							{
+								auto finishing_lock = context->errors->LockApi();
+								replayer.EndPass();
+								replayer.FinishConstantUploads();
+							}
 							if (replayer.presentation_cursor != presentation_offsets[batch_index + 1u]) {
 								throw std::logic_error(
 									"WebGPU batch did not consume its prepared presentations"
 								);
 							}
 						}
-						command_buffers[encoding_index] = encoder.Finish();
+						{
+							auto finishing_lock = context->errors->LockApi();
+							command_buffers[encoding_index] = encoder.Finish();
+						}
 					} catch (...) {
 						recording_errors[encoding_index] = std::current_exception();
 					}
 				};
+				if (api_lock.owns_lock()) {
+					api_lock.unlock();
+				}
 				if (encoding_count == 1u) {
 					// A single encoder needs no parallel task dispatch.
 					record(0u);
@@ -1519,10 +1697,11 @@ namespace fyuu_rhi::execution {
 					);
 				}
 #endif
+				api_lock = context->errors->LockApi();
 				// Every batch has finished recording, so the upload buffers can be
 				// flushed and released. They must be unmapped before the queue is asked to
 				// execute the recorded work, which is why this is not left to scope exit.
-				release_upload_mappings();
+					release_upload_mappings();
 				for (auto const& error : recording_errors) {
 					if (error) {
 						std::rethrow_exception(error);
@@ -1617,6 +1796,9 @@ namespace fyuu_rhi::execution {
 				// Keep the zero-timeout pump for driver progress and device-loss fallback.
 				// Normal completion need not wait for its next round. Never introduce
 				// a long WaitAny holding the device-wide lock.
+				if (api_lock.owns_lock()) {
+					api_lock.unlock();
+				}
 				context->Watch(completion_future, token_state);
 			} catch (...) {
 				{

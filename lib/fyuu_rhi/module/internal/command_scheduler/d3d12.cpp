@@ -333,14 +333,22 @@ namespace {
 		Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> const& commands,
 		fyuu_rhi::d3d12::Resource const& resource,
 		fyuu_rhi::d3d12::View const& view,
-		D3D12_RECT const& rect
+		RenderArea const& area
 	) {
 		auto resource_desc = resource.allocation->GetResource()->GetDesc();
+		auto rect = NativeRect(area);
 		for (std::uint32_t layer = 0u; layer < view.array_layer_count; ++layer) {
 			for (std::uint32_t mip = 0u; mip < view.mip_level_count; ++mip) {
+				auto level = view.base_mip_level + mip;
+				auto width = (std::max)(resource_desc.Width >> level, UINT64{1u});
+				auto height = (std::max)(resource_desc.Height >> level, UINT{1u});
+				bool whole_mip = area.x == 0 && area.y == 0 &&
+					area.width == width && area.height == height;
+				/// @brief Full-subresource discard initializes attachment metadata; a
+				/// rectangle, even one covering the mip, is not the same native operation.
 				D3D12_DISCARD_REGION region{
-					.NumRects = 1u,
-					.pRects = &rect,
+					.NumRects = whole_mip ? 0u : 1u,
+					.pRects = whole_mip ? nullptr : &rect,
 					.FirstSubresource = NativeSubresource(
 						resource_desc,
 						view.base_mip_level + mip,
@@ -451,7 +459,7 @@ namespace {
 						commands,
 						resources[color.resource].get(),
 						view,
-						rect
+						value.area
 					);
 				}
 			}
@@ -471,16 +479,16 @@ namespace {
 				if (value.depth_stencil->stencil_load == LoadOperation::Clear) {
 					flags |= D3D12_CLEAR_FLAG_STENCIL;
 				}
-				// Discard precedes clear because DiscardResource drops both aspects:
-				// clearing first would let a stencil-only discard wipe the fresh depth.
-				if (value.depth_stencil->depth_load == LoadOperation::Discard ||
-					value.depth_stencil->stencil_load == LoadOperation::Discard) {
-					DiscardView(
-						commands,
-						resources[value.depth_stencil->resource].get(),
-						view,
-						rect
-					);
+				/// @brief Implement discarded aspects by clearing them, not by discarding
+				/// the combined attachment. This initializes first-use metadata without
+				/// invalidating an aspect whose load operation requires preservation.
+				if (value.depth_stencil->depth_load == LoadOperation::Discard) {
+					flags |= D3D12_CLEAR_FLAG_DEPTH;
+				}
+				bool has_stencil = view.format == DXGI_FORMAT_D24_UNORM_S8_UINT ||
+					view.format == DXGI_FORMAT_D32_FLOAT_S8X24_UINT;
+				if (has_stencil && value.depth_stencil->stencil_load == LoadOperation::Discard) {
+					flags |= D3D12_CLEAR_FLAG_STENCIL;
 				}
 				if (flags != 0u) {
 					auto whole_mip = CoversWholeMip(
@@ -526,20 +534,12 @@ namespace {
 						commands,
 						resources[color.resource].get(),
 						views[color.view].get(),
-						NativeRect(rendering->area)
+						rendering->area
 					);
 				}
 			}
-			if (rendering->depth_stencil &&
-				(rendering->depth_stencil->depth_store == StoreOperation::Discard ||
-					rendering->depth_stencil->stencil_store == StoreOperation::Discard)) {
-				DiscardView(
-					commands,
-					resources[rendering->depth_stencil->resource].get(),
-					views[rendering->depth_stencil->view].get(),
-					NativeRect(rendering->area)
-				);
-			}
+			/// @note Discarded depth/stencil stores need no native operation. Keeping
+			/// their contents is legal and avoids invalidating the other stored aspect.
 			rendering.reset();
 		}
 
@@ -1484,6 +1484,12 @@ namespace fyuu_rhi::execution {
 			return MakeCompletionToken(std::move(stopped));
 		}
 
+		/** @brief Retain only the recent per-queue working set after GPU retirement. */
+		for (auto const& submission : queue_submissions) {
+			for (auto index : submission.batches) {
+				prepared[index].commands.retention_demand = submission.batches.size();
+			}
+		}
 		// Phase 2 records batches independently. A failing list may still reference bound
 		// resources, so it is destroyed here while those bindings are alive and never pooled.
 		std::atomic_bool cancelled = false;

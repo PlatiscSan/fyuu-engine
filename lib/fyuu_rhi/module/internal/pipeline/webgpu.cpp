@@ -286,10 +286,12 @@ namespace fyuu_rhi {
 				.entryCount = entries.size(),
 				.entries = entries.data()
 			};
+			auto api_lock = native->errors->LockApi();
 			auto impl = native->device.CreateBindGroup(&descriptor);
 			return MakePipelineResourceGroup(
 				webgpu::PipelineResourceGroup{
 					.space = space,
+					.errors = native->errors,
 					.device = native->device,
 					.layout = native->bind_group_layouts[space],
 					.entries = std::move(entries),

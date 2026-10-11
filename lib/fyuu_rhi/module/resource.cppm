@@ -175,6 +175,11 @@ export namespace fyuu_rhi {
 		Bc7Unorm,
 		Bc7UnormSrgb,
 
+		/** @brief Three 32-bit floating-point vertex components (12 bytes).
+		 * @note Vertex-input format only; texture and typed-view support is not implied.
+		 */
+		R32G32B32Float,
+
 		Count
 	};
 

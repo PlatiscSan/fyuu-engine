@@ -15,6 +15,9 @@
 
 #include <vector>
 
+#include <algorithm>
+#include <iterator>
+
 #include <string>
 
 #include <iostream>
@@ -31,6 +34,8 @@
 
 #include <optional>
 #include <string_view>
+
+#include <ranges>
 
 #include <source_location>
 #endif // !defined(__cpp_lib_modules)
@@ -153,7 +158,13 @@ namespace {
 	    bool push_constants,
 	    bool uniform_space_zero,
 	    bool early_binds,
-	    bool zero_clip_z
+	    bool zero_clip_z,
+	    bool layout_switch,
+	    bool float3,
+	    bool indexed,
+	    bool dynamic_repeat,
+	    bool pool_stress,
+	    bool constant_repeat
 	) {
 		using namespace fyuu_rhi;
 		using namespace fyuu_rhi::execution;
@@ -188,6 +199,17 @@ namespace {
 			[shader("vertex")]
 			float4 vertex_main(float4 position : POSITION) : SV_Position {
 				return position;
+			}
+			[shader("fragment")]
+			float4 fragment_main() : SV_Target0 { return object.color; }
+		)";
+		/// @brief Packed float3 input proves all backends consume a 12-byte vertex stride.
+		constexpr char float3_shader[] = R"(
+			struct Uniform { float4 color; };
+			[[vk::binding(0, 0)]] ConstantBuffer<Uniform> object : register(b0, space0);
+			[shader("vertex")]
+			float4 vertex_main(float3 position : POSITION) : SV_Position {
+				return float4(position.xy * (2.0 * position.z), 0.5, 1.0);
 			}
 			[shader("fragment")]
 			float4 fragment_main() : SV_Target0 { return object.color; }
@@ -270,8 +292,10 @@ namespace {
 		)";
 		auto const& shader = push_constants ?
 		    (uniform_space_zero ? push_space0_shader : push_shader) :
-		    (two_attribute_layout ? hello_shader : simple_shader);
-		std::array const modules{SlangPipelineProgramDescriptor::Module{"probe", shader}};
+		    (two_attribute_layout ? hello_shader : (float3 ? float3_shader : simple_shader));
+		std::array const modules{
+			SlangPipelineProgramDescriptor::Module{float3 ? "probe_float3" : "probe", shader}
+		};
 		std::array const entries{
 		    SlangPipelineProgramDescriptor::EntryPoint{"vertex_main", Stage::Vertex},
 		    SlangPipelineProgramDescriptor::EntryPoint{"fragment_main", Stage::Fragment}
@@ -296,12 +320,13 @@ namespace {
 			    }
 			};
 		} else {
-			layouts = {VertexBufferLayout{.slot = 0u, .stride = 16u}};
+			layouts = {VertexBufferLayout{.slot = 0u, .stride = float3 ? 12u : 16u}};
 			attributes = {VertexAttribute{
 			    .location = 0u,
 			    .slot = 0u,
 			    .offset = 0u,
-			    .format = ResourceFlagBits::R32G32B32A32Float
+			    .format = float3 ? ResourceFlagBits::R32G32B32Float :
+					ResourceFlagBits::R32G32B32A32Float
 			}};
 		}
 		auto pipeline = device.CreateGraphicsPipeline(
@@ -309,6 +334,24 @@ namespace {
 			 .vertex = {.buffers = layouts, .attributes = attributes},
 			 .color_targets = colors}
 		);
+		/// @brief Switch slots and attribute offsets without rebinding vertex or index buffers.
+		Pipeline alternate_pipeline;
+		if (layout_switch) {
+			std::array const alternate_layouts{VertexBufferLayout{.slot = 1u, .stride = 32u}};
+			std::array const alternate_attributes{
+				VertexAttribute{
+					.location = 0u,
+					.slot = 1u,
+					.offset = 16u,
+					.format = ResourceFlagBits::R32G32B32A32Float
+				}
+			};
+			alternate_pipeline = device.CreateGraphicsPipeline(
+				{.program = {.modules = modules, .entry_points = entries},
+				 .vertex = {.buffers = alternate_layouts, .attributes = alternate_attributes},
+				 .color_targets = colors}
+			);
+		}
 
 		ResourceFlags target_flags;
 		target_flags.Set(ResourceFlagBits::DeviceLocal);
@@ -325,7 +368,7 @@ namespace {
 		ResourceFlags uniform_flags;
 		uniform_flags.Set(ResourceFlagBits::HostVisible);
 		uniform_flags.Set(ResourceFlagBits::UniformBuffer);
-		auto uniform = device.CreateBuffer(256u, uniform_flags);
+		auto uniform = device.CreateBuffer(dynamic_repeat ? 512u : 256u, uniform_flags);
 
 		ResourceFlags vertex_flags;
 		vertex_flags.Set(ResourceFlagBits::HostVisible);
@@ -362,24 +405,76 @@ namespace {
 			vertex_data =
 			    {-0.9f, -0.9f, depth, 1.0f, 0.9f, -0.9f, depth, 1.0f, 0.0f, 0.9f, depth, 1.0f};
 		}
+		if (float3) {
+			vertex_data = {-0.9f, -0.9f, 0.5f, 0.9f, -0.9f, 0.5f, 0.0f, 0.9f, 0.5f};
+		}
+		if (layout_switch) {
+			vertex_data = {
+				0.0f, 0.0f, 0.5f, 1.0f, -0.9f, -0.9f, 0.5f, 1.0f,
+				0.0f, 0.0f, 0.5f, 1.0f, 0.9f, -0.9f, 0.5f, 1.0f,
+				0.0f, 0.0f, 0.5f, 1.0f, 0.0f, 0.9f, 0.5f, 1.0f
+			};
+		}
 		auto vertices = device.CreateBuffer(vertex_data.size() * sizeof(float), vertex_flags);
+		Resource indices;
+		if (indexed) {
+			ResourceFlags index_flags;
+			index_flags.Set(ResourceFlagBits::HostVisible);
+			index_flags.Set(ResourceFlagBits::IndexBuffer);
+			indices = device.CreateBuffer(4u * sizeof(std::uint16_t), index_flags);
+		}
 
 		std::array const bindings{
-		    ResourceBinding{.slot = 0u, .value = BindingValue::FromBuffer(uniform)}
+		    ResourceBinding{
+				.slot = 0u,
+				.value = BindingValue::FromBuffer(uniform, 0u, dynamic_repeat ? 16u : PipelineWholeBuffer)
+			}
 		};
 		// The push-constant shaders declare their uniform buffer in space 1, matching HelloTriangle,
 		// except "pushcolor_space0", which puts it in space 0. The group has to be created in, and
 		// bound into, the same space the shader declares.
 		auto const group_space = (push_constants && !uniform_space_zero) ? 1u : 0u;
 		auto group = pipeline.CreatePipelineResourceGroup(group_space, bindings);
+		if (pool_stress) {
+			/** @brief Exercise page growth, partial release, reuse and complete retirement. */
+			std::vector<PipelineResourceGroup> live_groups;
+			live_groups.reserve(4096u);
+			for (auto cycle : std::views::iota(0u, 3u)) {
+				(void)cycle;
+				std::ranges::transform(
+					std::views::iota(0u, 4096u),
+					std::back_inserter(live_groups),
+					[&](auto) {
+						return pipeline.CreatePipelineResourceGroup(group_space, bindings);
+					}
+				);
+				live_groups.erase(live_groups.begin(), live_groups.begin() + 2048u);
+				std::ranges::transform(
+					std::views::iota(0u, 2048u),
+					std::back_inserter(live_groups),
+					[&](auto) {
+						return pipeline.CreatePipelineResourceGroup(group_space, bindings);
+					}
+				);
+				live_groups.clear();
+			}
+		}
+		PipelineResourceGroup alternate_group;
+		if (layout_switch) {
+			alternate_group = alternate_pipeline.CreatePipelineResourceGroup(group_space, bindings);
+		}
 
 		auto builder = scheduler.schedule();
 		auto const target_binding = builder.RegisterResource();
 		auto const uniform_binding = builder.RegisterResource();
 		auto const vertex_binding = builder.RegisterResource();
+		auto const index_binding = indexed ? builder.RegisterResource() : vertex_binding;
 		auto const view_binding = builder.RegisterView();
 		auto const pipeline_binding = builder.RegisterPipeline();
+		auto const alternate_binding = layout_switch ? builder.RegisterPipeline() : pipeline_binding;
 		auto const group_binding = builder.RegisterResourceGroup();
+		auto const alternate_group_binding = layout_switch ?
+			builder.RegisterResourceGroup() : group_binding;
 
 		auto upload = builder.CreateNode(QueueType::Transfer);
 		// "pushcolor" multiplies this uniform colour by the pipeline-constant colour, so the two
@@ -406,6 +501,38 @@ namespace {
 		    }
 		);
 		auto draw = builder.CreateNode(QueueType::Graphics, upload);
+		if (dynamic_repeat) {
+			/** @brief Distinct base and shifted colours expose a stale dynamic binding cache. */
+			std::array const base_color{0.0f, 1.0f, 0.0f, 1.0f};
+			auto const* base_bytes = reinterpret_cast<std::byte const*>(base_color.data());
+			upload.Record(
+				WriteBuffer{
+					uniform_binding,
+					256u,
+					std::vector<std::byte>{color_bytes, color_bytes + sizeof(fragment_color)}
+				}
+			)
+				.Record(
+					WriteBuffer{
+						uniform_binding,
+						0u,
+						std::vector<std::byte>{base_bytes, base_bytes + sizeof(base_color)}
+					}
+				);
+		}
+		if (indexed) {
+			/// @brief A prefix tests the bound byte offset while keeping the upload four-byte aligned.
+			std::array<std::uint16_t, 4u> const index_data{0u, 0u, 1u, 2u};
+			auto const* index_bytes = reinterpret_cast<std::byte const*>(index_data.data());
+			upload.Record(
+				WriteBuffer{
+					index_binding,
+					0u,
+					std::vector<std::byte>{index_bytes, index_bytes + sizeof(index_data)}
+				}
+			);
+			draw.Access({index_binding, AccessMode::Read, ResourceUsage::IndexBuffer, {}});
+		}
 		draw.Access({target_binding, AccessMode::Write, ResourceUsage::ColorAttachment, {}})
 		    .Access({uniform_binding, AccessMode::Read, ResourceUsage::Uniform, {}})
 		    .Access({vertex_binding, AccessMode::Read, ResourceUsage::VertexBuffer, {}})
@@ -419,7 +546,7 @@ namespace {
 			        BindVertexBuffer{
 			            vertex_binding,
 			            0u,
-			            (two_attribute_layout || push_constants) ? 24u : 16u,
+			            (two_attribute_layout || push_constants) ? 24u : (float3 ? 12u : 16u),
 			            0u
 			        }
 			    );
@@ -454,6 +581,22 @@ namespace {
 			        }
 			    }
 			);
+			if (constant_repeat) {
+				/** @brief Force multiple mapped pages before drawing from the last snapshot. */
+				std::ranges::for_each(std::views::iota(0u, 64u), [&](auto) {
+					draw.Record(
+						SetPipelineConstants{
+							.slot = 0u,
+							.space = 0u,
+							.offset = 0u,
+							.data = std::vector<std::byte>{
+								pipeline_constant_bytes,
+								pipeline_constant_bytes + sizeof(pipeline_constant_color)
+							}
+						}
+					);
+				});
+			}
 		}
 		if (!early_binds) {
 			draw.Record(BindResourceGroup{group_binding, group_space})
@@ -461,21 +604,75 @@ namespace {
 			        BindVertexBuffer{
 			            vertex_binding,
 			            0u,
-			            (two_attribute_layout || push_constants) ? 24u : 16u,
+			            (two_attribute_layout || push_constants) ? 24u : (float3 ? 12u : 16u),
 			            0u
 			        }
 			    );
 		}
-		draw.Record(Draw{3u}).Record(EndRendering{});
+		if (layout_switch) {
+			if (indexed) {
+				draw.Record(
+					BindIndexBuffer{
+						.resource = index_binding,
+						.type = IndexType::Uint16,
+						.offset = sizeof(std::uint16_t)
+					}
+				);
+			}
+			draw.Record(BindVertexBuffer{vertex_binding, 1u, 32u, 0u})
+				.Record(BindPipeline{alternate_binding})
+				.Record(BindPipeline{pipeline_binding})
+				.Record(BindPipeline{alternate_binding})
+				.Record(BindResourceGroup{alternate_group_binding, group_space});
+		}
+		if (dynamic_repeat) {
+			/** @brief Repeated offsets reuse a group; intervening base binding must not poison it. */
+			for (auto offset : {256u, 256u, 0u, 256u, 256u}) {
+				draw.Record(
+					BindResourceGroup{group_binding, group_space, {offset}}
+				);
+			}
+		}
+		if (indexed) {
+			draw.Record(DrawIndexed{3u});
+		}
+		else {
+			if (constant_repeat) {
+				/** @brief Earlier pixels must keep the half-intensity constants after a later update. */
+				std::array const full_color{1.0f, 1.0f, 1.0f, 1.0f};
+				auto const* bytes = reinterpret_cast<std::byte const*>(full_color.data());
+				draw.Record(Draw{3u})
+					.Record(
+						SetPipelineConstants{
+							.slot = 0u,
+							.space = 0u,
+							.offset = 0u,
+							.data = std::vector<std::byte>{bytes, bytes + sizeof(full_color)}
+						}
+					)
+					.Record(Viewport{0.0f, 0.0f, float(TargetWidth / 2u), float(TargetHeight)});
+			}
+			draw.Record(Draw{3u});
+		}
+		draw.Record(EndRendering{});
 
 		auto upload_state = std::make_shared<State>();
 		auto operation = std::move(builder).connect(Receiver{upload_state});
 		operation.BindResource(target_binding, std::move(target));
 		operation.BindResource(uniform_binding, std::move(uniform));
 		operation.BindResource(vertex_binding, std::move(vertices));
+		if (indexed) {
+			operation.BindResource(index_binding, std::move(indices));
+		}
 		operation.BindView(view_binding, std::move(target_view));
 		operation.BindPipeline(pipeline_binding, std::move(pipeline));
+		if (layout_switch) {
+			operation.BindPipeline(alternate_binding, std::move(alternate_pipeline));
+		}
 		operation.BindResourceGroup(group_binding, std::move(group));
+		if (layout_switch) {
+			operation.BindResourceGroup(alternate_group_binding, std::move(alternate_group));
+		}
 		operation.start();
 		auto resources = Wait(upload_state);
 		target = resources.TakeResource(target_binding);
@@ -546,6 +743,12 @@ namespace {
 			}
 		}
 		auto const total = static_cast<std::size_t>(TargetWidth) * TargetHeight;
+		/// @brief Reject partial/degenerate geometry, not merely an empty target.
+		if ((layout_switch || float3) && (red < total / 3u || red > total / 2u)) {
+			throw std::runtime_error(
+				"Vertex layout regression produced an incorrect triangle coverage"
+			);
+		}
 		std::cout << name << " draw: red=" << red << " non-black=" << non_black
 		          << " total=" << total << " ("
 		          << (100.0 * static_cast<double>(red) / static_cast<double>(total)) << "%)";
@@ -562,6 +765,9 @@ namespace {
 				throw std::runtime_error(
 				    "the pipeline-constant colour did not reach the fragment shader"
 				);
+			}
+			if (constant_repeat && red == 0u) {
+				throw std::runtime_error("The later constant snapshot did not reach its draw");
 			}
 		} else if (red == 0u) {
 			throw std::runtime_error("the draw produced no shaded pixels");
@@ -593,14 +799,20 @@ int main(int argc, char** argv) try {
 	// user's CBV register (b0, space0) and failed root signature serialization on D3D12. It is
 	// the regression test for declaring the range at the register Slang actually assigns.
 	auto const uniform_space_zero = mode == "pushcolor_space0";
-	auto const push_constants = mode == "pushcolor" || uniform_space_zero;
+	auto const push_constants = mode == "pushcolor" || uniform_space_zero || mode == "constant_repeat";
 	return Run(
 	    std::string{name}.c_str(),
 	    mode == "hello" || mode == "early" || push_constants,
 	    push_constants,
 	    uniform_space_zero,
 	    mode == "early",
-	    mode == "zeroz"
+	    mode == "zeroz",
+	    mode == "layout_switch" || mode == "layout_switch_indexed",
+	    mode == "float3",
+	    mode == "layout_switch_indexed",
+	    mode == "dynamic_repeat",
+	    mode == "pool_stress",
+	    mode == "constant_repeat"
 	);
 } catch (std::exception const& error) {
 	std::cerr << "Draw probe failed: " << error.what() << std::endl;

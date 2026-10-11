@@ -991,7 +991,8 @@ namespace fyuu_rhi {
 				    return D3D12_INPUT_ELEMENT_DESC{
 				        .SemanticName = reflected->semantic_name.c_str(),
 				        .SemanticIndex = reflected->semantic_index,
-				        .Format = MapFormat(attribute.format),
+				        .Format = attribute.format == ResourceFlagBits::R32G32B32Float ?
+				            DXGI_FORMAT_R32G32B32_FLOAT : MapFormat(attribute.format),
 				        .InputSlot = attribute.slot,
 				        .AlignedByteOffset = attribute.offset,
 				        .InputSlotClass = buffer->input_rate == pipeline::VertexInputRate::Vertex ?

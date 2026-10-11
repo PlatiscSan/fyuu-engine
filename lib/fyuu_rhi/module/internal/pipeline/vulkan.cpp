@@ -4,6 +4,7 @@ module;
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <memory>
 #include <cstdint>
 #include <format>
 #include <ranges>
@@ -11,6 +12,9 @@ module;
 #include <utility>
 #include <variant>
 #include <vector>
+#include <limits>
+
+#include <mutex>
 #endif // !defined(__cpp_lib_modules)
 #if !defined(__APPLE__) && defined(__clang__) && defined(_MSVC_STL_VERSION)
 #define FYUU_RHI_USE_VULKAN_HEADER
@@ -33,6 +37,34 @@ import :resource_factory;
 import :sampler_factory;
 import :view_factory;
 import :vulkan_data;
+import :memory_pressure;
+
+namespace fyuu_rhi::vulkan {
+	/** @brief Free only this group's set; sibling groups keep the page alive. */
+	PipelineResourceGroup::~PipelineResourceGroup() noexcept {
+		if (!pool || !set) {
+			return;
+		}
+		try {
+			std::unique_lock lock(pool->mutex);
+			pool->device->freeDescriptorSets(*pool->impl, set, *pool->dispatcher);
+			--pool->used;
+		} catch (...) {
+		}
+	}
+
+	PipelineResourceGroup& PipelineResourceGroup::operator=(PipelineResourceGroup&& other) noexcept {
+		if (this != &other) {
+			/// The previous set must be freed through its own pool before that pool can die.
+			space = std::exchange(other.space, 0u);
+			pool = std::move(other.pool);
+			set = std::move(other.set);
+			layout = std::move(other.layout);
+			dynamic_buffers = std::move(other.dynamic_buffers);
+		}
+		return *this;
+	}
+} // namespace fyuu_rhi::vulkan
 
 namespace fyuu_rhi {
 
@@ -241,29 +273,81 @@ namespace fyuu_rhi {
 			}
 
 			auto const& device = native->layout.getDestructorType();
-			auto raw_pool = device->createDescriptorPool(
-				{
-					{},
-					1u,
-					pool_sizes
-				},
-				nullptr,
-				*native->dispatcher
-			);
-			vk::SharedDescriptorPool pool(
-				raw_pool,
-				device,
-				{ nullptr, *native->dispatcher }
-			);
 			auto raw_layout = *native->descriptor_set_layouts[space];
-			auto descriptor_sets = device->allocateDescriptorSets(
-				vk::DescriptorSetAllocateInfo(
-					raw_pool,
-					1u,
-					&raw_layout
-				),
-				*native->dispatcher
-			);
+			static std::mutex pages_mutex;
+			std::shared_ptr<vulkan::DescriptorPoolPage> page;
+			{
+				std::unique_lock lock(pages_mutex);
+				std::erase_if(native->descriptor_pages, [](auto const& weak) {
+					return weak.expired();
+				}
+				);
+				for (auto const& weak : std::views::reverse(native->descriptor_pages)) {
+					auto candidate = weak.lock();
+					if (candidate && candidate->space == space) {
+						page = std::move(candidate);
+						break;
+					}
+				}
+			}
+			auto AllocateSet = [&](auto const& candidate) -> vk::DescriptorSet {
+				std::unique_lock lock(candidate->mutex);
+				if (candidate->used == candidate->capacity) {
+					return {};
+				}
+				try {
+					auto sets = device->allocateDescriptorSets(
+						vk::DescriptorSetAllocateInfo(*candidate->impl, 1u, &raw_layout),
+						*native->dispatcher
+					);
+					++candidate->used;
+					return sets.front();
+				} catch (vk::OutOfPoolMemoryError const&) {
+					return {};
+				} catch (vk::FragmentedPoolError const&) {
+					return {};
+				}
+			};
+			auto set = page ? AllocateSet(page) : vk::DescriptorSet{};
+			if (!set) {
+				/** @brief Grow pages with observed demand; pressure reduces speculative capacity.
+				 * Empty pages have no strong cache owner and are destroyed automatically.
+				 */
+				auto maximum = (std::numeric_limits<std::uint32_t>::max)();
+				for (auto const& size : pool_sizes) {
+					if (size.descriptorCount != 0u) {
+						maximum = (std::min)(maximum,
+							(std::numeric_limits<std::uint32_t>::max)() / size.descriptorCount);
+					}
+				}
+				auto demand = page ? static_cast<std::size_t>(page->capacity) * 2u : 1u;
+				auto capacity = static_cast<std::uint32_t>((std::max)(
+					std::size_t{1u},
+					(std::min)(static_cast<std::size_t>(maximum), details::IdleRetentionLimit(demand))
+				));
+				std::ranges::for_each(pool_sizes, [capacity](auto& size) {
+					size.descriptorCount *= capacity;
+				}
+				);
+				vk::SharedDescriptorPool pool(
+					device->createDescriptorPool(
+						{vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet, capacity, pool_sizes},
+						nullptr, *native->dispatcher
+					),
+					device,
+					{nullptr, *native->dispatcher}
+				);
+				page = std::make_shared<vulkan::DescriptorPoolPage>(
+					device, native->dispatcher, std::move(pool), space, capacity
+				);
+				set = AllocateSet(page);
+				if (!set) {
+					throw std::runtime_error("A new Vulkan descriptor page cannot allocate a set");
+				}
+				std::unique_lock lock(pages_mutex);
+				native->descriptor_pages.emplace_back(page);
+			}
+			vulkan::PipelineResourceGroup managed(space, page, set, native->layout, {});
 
 			std::vector<vk::DescriptorBufferInfo> buffer_infos;
 			std::vector<vk::DescriptorImageInfo> image_infos;
@@ -275,7 +359,7 @@ namespace fyuu_rhi {
 				auto metadata = FindMetadata(binding.slot);
 				auto type = DescriptorType(metadata->flags);
 				vk::WriteDescriptorSet write;
-				write.dstSet = descriptor_sets.front();
+				write.dstSet = set;
 				write.dstBinding = binding.slot;
 				write.dstArrayElement = binding.array_element;
 				write.descriptorCount = 1u;
@@ -382,15 +466,8 @@ namespace fyuu_rhi {
 					};
 				}
 			);
-			return MakePipelineResourceGroup(
-				vulkan::PipelineResourceGroup{
-					.space = space,
-					.pool = std::move(pool),
-					.set = descriptor_sets.front(),
-					.layout = native->layout,
-					.dynamic_buffers = std::move(dynamic_buffers)
-				}
-			);
+			managed.dynamic_buffers = std::move(dynamic_buffers);
+			return MakePipelineResourceGroup(std::move(managed));
 		}
 	};
 

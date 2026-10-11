@@ -23,6 +23,7 @@ import std;
 import :completion_token_dispatch;
 import :d3d12_data;
 import :d3d12_utility;
+import :memory_pressure;
 
 namespace {
 	constexpr std::uint64_t FailedFence = (std::numeric_limits<std::uint64_t>::max)();
@@ -36,12 +37,14 @@ namespace fyuu_rhi::d3d12 {
 		if (this == &other) {
 			return *this;
 		}
-		ManagedCommandList previous(std::move(other));
-		std::swap(owner, previous.owner);
-		std::swap(impl, previous.impl);
-		std::swap(descriptors, previous.descriptors);
-		std::swap(fence_value, previous.fence_value);
-		std::swap(is_open, previous.is_open);
+		/// Retain the overwritten work until the existing destructor can retire it safely.
+		ManagedCommandList previous(std::move(*this));
+		owner = std::move(other.owner);
+		impl = std::move(other.impl);
+		descriptors = std::move(other.descriptors);
+		fence_value = std::exchange(other.fence_value, 0u);
+		is_open = std::exchange(other.is_open, false);
+		retention_demand = std::exchange(other.retention_demand, 0u);
 		return *this;
 	}
 
@@ -62,8 +65,14 @@ namespace fyuu_rhi::d3d12 {
 			if (is_open) {
 				(void)impl->Close();
 			}
+			auto limit = details::IdleRetentionLimit(retention_demand);
 			std::unique_lock<std::mutex> lock(owner->command_lists_mutex);
-			owner->command_lists.emplace_back(std::move(impl));
+			while (owner->command_lists.size() > limit) {
+				owner->command_lists.pop_back();
+			}
+			if (owner->command_lists.size() < limit) {
+				owner->command_lists.emplace_back(std::move(impl));
+			}
 		}
 		catch (...) {
 		}

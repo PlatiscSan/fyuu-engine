@@ -48,10 +48,23 @@ namespace fyuu_rhi::webgpu {
 	/// first failure is latched here: the submit that produced it fails the completion token,
 	/// and a mapping that will never complete reports it instead of waiting forever.
 	struct DeviceError {
+		/// @brief Immutable after creation; true when Dawn synchronizes device API calls.
+		bool implicit_synchronization = false;
+		/// @brief Fallback native-call mutex; never held during a GPU completion wait.
+		std::mutex api_mutex;
 		std::atomic_bool failed = false;
 		/// Mutable because Message() reads the recorded text from a const device or resource.
 		mutable std::mutex mutex;
 		std::string message;
+
+		/** @brief Acquires external API synchronization only on the unsupported-feature path. */
+		std::unique_lock<std::mutex> LockApi() {
+			std::unique_lock lock(api_mutex, std::defer_lock);
+			if (!implicit_synchronization) {
+				lock.lock();
+			}
+			return lock;
+		}
 
 		/// Records the first failure. Runs inside a Dawn callback, so it must not throw.
 		void Fail(std::string_view text) noexcept {
@@ -168,11 +181,30 @@ namespace fyuu_rhi::webgpu {
 		void Run(std::stop_token stop_token);
 	};
 
+	/** @brief Shared GPU decoder for one live device and decoded output format. */
+	struct BCDecoder {
+		wgpu::Device device;
+		wgpu::TextureFormat format;
+		wgpu::RenderPipeline impl;
+		wgpu::Sampler sampler;
+	};
+
 	struct Resource {
+		/** @brief Original blocks and GPU decode state for transparent BC emulation. */
+		struct BCStorage {
+			/// @brief Exact original block bytes, arranged as padded mip/slice rows.
+			wgpu::Buffer blocks;
+			/// @brief Public compressed format, independent of the sampled texture format.
+			wgpu::TextureFormat format = wgpu::TextureFormat::Undefined;
+			/// @brief Empty for native BC sampling; otherwise decodes texels on the GPU.
+			std::shared_ptr<BCDecoder> decoder;
+		};
 		std::variant<wgpu::Buffer, wgpu::Texture> impl;
 		/// The owning device's failure latch, so Map() can fail instead of blocking on a
 		/// device that already reported that the work referencing this resource was rejected.
 		std::shared_ptr<DeviceError> errors;
+		/// @brief Empty for ordinary resources; preserves exact BC bytes for readback.
+		BCStorage bc;
 	};
 
 	struct View {
@@ -198,6 +230,8 @@ namespace fyuu_rhi::webgpu {
 			std::uint32_t binding;
 		};
 
+		/// @brief Shares the existing device state without another allocation.
+		std::shared_ptr<DeviceError> errors;
 		wgpu::Device device;
 		std::vector<wgpu::BindGroupLayout> bind_group_layouts;
 		std::vector<pipeline::BindingMetadata> bindings;
@@ -220,6 +254,8 @@ namespace fyuu_rhi::webgpu {
 		};
 
 		std::uint32_t space;
+		/// @brief Coordinates fallback bind-group creation with this device's other users.
+		std::shared_ptr<DeviceError> errors;
 		wgpu::Device device;
 		wgpu::BindGroupLayout layout;
 		std::vector<wgpu::BindGroupEntry> entries;

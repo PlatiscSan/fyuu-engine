@@ -579,7 +579,9 @@ namespace fyuu_rhi {
 					return vk::VertexInputAttributeDescription(
 						attribute.location,
 						attribute.slot,
-						vulkan::ResourceFormat(ResourceFlags{ attribute.format }),
+						attribute.format == ResourceFlagBits::R32G32B32Float ?
+							vk::Format::eR32G32B32Sfloat :
+							vulkan::ResourceFormat(ResourceFlags{ attribute.format }),
 						attribute.offset
 					);
 				}

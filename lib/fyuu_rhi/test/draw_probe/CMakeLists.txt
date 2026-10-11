@@ -27,7 +27,7 @@ endif()
 #             the same pipeline-constant check with the user uniform buffer in space 0, where
 #             D3D12 used to declare the emulated pipeline-constant range on top of the user's
 #             own CBV register (b0, space0) and fail root signature serialization
-set(draw_probe_modes hello early zeroz pushcolor pushcolor_space0)
+set(draw_probe_modes hello early zeroz pushcolor pushcolor_space0 layout_switch layout_switch_indexed float3 pool_stress constant_repeat)
 
 function(add_draw_probe_test backend)
 	add_test(NAME DrawProbe.${backend} COMMAND DrawProbe ${backend})
@@ -48,3 +48,14 @@ else()
 	add_draw_probe_test(opengl)
 endif()
 add_draw_probe_test(webgpu)
+add_test(NAME DrawProbe.webgpu.dynamic_repeat COMMAND DrawProbe webgpu dynamic_repeat)
+set_tests_properties(DrawProbe.webgpu.dynamic_repeat PROPERTIES TIMEOUT 120)
+if(WIN32)
+	foreach(mode IN ITEMS pool_stress constant_repeat dynamic_repeat)
+		add_test(NAME DrawProbe.webgpu.${mode}.external_sync COMMAND DrawProbe webgpu ${mode})
+		set_tests_properties(
+			DrawProbe.webgpu.${mode}.external_sync
+			PROPERTIES ENVIRONMENT "FYUU_RHI_WEBGPU_FORCE_EXTERNAL_SYNC=1" TIMEOUT 120
+		)
+	endforeach()
+endif()

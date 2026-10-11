@@ -171,6 +171,11 @@ mapping. The `Resource` must outlive its active mapping scope.
 
 ## Shaders, pipelines, and resource groups
 
+For packed `float3` vertex input, set `VertexAttribute::format` to
+`ResourceFlagBits::R32G32B32Float`. It consumes 12 bytes; specify the actual buffer
+stride and attribute offset in the vertex layout. This is a vertex-only format,
+not a promise of texture or typed-buffer-view support.
+
 Pipelines receive Slang program descriptors. FyuuRHI compiles the declared
 modules and reflects their resource interface. A graphics pipeline also
 describes vertex input, primitive topology, rasterization, multisampling,
@@ -376,6 +381,61 @@ WebGPU and Metal currently have no RHI-managed native pipeline disk cache.
 Driver/runtime-owned caches are outside this directory. Close RHI applications
 before deleting files or directories. Cache misses rebuild the native objects;
 old flat cache files are left untouched by this change and may be removed manually.
+
+## WebGPU progress and CPU usage
+
+Batch recording remains parallel. While queue work is outstanding, the scheduler
+drives Dawn with zero-timeout polling and yields between rounds instead of sleeping
+on a millisecond timer. This reduces completion latency but uses more CPU while
+waiting for GPU work. With no outstanding work, the progress thread sleeps until
+a new submission or shutdown notification. Receivers and resource retirement remain
+on the completion driver, not on Dawn callbacks or the progress thread.
+
+## WebGPU BC texture fallback
+
+For non-block-aligned dimensions, WebGPU stores BC textures as original BC blocks
+plus a decoded sampling texture. Aligned textures retain native BC sampling when
+the device supports it; otherwise they also use software decoding.
+This preserves the requested dimensions and mip chain, including images such as
+2287 × 2279. Buffer copies and readback use the original blocks without recompression;
+texture copies update both representations. Decoding is GPU work recorded before
+sampling, not a synchronous CPU upload. The temporary native BC image may have padded
+dimensions, but the texture seen by application shaders does not.
+
+When `TextureCompressionBC` is unavailable, BC1–BC7 GPU software decoding is
+automatic for NVIDIA, Intel and AMD profiles, without an opt-in switch. BC6H/BC7
+also have vendor-independent, specification-defined decoders. AMD BC1–BC5 still
+await native hardware verification; unknown BC1–BC5 profiles are rejected rather
+than approximated. See [BC verification results](test/WEBGPU_FALLBACK_RESULTS.md).
+
+sRGB remains sRGB. BC4/BC5 use signed or unsigned normalized16 sampling storage
+on NVIDIA/Intel, while BC6H uses RGBA16Float. BC1–BC3 and BC7 use RGBA8 storage.
+Both representations and temporary decode images consume additional memory.
+All WebGPU BC textures keep
+original blocks so copy/readback behavior does not depend on image size or compatibility
+mode. It does not make BC render targets or writable storage images legal.
+
+## Memory retention
+
+Idle D3D12 command lists, Vulkan command pools and binary completion objects are
+retained according to recent graph demand and available host memory, rather than
+the largest graph ever submitted. Memory headroom is sampled at most once per
+100 ms. Below 25% available memory the idle budget decreases proportionally;
+below 5% it becomes zero. Trimming happens during subsequent scheduler activity
+or retirement, never by releasing in-flight objects. This policy measures host
+memory, not a GPU memory budget.
+
+Vulkan resource groups share descriptor-pool pages. Page capacity grows with
+demand and is reduced for new pages under memory pressure; existing live pages
+cannot be resized. Empty pages are released when their final group is destroyed.
+D3D12 descriptor heaps are created only when first used.
+
+OpenGL keeps owned submission snapshots in contiguous metadata arrays and trims
+idle VAO and presentation-target caches. Slang retains at most eight recent
+session configurations, with a smaller budget under pressure. WebGPU shares BC
+decode pipelines between live textures of the same device and decoded format;
+fallback constants use aligned recording-local pages with a separate slice for
+each update. None of these changes alter resource ownership or binding semantics.
 
 ## License
 

@@ -47,6 +47,7 @@ module fyuu_rhi:vulkan_command_scheduler;
 #if defined(__cpp_lib_modules)
 import std;
 #endif // defined(__cpp_lib_modules)
+import :memory_pressure;
 #if !defined(FYUU_RHI_USE_VULKAN_HEADER)
 import vulkan;
 #endif
@@ -207,6 +208,32 @@ namespace {
 				throw std::invalid_argument(
 				    "Vulkan padded buffer copy does not support this format"
 				);
+		}
+	}
+
+	/** @brief Returns bytes per BC 4x4 block, or zero for an uncompressed format. */
+	std::uint32_t CompressedBlockBytes(vk::Format format) noexcept {
+		switch (format) {
+		case vk::Format::eBc1RgbUnormBlock:
+		case vk::Format::eBc1RgbSrgbBlock:
+		case vk::Format::eBc1RgbaUnormBlock:
+		case vk::Format::eBc1RgbaSrgbBlock:
+		case vk::Format::eBc4UnormBlock:
+		case vk::Format::eBc4SnormBlock:
+			return 8u;
+		case vk::Format::eBc2UnormBlock:
+		case vk::Format::eBc2SrgbBlock:
+		case vk::Format::eBc3UnormBlock:
+		case vk::Format::eBc3SrgbBlock:
+		case vk::Format::eBc5UnormBlock:
+		case vk::Format::eBc5SnormBlock:
+		case vk::Format::eBc6HUfloatBlock:
+		case vk::Format::eBc6HSfloatBlock:
+		case vk::Format::eBc7UnormBlock:
+		case vk::Format::eBc7SrgbBlock:
+			return 16u;
+		default:
+			return 0u;
 		}
 	}
 
@@ -1258,14 +1285,27 @@ namespace {
 		    fyuu_rhi::TextureRegion const& region
 		) const {
 			auto format = static_cast<vk::Format>(texture.format);
-			auto texel_size = TexelSize(format);
+			auto block_bytes = CompressedBlockBytes(format);
+			auto texel_size = block_bytes != 0u ? block_bytes : TexelSize(format);
+			auto block_extent = block_bytes != 0u ? 4u : 1u;
 			if (layout.bytes_per_row % texel_size != 0u) {
 				throw std::invalid_argument("Vulkan texture copy row pitch is not texel aligned");
 			}
+			/// @brief RHI row counts are storage rows (BC blocks); Vulkan pitches
+			/// are measured in texels. Zero retains Vulkan's tightly packed default.
+			auto row_length = static_cast<std::uint64_t>(layout.bytes_per_row / texel_size) * block_extent;
+			auto image_height = static_cast<std::uint64_t>(layout.rows_per_image) * block_extent;
+			if (row_length > (std::numeric_limits<std::uint32_t>::max)() ||
+				image_height > (std::numeric_limits<std::uint32_t>::max)()) {
+				throw std::out_of_range("Vulkan texture copy pitch exceeds native limits");
+			}
+			if (block_bytes != 0u && layout.offset % block_bytes != 0u) {
+				throw std::invalid_argument("Vulkan BC copy offset is not block aligned");
+			}
 			return vk::BufferImageCopy(
 			    layout.offset,
-			    layout.bytes_per_row / texel_size,
-			    layout.rows_per_image,
+			    static_cast<std::uint32_t>(row_length),
+			    static_cast<std::uint32_t>(image_height),
 			    vk::ImageSubresourceLayers(
 			        NativeAspect(format),
 			        region.mip_level,
@@ -1526,9 +1566,16 @@ namespace fyuu_rhi::vulkan {
 			// Give the buffer back to its own pool, then return that pool to the family's idle
 			// queue, so the next batch needing one can take it. The map is never erased from, so a
 			// plain lookup by family is enough and no address is held anywhere.
+			auto limit = details::IdleRetentionLimit(pool.retention_demand);
 			std::unique_lock<std::mutex> pools_lock(context->command_pools_mutex);
-			pool.command_buffers.emplace_back(impl);
-			context->command_pools[family].emplace_back(std::move(pool));
+			auto& idle = context->command_pools[family];
+			while (idle.size() > limit) {
+				idle.pop_back();
+			}
+			if (idle.size() < limit) {
+				pool.command_buffers.emplace_back(impl);
+				idle.emplace_back(std::move(pool));
+			}
 		} catch (...) {
 			// Device loss makes this command buffer unsafe to recycle.
 		}
@@ -1566,8 +1613,23 @@ namespace fyuu_rhi::vulkan {
 			);
 			owner->device->resetFences(*fence, *owner->dispatcher);
 			std::unique_lock<std::mutex> lock(owner->mutex);
-			owner->fences.emplace_back(std::move(fence));
+			auto fence_limit = fyuu_rhi::details::IdleRetentionLimit(owner->fence_retention_demand);
+			auto semaphore_limit = fyuu_rhi::details::IdleRetentionLimit(owner->semaphore_retention_demand);
+			/// Consumer completion proves that these binary semaphore waits have finished.
+			/// Trim only this idle inventory; outstanding completion points keep their objects.
+			while (owner->fences.size() > fence_limit) {
+				owner->fences.pop_back();
+			}
+			while (owner->semaphores.size() > semaphore_limit) {
+				owner->semaphores.pop_back();
+			}
+			if (owner->fences.size() < fence_limit) {
+				owner->fences.emplace_back(std::move(fence));
+			}
 			for (auto& semaphore : consumed_semaphores) {
+				if (owner->semaphores.size() >= semaphore_limit) {
+					break;
+				}
 				owner->semaphores.emplace_back(std::move(semaphore));
 			}
 		} catch (...) {
@@ -2056,6 +2118,12 @@ namespace fyuu_rhi::execution {
 						        .front();
 					}
 				}
+				pool.retention_demand = std::ranges::count_if(
+					queue_identifiers,
+					[identifier](auto const& candidate) {
+						return candidate.family == identifier.family;
+					}
+				);
 				auto command_index = token.command_buffers.size();
 				token.command_buffers.emplace_back(
 				    owner,
@@ -2472,6 +2540,18 @@ namespace fyuu_rhi::execution {
 					}
 				}
 				resource_joins.emplace_back(std::move(join));
+			}
+			if (!scheduler.timeline_semaphore_supported) {
+				auto allocator = std::get<std::shared_ptr<BinaryCompletionPointAllocator>>(
+					scheduler.completion_points
+				);
+				std::size_t semaphore_demand = 0u;
+				std::ranges::for_each(token.binary_completions, [&](auto const& completion) {
+					semaphore_demand += completion.consumed_semaphores.size();
+				});
+				std::unique_lock lock(allocator->mutex);
+				allocator->fence_retention_demand = token.binary_completions.size();
+				allocator->semaphore_retention_demand = semaphore_demand;
 			}
 
 			// Phase 2: command buffers are independent after serial preparation. A

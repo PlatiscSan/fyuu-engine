@@ -4,6 +4,7 @@ module;
 #include <deque>
 #include <exception>
 #include <memory>
+#include <utility>
 #include <mutex>
 #include <unordered_map>
 #include <vector>
@@ -118,6 +119,9 @@ namespace fyuu_rhi::vulkan {
 		std::deque<vk::SharedFence> fences;
 		std::deque<vk::SharedSemaphore> semaphores;
 		std::mutex mutex;
+		/// @brief Latest graph demand, used only to limit already-retired synchronization objects.
+		std::size_t fence_retention_demand = 1u;
+		std::size_t semaphore_retention_demand = 0u;
 
 		ManagedBinaryCompletionPoint AllocateCompletionPoint(
 			std::size_t consumed_semaphore_count
@@ -163,6 +167,8 @@ namespace fyuu_rhi::vulkan {
 		vk::SharedCommandPool impl;
 		/// Buffers this pool has finished with, ready to be handed out again.
 		std::deque<vk::CommandBuffer> command_buffers;
+		/// @brief Recent family demand, used only after all leased commands retire.
+		std::size_t retention_demand = 1u;
 	};
 
 	struct CompletionToken {
@@ -362,6 +368,29 @@ namespace fyuu_rhi::vulkan {
 		vk::SharedSampler impl;
 	};
 
+	/** @brief One descriptor page shared by live resource groups of a pipeline space. */
+	struct DescriptorPoolPage {
+		vk::SharedDevice device;
+		std::shared_ptr<vk::detail::DispatchLoaderDynamic> dispatcher;
+		vk::SharedDescriptorPool impl;
+		std::uint32_t space;
+		std::uint32_t capacity;
+		std::uint32_t used = 0u;
+		/// @brief External synchronization for allocation and freeing in this pool only.
+		std::mutex mutex;
+
+		DescriptorPoolPage(
+			vk::SharedDevice const& device,
+			std::shared_ptr<vk::detail::DispatchLoaderDynamic> const& dispatcher,
+			vk::SharedDescriptorPool&& impl,
+			std::uint32_t space,
+			std::uint32_t capacity
+		) noexcept
+			: device(device), dispatcher(dispatcher), impl(std::move(impl)),
+			space(space), capacity(capacity) {
+		}
+	};
+
 	struct Pipeline {
 		struct ConstantRange {
 			std::uint32_t abi_slot;
@@ -382,6 +411,8 @@ namespace fyuu_rhi::vulkan {
 		vk::Format depth_stencil_format = vk::Format::eUndefined;
 		vk::SampleCountFlagBits samples = vk::SampleCountFlagBits::e1;
 		vk::SharedPipeline impl;
+		/// @brief Weak page references do not retain empty native pools.
+		std::vector<std::weak_ptr<DescriptorPoolPage>> descriptor_pages;
 	};
 
 	struct PipelineResourceGroup {
@@ -390,10 +421,30 @@ namespace fyuu_rhi::vulkan {
 		};
 
 		std::uint32_t space;
-		vk::SharedDescriptorPool pool;
+		std::shared_ptr<DescriptorPoolPage> pool;
 		vk::DescriptorSet set;
 		vk::SharedPipelineLayout layout;
 		std::vector<DynamicBuffer> dynamic_buffers;
+
+		PipelineResourceGroup(
+			std::uint32_t space,
+			std::shared_ptr<DescriptorPoolPage> const& pool,
+			vk::DescriptorSet set,
+			vk::SharedPipelineLayout const& layout,
+			std::vector<DynamicBuffer>&& dynamic_buffers
+		) noexcept
+			: space(space), pool(pool), set(set), layout(layout),
+			dynamic_buffers(std::move(dynamic_buffers)) {
+		}
+		PipelineResourceGroup(PipelineResourceGroup const&) = delete;
+		PipelineResourceGroup& operator=(PipelineResourceGroup const&) = delete;
+		PipelineResourceGroup(PipelineResourceGroup&& other) noexcept
+			: space(std::exchange(other.space, 0u)), pool(std::move(other.pool)),
+			set(std::exchange(other.set, vk::DescriptorSet{})),
+			layout(std::move(other.layout)), dynamic_buffers(std::move(other.dynamic_buffers)) {
+		}
+		PipelineResourceGroup& operator=(PipelineResourceGroup&& other) noexcept;
+		~PipelineResourceGroup() noexcept;
 	};
 
 } // namespace fyuu_rhi::vulkan

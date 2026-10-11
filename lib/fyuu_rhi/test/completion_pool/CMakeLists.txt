@@ -5,6 +5,9 @@ target_sources(${PROJECT_NAME} PRIVATE main.cpp)
 target_link_libraries(${PROJECT_NAME} PRIVATE FyuuRHI)
 
 disable_rtti(${PROJECT_NAME})
+if(WIN32)
+	target_link_libraries(${PROJECT_NAME} PRIVATE Psapi)
+endif()
 
 # Dawn's D3D12 backend loads dxcompiler.dll / dxil.dll at runtime (LoadLibrary),
 # so applocal does not copy them; copy them next to the executable on Windows.
@@ -25,6 +28,8 @@ function(add_completion_pool_test backend)
 		COMMAND CompletionPool ${backend}
 	)
 	set_tests_properties(CompletionPool.${backend} PROPERTIES TIMEOUT 180)
+	add_test(NAME CompletionPool.${backend}.stress COMMAND CompletionPool ${backend} stress)
+	set_tests_properties(CompletionPool.${backend}.stress PROPERTIES TIMEOUT 600)
 endfunction()
 
 if(WIN32)
@@ -37,3 +42,11 @@ else()
 	add_completion_pool_test(opengl)
 endif()
 add_completion_pool_test(webgpu)
+if(WIN32)
+	add_test(NAME CompletionPool.webgpu.external_sync COMMAND CompletionPool webgpu)
+	add_test(NAME CompletionPool.webgpu.stress.external_sync COMMAND CompletionPool webgpu stress)
+	set_tests_properties(
+		CompletionPool.webgpu.external_sync CompletionPool.webgpu.stress.external_sync
+		PROPERTIES ENVIRONMENT "FYUU_RHI_WEBGPU_FORCE_EXTERNAL_SYNC=1" TIMEOUT 600
+	)
+endif()

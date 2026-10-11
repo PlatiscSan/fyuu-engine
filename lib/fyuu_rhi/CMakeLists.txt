@@ -251,6 +251,7 @@ if(BUILD_TESTING)
 	add_subdirectory(test/draw_shapes)
 	add_subdirectory(test/graph_validation)
 	add_subdirectory(test/binding_probe)
+	add_subdirectory(test/bc_copy)
 endif()
 
 if(FYUU_RHI_BUILD_DOCUMENTATION)
