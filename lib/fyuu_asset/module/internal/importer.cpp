@@ -48,6 +48,7 @@ import std;
 #endif // defined(__cpp_lib_modules)
 import :value;
 import :import_file_system;
+import :import_file_system_impl;
 
 namespace fyuu_asset {
 

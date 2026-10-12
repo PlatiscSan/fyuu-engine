@@ -34,30 +34,30 @@ import :operation;
 import :value;
 
 namespace {
-	[[nodiscard]] auto& ImporterRegistry() {
-		static std::unordered_map<std::string, fyuu_asset::ImportFunction> importers;
-		return importers;
+	[[nodiscard]] auto& ImportProtocols() {
+		static std::unordered_map<std::string, fyuu_asset::ImportProtocol> protocols;
+		return protocols;
 	}
 
-	[[nodiscard]] auto& ImporterRegistryMutex() {
+	[[nodiscard]] auto& ImportProtocolsMutex() {
 		static std::mutex mutex;
 		return mutex;
 	}
 
-	[[nodiscard]] fyuu_asset::ImportFunction ResolveImporter(std::string_view type) {
-		std::lock_guard lock{ImporterRegistryMutex()};
-		auto const found = ImporterRegistry().find(std::string{type});
-		if (found == ImporterRegistry().end()) {
-			throw std::out_of_range{"Asset type has no registered importer"};
+	[[nodiscard]] fyuu_asset::ImportProtocol ResolveImportProtocol(std::string_view type) {
+		std::lock_guard lock{ImportProtocolsMutex()};
+		auto const found = ImportProtocols().find(std::string{type});
+		if (found == ImportProtocols().end()) {
+			throw std::out_of_range{"Asset type has no registered import protocol"};
 		}
 		return found->second;
 	}
 
-	[[nodiscard]] std::vector<std::string> ReadPackageEntries(
+	[[nodiscard]] std::vector<std::string> ReadDeclaredEntries(
 	    fyuu_asset::ImportFileSystem const& file_system
 	) {
 		if (!file_system.Exists("asset.json")) {
-			return fyuu_asset::FindImportEntries(file_system);
+			return {};
 		}
 		auto const bytes = file_system.Read("asset.json");
 		auto const* first = reinterpret_cast<char const*>(bytes.data());
@@ -86,19 +86,18 @@ namespace {
 		return entries;
 	}
 
-	[[nodiscard]] fyuu_asset::Object ImportSource(std::filesystem::path const& source) {
-		std::filesystem::path root;
-		std::vector<std::string> entries;
-		if (std::filesystem::is_regular_file(source) && source.extension() != ".zip") {
-			root = source.parent_path();
-			entries.emplace_back(fyuu_asset::ToVirtualPath(source.filename()));
-		} else {
-			root = source;
+	[[nodiscard]] fyuu_asset::Object ParseBuiltIn(
+	    fyuu_asset::ImportFileSystem const& file_system
+	) {
+		auto const files = file_system.ListFiles();
+		if (files.size() == 1u) {
+			return fyuu_asset::ImportAsset(file_system, files.front(), {});
 		}
-
-		fyuu_asset::ImportFileSystem file_system{root};
+		auto entries = std::ranges::find(files, "asset.json") != files.end()
+		    ? ReadDeclaredEntries(file_system)
+		    : std::vector<std::string>{};
 		if (entries.empty()) {
-			entries = ReadPackageEntries(file_system);
+			entries = fyuu_asset::FindImportEntries(file_system);
 		}
 		if (entries.size() == 1u) {
 			return fyuu_asset::ImportAsset(file_system, entries.front(), {});
@@ -116,30 +115,30 @@ namespace {
 } // namespace
 
 namespace fyuu_asset {
-	Importer::Importer(std::string_view type, std::filesystem::path const& source) :
-	    m_task{.m_operation = this, .Execute = Execute},
-	    m_source(source),
-	    Import(ResolveImporter(type)) {
-	}
-
-	void Importer::Register(std::string_view type, ImportFunction Import) {
-		if (type.empty() || type.contains('\0') || !Import) {
-			throw std::invalid_argument{"Importer registration is invalid"};
+	void Importer::Register(std::string_view type, ImportProtocol const& protocol) {
+		if (type.empty() || type.contains('\0') || !protocol.Parse) {
+			throw std::invalid_argument{"Import protocol type is invalid"};
 		}
-		std::lock_guard lock{ImporterRegistryMutex()};
-		if (!ImporterRegistry().emplace(std::string{type}, Import).second) {
-			throw std::invalid_argument{"Asset type already has a registered importer"};
+		std::lock_guard lock{ImportProtocolsMutex()};
+		if (!ImportProtocols().emplace(std::string{type}, protocol).second) {
+			throw std::invalid_argument{"Asset type already has an import protocol"};
 		}
 	}
 
 	void Importer::RegisterBuiltIn(std::string_view type) {
-		Register(type, ImportSource);
+		Register(type, ImportProtocol{.Parse = ParseBuiltIn});
+	}
+
+	Importer::Importer(std::string_view type, std::filesystem::path const& source) :
+	    m_task{.m_operation = this, .Execute = Execute}, m_source(source),
+	    m_protocol(ResolveImportProtocol(type)) {
 	}
 
 	void Importer::Execute(OperationTask* submitted) noexcept {
 		auto* importer = static_cast<Importer*>(submitted->m_operation);
 		try {
-			importer->m_result = importer->Import(importer->m_source);
+			ImportFileSystem file_system{importer->m_source};
+			importer->m_result = importer->m_protocol.Parse(file_system);
 		} catch (...) {
 			importer->m_error = std::current_exception();
 		}

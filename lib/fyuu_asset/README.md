@@ -72,18 +72,20 @@ under a category directory such as `mesh`, `texture`, `anime`, `skeleton`,
 run on the shared asset worker:
 
 ```cpp
-fyuu_asset::Importer::Register("miku_model", ImportMikuModel);
+fyuu_asset::Importer::Register(
+    "miku_model",
+    {.Parse = ParseMikuModel}
+);
 auto fields = co_await fyuu_asset::Importer{"miku_model", "sources/character.zip"};
-/** Transform fields into the schema owned by the application. */
 auto asset = co_await fyuu_asset::Factory{"miku_model", "miku", fields};
 auto uuid = asset.GetUUID();
 ```
 
-`ImportMikuModel` is a plain function pointer returning `Object`; it runs on the
-asset worker and may throw. Registration is keyed by the open runtime type
-string. `RegisterBuiltIn(type)` explicitly assigns FyuuAsset's current
-format-detecting parser when an application wants that parser. An unregistered
-type is rejected instead of silently receiving a fixed field schema.
+The registered `ImportProtocol` receives only an exported, read-only
+`ImportFileSystem`. It discovers UTF-8 virtual entry paths with `ListFiles()`
+and reads entries and their dependencies with `Read()`, without seeing host
+paths or extracting ZIP files. Use `RegisterBuiltIn(type)` to select
+FyuuAsset's format-detecting parser.
 
 Awaiting suspends the caller until parsing finishes on the asset worker;
 `await_resume()` returns the parsed Object or rethrows the parser exception.

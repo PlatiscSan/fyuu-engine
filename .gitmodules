@@ -1,3 +1,6 @@
 [submodule "lib/dependency/metal-cpp"]
 	path = lib/fyuu_rhi/external/metal-cpp
 	url = https://github.com/apple/metal-cpp.git
+[submodule "lib/fyuu_asset/external/MMDLoader"]
+	path = lib/fyuu_asset/external/MMDLoader
+	url = https://github.com/syoyo/MMDLoader.git

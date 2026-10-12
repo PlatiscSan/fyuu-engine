@@ -34,14 +34,15 @@ fyuu_asset::Object。fyuu_asset::Factory 持久化由应用层确定的完整字
 两者都在共享资产工作线程执行。
 
 @code
-fyuu_asset::Importer::Register("miku_model", ImportMikuModel);
+fyuu_asset::Importer::Register("miku_model", {.Parse = ParseMikuModel});
 auto fields = co_await fyuu_asset::Importer{"miku_model", "sources/character.zip"};
 auto asset = co_await fyuu_asset::Factory{"miku_model", "miku", fields};
 auto uuid = asset.GetUUID();
 @endcode
 
-注册表把开放的运行时类型字符串映射到普通 ImportFunction。RegisterBuiltIn 用于显式
-选择 FyuuAsset 的格式探测解析器；未注册类型会被拒绝，不会隐式获得固定字段架构。
+注册的 ImportProtocol 只接收公开的只读 ImportFileSystem。它通过 ListFiles() 发现
+UTF-8 虚拟入口，通过 Read() 读取入口和依赖文件，但看不到宿主物理路径。
+RegisterBuiltIn 选择 FyuuAsset 的格式探测解析器。
 
 包可以在 `asset.json` 中用 `entry` 声明一个入口，或用 `entries` 声明多个入口。没有
 清单时，导入器会发现受支持的模型入口或唯一且无歧义的 JSON 入口。包内虚拟路径统一

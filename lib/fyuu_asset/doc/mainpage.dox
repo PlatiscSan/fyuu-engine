@@ -39,15 +39,16 @@ fyuu_asset::Factory persists the complete field object selected by the
 application. Both operations run on the shared asset worker.
 
 @code
-fyuu_asset::Importer::Register("miku_model", ImportMikuModel);
+fyuu_asset::Importer::Register("miku_model", {.Parse = ParseMikuModel});
 auto fields = co_await fyuu_asset::Importer{"miku_model", "sources/character.zip"};
 auto asset = co_await fyuu_asset::Factory{"miku_model", "miku", fields};
 auto uuid = asset.GetUUID();
 @endcode
 
-Registration maps an open runtime type string to a plain ImportFunction.
-RegisterBuiltIn explicitly assigns FyuuAsset's format-detecting parser. An
-unregistered type is rejected rather than receiving an implicit field schema.
+The registered ImportProtocol receives only a public read-only ImportFileSystem.
+It discovers UTF-8 virtual entries with ListFiles(), reads entries and their
+dependencies with Read(), and never sees host paths. RegisterBuiltIn selects
+FyuuAsset's format-detecting parser.
 
 A package can select one entry with `entry` or several entries with `entries`
 in its `asset.json`. Without a manifest, the importer discovers supported model

@@ -24,6 +24,7 @@ import std;
 import :uuid;
 import :value;
 import :import_file_system;
+import :import_file_system_impl;
 
 namespace fyuu_asset {
 

@@ -702,17 +702,17 @@ namespace {
 } // namespace
 
 int main() {
-	try {
-		TemporaryDirectory directory{
-		    std::filesystem::current_path() / "fyuu_asset_import_tests"
-		};
-		fyuu_asset::InitializeAssetContext(directory.GetPath());
 		fyuu_asset::Importer::RegisterBuiltIn("configuration");
 		fyuu_asset::Importer::RegisterBuiltIn("binary");
 		fyuu_asset::Importer::RegisterBuiltIn("model");
 		fyuu_asset::Importer::RegisterBuiltIn("package");
 		fyuu_asset::Importer::RegisterBuiltIn("another_type");
 		fyuu_asset::Importer::RegisterBuiltIn("\xe9\x85\x8d\xe7\xbd\xae");
+	try {
+		TemporaryDirectory directory{
+		    std::filesystem::current_path() / "fyuu_asset_import_tests"
+		};
+		fyuu_asset::InitializeAssetContext(directory.GetPath());
 		TestJSON(directory.GetPath());
 		TestSeparatedImportAndCreate(directory.GetPath());
 		TestBinary(directory.GetPath());

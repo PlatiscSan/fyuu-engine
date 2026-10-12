@@ -67,16 +67,18 @@ auto const enabled = fields.at("enabled").As<bool>();
 应用层确定的最终字段。两个操作都在共享资产工作线程上执行：
 
 ```cpp
-fyuu_asset::Importer::Register("miku_model", ImportMikuModel);
+fyuu_asset::Importer::Register(
+    "miku_model",
+    {.Parse = ParseMikuModel}
+);
 auto fields = co_await fyuu_asset::Importer{"miku_model", "sources/character.zip"};
-/** 应用层在这里把解析结果转换为自己定义的字段。 */
 auto asset = co_await fyuu_asset::Factory{"miku_model", "miku", fields};
 auto uuid = asset.GetUUID();
 ```
 
-`ImportMikuModel` 是返回 `Object` 的普通函数指针，在资产工作线程执行并允许抛出异常。
-注册表以开放的运行时类型字符串为键。应用需要现有格式探测解析器时，可以显式调用
-`RegisterBuiltIn(type)`；未注册类型会直接失败，不会被静默套用固定字段架构。
+注册的 `ImportProtocol` 直接解析公开的只读 `ImportFileSystem`。它接收 UTF-8 虚拟
+入口路径，可以读取入口依赖，但看不到宿主物理路径，也不会解压文件到磁盘。使用
+`RegisterBuiltIn(type)` 选择 FyuuAsset 的格式探测解析器。
 
 等待 Importer 会挂起调用方，直到资产工作线程完成解析；`await_resume()` 返回解析
 后的 Object，或重新抛出解析异常。Importer 本身就是操作状态，在 await 表达式结束前

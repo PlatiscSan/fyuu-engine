@@ -2,7 +2,6 @@ module;
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <exception>
-#include <utility>
 
 #include <string_view>
 
@@ -12,6 +11,7 @@ module;
 #endif // !defined(__cpp_lib_modules)
 
 export module fyuu_asset:importer;
+import :import_file_system;
 import :operation;
 import :value;
 #if defined(__cpp_lib_modules)
@@ -19,15 +19,25 @@ import std;
 #endif // defined(__cpp_lib_modules)
 
 export namespace fyuu_asset {
-	/** @brief Parses one source into the complete dynamic fields chosen by an asset type. */
-	using ImportFunction = Object (*)(std::filesystem::path const& source);
+	/** @brief Describes the parser assigned to one open runtime asset type. */
+	struct ImportProtocol final {
+		/**
+		 * @brief Parses one virtual import filesystem into the type's complete fields.
+		 *
+		 * The callback executes on the asset worker and may throw to fail the import.
+		 * The filesystem defines the complete source scope. The parser discovers its
+		 * entry points through ImportFileSystem::ListFiles() and reads source files and
+		 * their dependencies through ImportFileSystem::Read().
+		 */
+		Object (*Parse)(ImportFileSystem const& file_system) = nullptr;
+	};
 
 	/** @brief Asynchronously parses one source into a caller-transformable dynamic object. */
 	class Importer final {
 	private:
 		OperationTask m_task;           ///< Queue node embedded in this awaitable.
 		std::filesystem::path m_source; ///< Source path owned by this operation.
-		ImportFunction Import;          ///< Parser selected from the runtime type registry.
+		ImportProtocol m_protocol;      ///< Type protocol copied before suspension.
 		Object m_result;                ///< Neutral fields produced by the parser.
 		std::exception_ptr m_error;     ///< Exception produced by the worker.
 
@@ -36,26 +46,17 @@ export namespace fyuu_asset {
 
 	public:
 		/**
-		 * @brief Starts the importer registered for one runtime asset type.
-		 * @param type Runtime type used to select the importer.
-		 * @param source Source whose contents are owned by the resulting operation.
-		 * @throws std::out_of_range if @p type has no registered importer.
+		 * @brief Registers an application-defined parser protocol for one runtime type.
+		 * @param type Open runtime asset type name.
+		 * @param protocol Parser used to produce the type's complete dynamic fields.
+		 * @throws std::invalid_argument if the type is invalid or already registered.
 		 */
-		Importer(std::string_view type, std::filesystem::path const& source);
+		static void Register(std::string_view type, ImportProtocol const& protocol);
 
 		/**
-		 * @brief Registers an application-defined importer for one runtime type.
-		 * @param type Runtime asset type name.
-		 * @param Import Parser executed asynchronously by Importer.
-		 * @throws std::invalid_argument if the type or function is invalid or already registered.
-		 */
-		static void Register(std::string_view type, ImportFunction Import);
-
-		/**
-		 * @brief Registers FyuuAsset's format-detecting importer for one runtime type.
+		 * @brief Registers FyuuAsset's format-detecting parser for one runtime type.
 		 *
-		 * @details RegisterBuiltIn() associates @p type with the following parser. The
-		 * parser selects behavior from file signatures and, where necessary, the source
+		 * @details The internal parser selects behavior from file signatures and, where necessary, the source
 		 * extension. It currently recognizes JSON, PNG, JPEG, ZIP, GLB, FBX and PMD
 		 * signatures and delegates other Assimp-supported model extensions to Assimp.
 		 * A regular non-ZIP file is its own entry point. A directory or ZIP package uses
@@ -166,13 +167,20 @@ export namespace fyuu_asset {
 		 * directly; multiple model entries return MultipleModelFields. A source that is
 		 * neither JSON nor an importable model returns BinaryFallbackFields.
 		 *
-		 * @note Field names describe the built-in importer's interchange contract only.
-		 * Applications may register a different importer for another runtime type with
-		 * Register().
-		 * @param type Runtime asset type name.
+		 * @note RegisterBuiltIn() assigns the parser described above. A custom protocol
+		 * may produce an entirely different Object schema from the same virtual files.
+		 * @param type Open runtime asset type name.
 		 * @throws std::invalid_argument if the type is invalid or already registered.
 		 */
 		static void RegisterBuiltIn(std::string_view type);
+
+		/**
+		 * @brief Creates an import operation using one registered runtime type protocol.
+		 * @param type Open runtime asset type name.
+		 * @param source Regular source file, import directory or ZIP package.
+		 * @throws std::out_of_range if @p type has no registered protocol.
+		 */
+		Importer(std::string_view type, std::filesystem::path const& source);
 
 		Importer(Importer const&) = delete;
 		Importer& operator=(Importer const&) = delete;
