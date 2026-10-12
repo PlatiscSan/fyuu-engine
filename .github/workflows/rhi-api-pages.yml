@@ -1,4 +1,4 @@
-name: Publish FyuuRHI API
+name: Publish FyuuEngine API
 
 on:
   push:
@@ -7,6 +7,9 @@ on:
     paths:
       - .github/workflows/rhi-api-pages.yml
       - lib/fyuu_rhi/doc/**
+      - lib/fyuu_rhi/module/**/*.cppm
+      - lib/fyuu_asset/doc/**
+      - lib/fyuu_asset/module/**/*.cppm
   workflow_dispatch:
 
 permissions:
@@ -38,10 +41,19 @@ jobs:
           doxygen lib/fyuu_rhi/doc/Doxyfile.zh-CN
           cp lib/fyuu_rhi/doc/index.html build/rhi-api/index.html
 
+      - name: Generate FyuuAsset API pages
+        run: |
+          mkdir -p build/asset-api/en build/asset-api/zh-CN
+          doxygen lib/fyuu_asset/doc/Doxyfile.en
+          doxygen lib/fyuu_asset/doc/Doxyfile.zh-CN
+          cp lib/fyuu_asset/doc/index.html build/asset-api/index.html
+          mkdir -p build/rhi-api/asset
+          cp -R build/asset-api/. build/rhi-api/asset/
+
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
 
-      - name: Upload FyuuRHI API pages
+      - name: Upload FyuuEngine API pages
         uses: actions/upload-pages-artifact@v4
         with:
           path: build/rhi-api

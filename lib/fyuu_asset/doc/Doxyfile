@@ -20,4 +20,7 @@ EXTENSION_MAPPING      = cppm=C++
 INPUT                  = lib/fyuu_asset/module/core.cppm \
                          lib/fyuu_asset/module/uuid.cppm \
                          lib/fyuu_asset/module/value.cppm \
-                         lib/fyuu_asset/module/asset.cppm
+                         lib/fyuu_asset/module/asset.cppm \
+                         lib/fyuu_asset/module/importer.cppm \
+                         lib/fyuu_asset/module/factory.cppm \
+                         lib/fyuu_asset/module/deleter.cppm

@@ -22,6 +22,9 @@ set(FYUU_ASSET_DOCUMENTATION_SOURCES
 	${PROJECT_SOURCE_DIR}/module/uuid.cppm
 	${PROJECT_SOURCE_DIR}/module/value.cppm
 	${PROJECT_SOURCE_DIR}/module/asset.cppm
+	${PROJECT_SOURCE_DIR}/module/importer.cppm
+	${PROJECT_SOURCE_DIR}/module/factory.cppm
+	${PROJECT_SOURCE_DIR}/module/deleter.cppm
 )
 
 set(DOXYGEN_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/en")

@@ -70,55 +70,101 @@ export namespace fyuu_asset {
 		 * integer, floating-point, string, array and object values map respectively to
 		 * the corresponding Value alternatives. Member names and nesting are preserved.
 		 *
-		 * @par Model result
-		 * One model produces these top-level fields:
-		 * - `geometry` (`File`): named `geometry.mesh`; owns every packed vertex and index
-		 *   stream referenced by the model.
-		 * - `meshes` (`Array<Object>`): one element per imported mesh or PMD material range.
-		 * - `materials` (`Array<Object>`): material descriptions indexed by mesh fields.
-		 * - `textures` (`Array<Object>`): GPU-ready BC texture data indexed by material
-		 *   bindings.
-		 * - `animation_count` (`uint64`): source animation count reported by Assimp; the
-		 *   PMD fallback importer writes zero because it does not import animation data.
+		 * @par Built-in model field schema
+		 * The following pseudo-structures describe Object member names and their Value
+		 * alternatives. `Array<T>` and `Optional<T>` are documentation notation, not
+		 * additional public C++ types.
 		 *
-		 * @par Mesh element
-		 * Every mesh contains `material` (`uint64`, index into top-level `materials`),
-		 * `vertex_count` (`uint64`) and `index_count` (`uint64`). Assimp meshes also contain
-		 * `name` (`string`). Stream fields are present only when supplied by the source:
-		 * `positions`, `normals`, `tangents` and `bitangents` are packed float32 triples;
-		 * `texcoords` is packed float32 pairs; `indices` is packed uint32. PMD additionally
-		 * supplies two uint32 values per vertex in `bone_indices` and two float32 values
-		 * per vertex in `bone_weights`. PMX texture coordinates have their Assimp-specific
-		 * V-axis flip reversed during import. Each stream field is an Object containing
-		 * `offset` (`uint64`) and `size` (`uint64`) byte ranges into `geometry`.
+		 * @code{.cpp}
+		 * struct ByteRange {
+		 *     std::uint64_t offset; ///< Byte offset from the beginning of the owning File.
+		 *     std::uint64_t size;   ///< Number of bytes occupied by this range.
+		 * };
 		 *
-		 * @par Material element
-		 * Assimp materials contain `name` (`string`) and `textures` (`Array<Object>`).
-		 * PMD fallback materials instead contain `diffuse` (three doubles), `alpha`
-		 * (`double`), `specularity` (`double`), `specular` (three doubles), `ambient`
-		 * (three doubles) and `textures`. Every texture binding contains `semantic`
-		 * (`uint64`, the numeric Assimp aiTextureType value) and `texture` (`uint64`, an
-		 * index into top-level `textures`). Consequently neither number is an asset UUID
-		 * or a persistent reference outside its containing model Object.
+		 * struct MeshFields {
+		 *     Optional<std::string> name;       ///< Present on Assimp meshes.
+		 *     std::uint64_t material;            ///< Index into ModelFields::materials.
+		 *     std::uint64_t vertex_count;
+		 *     std::uint64_t index_count;
+		 *     ByteRange positions;               ///< float32[vertex_count][3].
+		 *     Optional<ByteRange> normals;       ///< float32[vertex_count][3].
+		 *     Optional<ByteRange> texcoords;     ///< float32[vertex_count][2].
+		 *     Optional<ByteRange> tangents;      ///< float32[vertex_count][3].
+		 *     Optional<ByteRange> bitangents;    ///< float32[vertex_count][3].
+		 *     Optional<ByteRange> bone_indices; ///< PMD: uint32[vertex_count][2].
+		 *     Optional<ByteRange> bone_weights; ///< PMD: float32[vertex_count][2].
+		 *     ByteRange indices;                 ///< uint32[index_count].
+		 * };
 		 *
-		 * @par Texture element
-		 * Source images are decoded to RGBA8, mipmapped to 1x1 and BC-compressed. Each
-		 * texture contains `name` (`string`), `width` and `height` (`uint64`), `format`
-		 * (`string`), `mip_levels` (`Array<Object>`) and `pixels` (`File`). `format` is
-		 * `bc1_rgba_unorm`, `bc1_rgba_unorm_srgb`, `bc3_rgba_unorm`,
-		 * `bc3_rgba_unorm_srgb` or `bc5_rg_unorm`; BC3 is selected when any source texel
-		 * has non-opaque alpha, BC5 is selected for normal semantics, and the `_srgb`
-		 * suffix is selected for color semantics. `pixels` is named from the source stem
-		 * with a `.texture` extension and concatenates every compressed mip. Each
-		 * `mip_levels` element contains `width`, `height`, `offset` and `size` (`uint64`),
-		 * where the byte range addresses `pixels`.
+		 * struct TextureBindingFields {
+		 *     std::uint64_t semantic; ///< Numeric Assimp aiTextureType value.
+		 *     std::uint64_t texture;  ///< Index into ModelFields::textures.
+		 * };
 		 *
-		 * @par Multiple entries and fallback
-		 * Multiple model entry points produce one top-level `models` (`Array<Object>`)
-		 * instead of the single-model fields. Each element is a complete model Object and
-		 * receives `name` equal to `model_0`, `model_1` and so on in entry order. A source
-		 * that is neither JSON nor an importable model is preserved losslessly as
-		 * `binary` (`Binary`).
+		 * struct AssimpMaterialFields {
+		 *     std::string name;
+		 *     Array<TextureBindingFields> textures;
+		 * };
+		 *
+		 * struct PMDMaterialFields {
+		 *     Array<double, 3> diffuse;
+		 *     double alpha;
+		 *     double specularity;
+		 *     Array<double, 3> specular;
+		 *     Array<double, 3> ambient;
+		 *     Array<TextureBindingFields> textures;
+		 * };
+		 *
+		 * struct MipLevelFields {
+		 *     std::uint64_t width;
+		 *     std::uint64_t height;
+		 *     std::uint64_t offset; ///< Byte offset into TextureFields::pixels.
+		 *     std::uint64_t size;   ///< Compressed byte count for this mip level.
+		 * };
+		 *
+		 * struct TextureFields {
+		 *     std::string name;                 ///< Original logical texture name.
+		 *     std::uint64_t width;              ///< Base mip width.
+		 *     std::uint64_t height;             ///< Base mip height.
+		 *     std::string format;               ///< One of the BC format strings below.
+		 *     Array<MipLevelFields> mip_levels; ///< Ordered from base mip through 1x1.
+		 *     File pixels;                      ///< Concatenated BC mip data, named *.texture.
+		 * };
+		 *
+		 * struct ModelFields {
+		 *     File geometry;                    ///< Named geometry.mesh.
+		 *     Array<MeshFields> meshes;
+		 *     Array<AssimpMaterialFields | PMDMaterialFields> materials;
+		 *     Array<TextureFields> textures;
+		 *     std::uint64_t animation_count;    ///< PMD fallback writes zero.
+		 * };
+		 *
+		 * struct MultipleModelFields {
+		 *     struct NamedModelFields : ModelFields {
+		 *         std::string name; ///< Generated as model_0, model_1, ... in entry order.
+		 *     };
+		 *     Array<NamedModelFields> models;
+		 * };
+		 *
+		 * struct BinaryFallbackFields {
+		 *     Binary binary; ///< Complete source bytes without conversion.
+		 * };
+		 * @endcode
+		 *
+		 * Every MeshFields ByteRange addresses ModelFields::geometry. `material` and
+		 * TextureBindingFields::texture are local array indexes within the same
+		 * ModelFields Object; neither is a UUID or remains meaningful after extracting
+		 * the referenced element from its model. Optional members are omitted rather
+		 * than stored as null. PMX texture coordinates have Assimp's format-specific
+		 * V-axis flip reversed during import.
+		 *
+		 * Source images are decoded to RGBA8 and mipmapped through 1x1 before compression.
+		 * TextureFields::format is `bc1_rgba_unorm`, `bc1_rgba_unorm_srgb`,
+		 * `bc3_rgba_unorm`, `bc3_rgba_unorm_srgb` or `bc5_rg_unorm`. BC3 is selected
+		 * when any source texel has non-opaque alpha, BC5 for normal-map semantics, and
+		 * `_srgb` for color semantics. A package with one entry returns ModelFields
+		 * directly; multiple model entries return MultipleModelFields. A source that is
+		 * neither JSON nor an importable model returns BinaryFallbackFields.
 		 *
 		 * @note Field names describe the built-in importer's interchange contract only.
 		 * Applications may register a different importer for another runtime type with

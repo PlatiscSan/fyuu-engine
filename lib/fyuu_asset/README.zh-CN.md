@@ -1,6 +1,6 @@
 # FyuuAsset
 
-[English](README.md)
+[API 文档](https://platiscsan.github.io/fyuu-engine/asset/zh-CN/html/) · [English](README.md)
 
 FyuuAsset 是 FyuuEngine 的动态资产导入与持久化库。它使用进程级 catalog，通过
 UUID 或“运行时类型名 + 资产名称”定位资产，以递归动态值保存不同资产的数据，并在
@@ -24,7 +24,11 @@ import fyuu_asset;
 
 ## API 文档
 
-安装 Doxygen，使用 `-DFYUU_ASSET_BUILD_DOCUMENTATION=ON` 配置项目，然后构建
+查看已发布的[简体中文 API 文档](https://platiscsan.github.io/fyuu-engine/asset/zh-CN/html/)，
+也可以切换到[英文 API 文档](https://platiscsan.github.io/fyuu-engine/asset/en/html/)。
+
+线上页面由 GitHub Actions 生成，不存放在源码分支中。如需本地副本，请安装 Doxygen，
+使用 `-DFYUU_ASSET_BUILD_DOCUMENTATION=ON` 配置项目，然后构建
 `FyuuAssetDocumentation` 生成英文文档，或构建 `FyuuAssetDocumentationZhCN` 生成
 简体中文文档。HTML 分别输出到 FyuuAsset 文档构建目录下的 `en/html` 和
 `zh-CN/html`。
@@ -240,3 +244,8 @@ ctest --test-dir <build-directory> -R ^FyuuAsset.Import$ --output-on-failure
 
 完成通知可能从内部工作线程触发，上层必须同步共享状态。资产上下文是进程级单例，
 第一次初始化后不能切换根目录。
+
+## 许可证
+
+FyuuAsset 自有源码采用 [Apache License 2.0](LICENSE.txt)。第三方组件继续适用
+各自的许可证，详见 [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt)。

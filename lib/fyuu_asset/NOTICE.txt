@@ -1,0 +1,6 @@
+FyuuAsset
+Copyright 2026 PlasticSan
+
+This product is licensed under the Apache License, Version 2.0.
+Third-party components remain under their respective licenses; see
+THIRD_PARTY_NOTICES.txt and the license files distributed with those components.

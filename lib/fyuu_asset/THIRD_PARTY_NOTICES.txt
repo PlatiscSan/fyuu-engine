@@ -1,0 +1,53 @@
+FyuuAsset third-party notices
+=============================
+
+FyuuAsset's Apache-2.0 license applies only to FyuuAsset's own source code.
+The following components remain available under their respective licenses.
+
+Assimp
+------
+Project: Open Asset Import Library
+Source: https://github.com/assimp/assimp
+License: BSD 3-Clause
+Copyright: Copyright (c) 2006-2026, assimp team
+
+Assimp test models are not part of FyuuAsset and may carry separate terms.
+
+Boost.UUID and Boost.Locale
+---------------------------
+Project: Boost C++ Libraries
+Source: https://www.boost.org/
+License: Boost Software License 1.0
+
+nlohmann/json
+-------------
+Project: JSON for Modern C++
+Source: https://github.com/nlohmann/json
+License: MIT
+Copyright: Copyright (c) 2013-2025 Niels Lohmann
+
+MiniZip
+-------
+Project: MiniZip 1.1
+Source: https://github.com/madler/zlib/tree/develop/contrib/minizip
+License: zlib License
+Copyright: Copyright (c) 1998-2026 Gilles Vollant and contributors
+
+stb
+---
+Project: stb single-file public domain libraries for C/C++
+Source: https://github.com/nothings/stb
+License selected by FyuuAsset: MIT
+Copyright: Copyright (c) 2017 Sean Barrett
+
+MMDLoader
+---------
+Project: MMDLoader
+Source: https://github.com/syoyo/MMDLoader
+License: BSD 3-Clause
+Copyright: Copyright (c) 2009-2011 Hakuro Matsuda
+
+The complete MMDLoader license is retained at
+external/MMDLoader/LICENSE.txt. Files from MMDLoader's upstream Model/
+directories are expressly excluded from that license and are not licensed as
+part of FyuuAsset.
