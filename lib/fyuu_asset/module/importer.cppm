@@ -3,6 +3,8 @@ module;
 #if !defined(__cpp_lib_modules)
 #include <exception>
 
+#include <functional>
+
 #include <string_view>
 
 #include <filesystem>
@@ -19,18 +21,15 @@ import std;
 #endif // defined(__cpp_lib_modules)
 
 export namespace fyuu_asset {
-	/** @brief Describes the parser assigned to one open runtime asset type. */
-	struct ImportProtocol final {
-		/**
-		 * @brief Parses one virtual import filesystem into the type's complete fields.
-		 *
-		 * The callback executes on the asset worker and may throw to fail the import.
-		 * The filesystem defines the complete source scope. The parser discovers its
-		 * entry points through ImportFileSystem::ListFiles() and reads source files and
-		 * their dependencies through ImportFileSystem::Read().
-		 */
-		Object (*Parse)(ImportFileSystem const& file_system) = nullptr;
-	};
+	/**
+	 * @brief Parses one virtual import filesystem into an asset type's complete fields.
+	 *
+	 * The callback executes on the asset worker and may throw to fail the import.
+	 * The filesystem defines the complete source scope. The parser discovers its
+	 * entry points through ImportFileSystem::ListFiles() and reads source files and
+	 * their dependencies through ImportFileSystem::Read().
+	 */
+	using ImportProtocol = std::function<Object(ImportFileSystem const& file_system)>;
 
 	/** @brief Asynchronously parses one source into a caller-transformable dynamic object. */
 	class Importer final {

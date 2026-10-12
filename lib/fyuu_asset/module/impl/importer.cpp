@@ -116,7 +116,7 @@ namespace {
 
 namespace fyuu_asset {
 	void Importer::Register(std::string_view type, ImportProtocol const& protocol) {
-		if (type.empty() || type.contains('\0') || !protocol.Parse) {
+		if (type.empty() || type.contains('\0') || !protocol) {
 			throw std::invalid_argument{"Import protocol type is invalid"};
 		}
 		std::lock_guard lock{ImportProtocolsMutex()};
@@ -126,7 +126,7 @@ namespace fyuu_asset {
 	}
 
 	void Importer::RegisterBuiltIn(std::string_view type) {
-		Register(type, ImportProtocol{.Parse = ParseBuiltIn});
+		Register(type, ParseBuiltIn);
 	}
 
 	Importer::Importer(std::string_view type, std::filesystem::path const& source) :
@@ -138,7 +138,7 @@ namespace fyuu_asset {
 		auto* importer = static_cast<Importer*>(submitted->m_operation);
 		try {
 			ImportFileSystem file_system{importer->m_source};
-			importer->m_result = importer->m_protocol.Parse(file_system);
+			importer->m_result = importer->m_protocol(file_system);
 		} catch (...) {
 			importer->m_error = std::current_exception();
 		}

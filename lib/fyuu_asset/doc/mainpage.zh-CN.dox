@@ -34,7 +34,7 @@ fyuu_asset::Object。fyuu_asset::Factory 持久化由应用层确定的完整字
 两者都在共享资产工作线程执行。
 
 @code
-fyuu_asset::Importer::Register("miku_model", {.Parse = ParseMikuModel});
+fyuu_asset::Importer::Register("miku_model", ParseMikuModel);
 auto fields = co_await fyuu_asset::Importer{"miku_model", "sources/character.zip"};
 auto asset = co_await fyuu_asset::Factory{"miku_model", "miku", fields};
 auto uuid = asset.GetUUID();

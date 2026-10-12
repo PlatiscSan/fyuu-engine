@@ -39,7 +39,7 @@ fyuu_asset::Factory persists the complete field object selected by the
 application. Both operations run on the shared asset worker.
 
 @code
-fyuu_asset::Importer::Register("miku_model", {.Parse = ParseMikuModel});
+fyuu_asset::Importer::Register("miku_model", ParseMikuModel);
 auto fields = co_await fyuu_asset::Importer{"miku_model", "sources/character.zip"};
 auto asset = co_await fyuu_asset::Factory{"miku_model", "miku", fields};
 auto uuid = asset.GetUUID();

@@ -74,7 +74,7 @@ run on the shared asset worker:
 ```cpp
 fyuu_asset::Importer::Register(
     "miku_model",
-    {.Parse = ParseMikuModel}
+    ParseMikuModel
 );
 auto fields = co_await fyuu_asset::Importer{"miku_model", "sources/character.zip"};
 auto asset = co_await fyuu_asset::Factory{"miku_model", "miku", fields};
