@@ -10,12 +10,18 @@ module;
 
 #include <cstdint>
 
+#include <mutex>
+
 #include <variant>
 
 #include <ranges>
 #include <span>
 #endif // !defined(__cpp_lib_modules)
+#if defined(__EMSCRIPTEN__)
+#include <webgpu/webgpu_cpp.h>
+#else
 #include <dawn/webgpu_cpp.h>
+#endif // defined(__EMSCRIPTEN__)
 
 module fyuu_rhi:webgpu_pipeline;
 #if defined(__cpp_lib_modules)
@@ -23,6 +29,7 @@ import std;
 #endif // defined(__cpp_lib_modules)
 import :pipeline;
 import :pipeline_dispatch;
+import :memory_pressure;
 import :pipeline_resource_group_factory;
 import :resource_factory;
 import :sampler_factory;
@@ -127,11 +134,13 @@ namespace fyuu_rhi {
 					bool expects_buffer =
 						declaration->flags.Test(Bits::UniformBuffer) ||
 						declaration->flags.Test(Bits::StorageBuffer);
-					bool expects_view =
+					/// @brief StorageBinding describes access, not a texture shape, for storage buffers.
+					bool expects_view = !expects_buffer && (
 						declaration->flags.Test(Bits::UniformTexelBuffer) ||
 						declaration->flags.Test(Bits::StorageTexelBuffer) ||
 						declaration->flags.Test(Bits::TextureBinding) ||
-						declaration->flags.Test(Bits::StorageBinding);
+						declaration->flags.Test(Bits::StorageBinding)
+					);
 					bool expects_sampler = declaration->flags.Test(
 						Bits::SamplerBinding
 					);

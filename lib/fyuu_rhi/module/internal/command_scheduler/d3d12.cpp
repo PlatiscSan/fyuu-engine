@@ -1,4 +1,5 @@
 module;
+#if !defined(__EMSCRIPTEN__)
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <cstddef>
@@ -40,12 +41,16 @@ module;
 #include <wrl.h>
 #endif
 
+#endif // !defined(__EMSCRIPTEN__)
+
 module fyuu_rhi:d3d12_command_scheduler;
+#if !defined(__EMSCRIPTEN__)
 #if defined(_WIN32)
 #if defined(__cpp_lib_modules)
 import std;
 #endif
 import :command_scheduler_dispatch;
+import :memory_pressure;
 import :completion_token_dispatch;
 import :completion_token_factory;
 import :d3d12_data;
@@ -416,6 +421,18 @@ namespace {
 		std::optional<BeginRendering> rendering;
 
 		void operator()(BeginRendering const& value) {
+			/// @brief Resolve texture defaults before native attachment load operations are selected.
+			if (UsesDefaultClear(value)) {
+				auto resolved = value;
+				ResolveAttachmentClears(
+					resolved,
+					[this](std::size_t index) -> fyuu_rhi::TextureClearValue const& {
+						return resources[index].get().default_clear_value;
+					}
+				);
+				(*this)(resolved);
+				return;
+			}
 			auto rect = NativeRect(value.area);
 			D3D12_VIEWPORT viewport{
 				.TopLeftX = static_cast<float>(value.area.x),
@@ -988,7 +1005,23 @@ namespace {
 		}
 	};
 
-	/// Creates and fully validates a flip-model swapchain matching the source texture.
+	/**
+	 * @brief Selects the flip-model storage format without changing encoded source pixels.
+	 * @note CopyResource preserves bits between UNORM and sRGB formats in the same
+	 * type group. The source render target retains its sRGB view and conversion.
+	 */
+	DXGI_FORMAT PresentationFormat(DXGI_FORMAT format) noexcept {
+		switch (format) {
+		case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+			return DXGI_FORMAT_R8G8B8A8_UNORM;
+		case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+			return DXGI_FORMAT_B8G8R8A8_UNORM;
+		default:
+			return format;
+		}
+	}
+
+	/// @brief Creates a flip-model swapchain with copy-compatible source storage.
 	QueueContext::PresentationContext::SwapChain CreateSwapChain(
 		std::shared_ptr<QueueContext> const& queue,
 		HWND window,
@@ -1018,7 +1051,7 @@ namespace {
 		DXGI_SWAP_CHAIN_DESC1 swapchain_desc{
 			.Width = static_cast<UINT>(desc.Width),
 			.Height = desc.Height,
-			.Format = desc.Format,
+			.Format = PresentationFormat(desc.Format),
 			.Stereo = FALSE,
 			.SampleDesc = FlipModelSampling,
 			.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT,
@@ -1068,7 +1101,7 @@ namespace {
 		auto source_desc = source.allocation->GetResource()->GetDesc();
 		if (swapchain_desc.Width != source_desc.Width ||
 			swapchain_desc.Height != source_desc.Height ||
-			swapchain_desc.Format != source_desc.Format ||
+			swapchain_desc.Format != PresentationFormat(source_desc.Format) ||
 			swapchain_desc.BufferCount != buffer_count) {
 			std::uint64_t reusable_after = 0u;
 			for (auto const& back_buffer : swapchain.back_buffers) {
@@ -1088,7 +1121,7 @@ namespace {
 					buffer_count,
 					static_cast<UINT>(source_desc.Width),
 					source_desc.Height,
-					source_desc.Format,
+					PresentationFormat(source_desc.Format),
 					swapchain.tearing_supported ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0u
 				)
 			);
@@ -1612,10 +1645,12 @@ namespace fyuu_rhi::execution {
 								prepared[submission.batches[position]].commands.impl.Get()
 							);
 						}
-						queue->impl->ExecuteCommandLists(
-							static_cast<UINT>(lists.size()),
-							lists.data()
-						);
+						{
+							queue->impl->ExecuteCommandLists(
+								static_cast<UINT>(lists.size()),
+								lists.data()
+							);
+						}
 						for (std::size_t position = begin; position < end; ++position) {
 							auto& batch = prepared[submission.batches[position]];
 							batch.execution_started = true;
@@ -1804,3 +1839,4 @@ namespace fyuu_rhi::execution {
 	};
 }
 #endif
+#endif // !defined(__EMSCRIPTEN__)

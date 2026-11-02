@@ -1,4 +1,5 @@
 module;
+#if !defined(__EMSCRIPTEN__)
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <algorithm>
@@ -21,7 +22,10 @@ module;
 #include <wrl.h>
 #endif // defined(_WIN32)
 
+#endif // !defined(__EMSCRIPTEN__)
+
 module fyuu_rhi:d3d12_pipeline;
+#if !defined(__EMSCRIPTEN__)
 #if defined(_WIN32)
 #if defined(__cpp_lib_modules)
 import std;
@@ -34,6 +38,7 @@ import :view;
 import :sampler;
 import :pipeline;
 import :pipeline_dispatch;
+import :memory_pressure;
 import :pipeline_resource_group_dispatch;
 import :pipeline_resource_group_factory;
 import :resource_factory;
@@ -148,8 +153,11 @@ namespace fyuu_rhi {
 				}
 				bool expects_buffer = metadata->flags.Test(Bits::UniformBuffer) ||
 					metadata->flags.Test(Bits::StorageBuffer);
-				bool expects_view = metadata->flags.Test(Bits::TextureBinding) ||
-					metadata->flags.Test(Bits::StorageBinding);
+				/// @brief StorageBinding describes access, not a texture shape, for storage buffers.
+				bool expects_view = !expects_buffer && (
+					metadata->flags.Test(Bits::TextureBinding) ||
+					metadata->flags.Test(Bits::StorageBinding)
+				);
 				bool expects_sampler = metadata->flags.Test(Bits::SamplerBinding);
 				bool matches = false;
 				if (expects_buffer) {
@@ -349,3 +357,4 @@ namespace fyuu_rhi {
 
 } // namespace fyuu_rhi
 #endif // defined(_WIN32)
+#endif // !defined(__EMSCRIPTEN__)

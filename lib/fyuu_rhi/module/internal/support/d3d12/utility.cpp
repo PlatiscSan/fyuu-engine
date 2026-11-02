@@ -1,5 +1,6 @@
 /* d3d12_utility.cppm */
 module;
+#if !defined(__EMSCRIPTEN__)
 #include <version>
 #if !defined(__cpp_lib_modules)
 
@@ -27,7 +28,10 @@ module;
 #endif // defined(_WIN32)
 #define BOOST_DISABLE_ASSERTS
 #include <boost/locale.hpp>
+#endif // !defined(__EMSCRIPTEN__)
+
 module fyuu_rhi:d3d12_utility;
+#if !defined(__EMSCRIPTEN__)
 #if defined(_WIN32)
 #if defined(__cpp_lib_modules)
 import std;
@@ -546,3 +550,4 @@ namespace fyuu_rhi::d3d12 {
 
 } // namespace fyuu_rhi::d3d12
 #endif // defined(_WIN32)
+#endif // !defined(__EMSCRIPTEN__)

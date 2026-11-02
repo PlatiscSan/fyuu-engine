@@ -11,13 +11,19 @@ module;
 
 #include <cstdint>
 
+#include <mutex>
+
 #include <optional>
 #include <string_view>
 
 #include <ranges>
 #include <format>
 #endif // !defined(__cpp_lib_modules)
+#if defined(__EMSCRIPTEN__)
+#include <webgpu/webgpu_cpp.h>
+#else
 #include <dawn/webgpu_cpp.h>
+#endif // defined(__EMSCRIPTEN__)
 #include <slang.h>
 
 module fyuu_rhi:webgpu_logical_device;
@@ -25,6 +31,7 @@ module fyuu_rhi:webgpu_logical_device;
 import std;
 #endif // defined(__cpp_lib_modules)
 import :logical_device_dispatch;
+import :memory_pressure;
 import :pipeline;
 import :pipeline_factory;
 import :resource_factory;
@@ -246,7 +253,7 @@ namespace {
 		return wgpu::CullMode::None;
 	}
 
-	std::uint32_t BindGroupCount(shader::SlangPipelineInterface const& interface) noexcept {
+	std::uint32_t BindGroupCount(pipeline::SlangPipelineInterface const& interface) noexcept {
 		std::uint32_t result = 0u;
 		std::ranges::for_each(
 			interface.bindings,
@@ -300,8 +307,10 @@ namespace fyuu_rhi {
 			std::size_t height,
 			std::size_t depth_or_array_layers,
 			std::size_t mip_levels,
-			ResourceFlags const& flags
+			ResourceFlags const& flags,
+			TextureClearValue const& clear_value
 		) const {
+			auto default_clear_value = ResolveTextureClearValue(flags, clear_value);
 			auto api_lock = logical_device->errors->LockApi();
 			wgpu::TextureDescriptor descriptor{
 				nullptr,
@@ -423,7 +432,8 @@ namespace fyuu_rhi {
 					.depth_or_array_layers = static_cast<std::uint32_t>(depth_or_array_layers),
 					.mip_levels = static_cast<std::uint32_t>(mip_levels)
 				},
-				flags
+				flags,
+				default_clear_value
 			);
 		}
 	};
@@ -536,40 +546,46 @@ namespace fyuu_rhi {
 				);
 			}
 
-			std::vector<std::vector<wgpu::VertexAttribute>> attributes(
-				descriptor.vertex.buffers.size()
-			);
-			std::vector<wgpu::VertexBufferLayout> buffers;
-			buffers.reserve(descriptor.vertex.buffers.size());
-			std::ranges::transform(
-				descriptor.vertex.buffers,
-				std::back_inserter(buffers),
-				[&, index = std::size_t{ 0u }](auto const& buffer) mutable {
-					auto& buffer_attributes = attributes[index++];
-					std::ranges::transform(
-						descriptor.vertex.attributes |
-							std::views::filter(
-								[slot = buffer.slot](auto const& attribute) {
-									return attribute.slot == slot;
-								}
-							),
-						std::back_inserter(buffer_attributes),
-						[](auto const& attribute) {
-							return wgpu::VertexAttribute{
-								.format = MapVertexFormat(attribute.format),
-								.offset = attribute.offset,
-								.shaderLocation = attribute.location
-							};
-						}
-					);
-					return wgpu::VertexBufferLayout{
-						.stepMode = MapVertexStepMode(buffer.input_rate),
-						.arrayStride = buffer.stride,
-						.attributeCount = buffer_attributes.size(),
-						.attributes = buffer_attributes.data()
-					};
+			wgpu::Limits limits;
+			if (!logical_device->impl.GetLimits(&limits)) {
+				throw std::runtime_error("Failed to query WebGPU vertex buffer limits");
+			}
+			std::size_t buffer_count = 0u;
+			for (auto const& buffer : descriptor.vertex.buffers) {
+				if (buffer.slot >= limits.maxVertexBuffers) {
+					throw std::out_of_range("WebGPU vertex buffer slot exceeds the device limit");
 				}
-			);
+				buffer_count = std::max(buffer_count, static_cast<std::size_t>(buffer.slot) + 1u);
+			}
+			/** @brief Keep empty native entries for gaps so creation and binding use the same explicit slots. */
+			std::vector<std::vector<wgpu::VertexAttribute>> attributes(buffer_count);
+			std::vector<wgpu::VertexBufferLayout> buffers(buffer_count);
+			for (auto const& buffer : descriptor.vertex.buffers) {
+				if (buffers[buffer.slot].stepMode != wgpu::VertexStepMode::Undefined) {
+					throw std::invalid_argument("Duplicate WebGPU vertex buffer slot");
+				}
+				auto& buffer_attributes = attributes[buffer.slot];
+				std::ranges::transform(
+					descriptor.vertex.attributes |
+						std::views::filter([slot = buffer.slot](auto const& attribute) {
+							return attribute.slot == slot;
+						}),
+					std::back_inserter(buffer_attributes),
+					[](auto const& attribute) {
+						return wgpu::VertexAttribute{
+							.format = MapVertexFormat(attribute.format),
+							.offset = attribute.offset,
+							.shaderLocation = attribute.location
+						};
+					}
+				);
+				buffers[buffer.slot] = wgpu::VertexBufferLayout{
+					.stepMode = MapVertexStepMode(buffer.input_rate),
+					.arrayStride = buffer.stride,
+					.attributeCount = buffer_attributes.size(),
+					.attributes = buffer_attributes.data()
+				};
+			}
 
 			wgpu::VertexState vertex{
 				.module = vertex_module,

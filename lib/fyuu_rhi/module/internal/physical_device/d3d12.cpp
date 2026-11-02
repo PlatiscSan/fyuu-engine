@@ -1,4 +1,5 @@
 module;
+#if !defined(__EMSCRIPTEN__)
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <memory>
@@ -16,7 +17,10 @@ module;
 #endif // defined(_WIN32)
 #define BOOST_DISABLE_ASSERTS
 #include <boost/locale.hpp>
+#endif // !defined(__EMSCRIPTEN__)
+
 module fyuu_rhi:d3d12_physical_device;
+#if !defined(__EMSCRIPTEN__)
 #if defined(_WIN32)
 #if defined(__cpp_lib_modules)
 import std;
@@ -27,6 +31,7 @@ import :d3d12_device_removal_tracker;
 import :d3d12_utility;
 import :logical_device_factory;
 import :physical_device_dispatch;
+import :memory_pressure;
 import :physical_device_factory;
 import :physical_device;
 #endif // defined(_WIN32)
@@ -118,6 +123,12 @@ namespace fyuu_rhi {
 			D3D12MA::ALLOCATOR_DESC allocator_desc = {};
 			allocator_desc.pDevice = device.Get();
 			allocator_desc.pAdapter = physical_device->adapter.Get();
+			/**
+			 * @brief Limit default heap growth to 16 MiB rather than the 64 MiB library default.
+			 * @note This is a block-size preference, not a total-memory cap. Large resources
+			 * retain D3D12MA's committed fallback; tight alignment and explicit flags are unchanged.
+			 */
+			allocator_desc.PreferredBlockSize = 16ull * 1024ull * 1024ull;
 			d3d12::ThrowIfFailed(D3D12MA::CreateAllocator(&allocator_desc, &memory_allocator));
 
 			d3d12::DescriptorAllocator resource_descriptors(
@@ -148,6 +159,19 @@ namespace fyuu_rhi {
 			auto multidraw = CreateCommandSignature(device.Get(), D3D12_INDIRECT_ARGUMENT_TYPE_DRAW);
 			auto multidraw_indexed = CreateCommandSignature(device.Get(), D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED);
 			auto dispatch_indirect = CreateCommandSignature(device.Get(), D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH);
+			/// @brief CopyDescriptorsSimple sources must never reside in shader-visible heaps.
+			d3d12::DescriptorAllocator resource_descriptor_storage(
+				device,
+				D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+				65536u,
+				false
+			);
+			d3d12::DescriptorAllocator sampler_descriptor_storage(
+				device,
+				D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
+				2048u,
+				false
+			);
 
 			return MakeLogicalDevice(
 				d3d12::LogicalDevice{
@@ -159,10 +183,13 @@ namespace fyuu_rhi {
 					std::move(sampler_descriptors),
 					std::move(multidraw),
 					std::move(multidraw_indexed),
-					std::move(dispatch_indirect)
+					std::move(dispatch_indirect),
+					std::move(resource_descriptor_storage),
+					std::move(sampler_descriptor_storage)
 				}
 			);
 		}
 	};
 
 }
+#endif // !defined(__EMSCRIPTEN__)

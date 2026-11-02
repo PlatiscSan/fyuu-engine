@@ -1,4 +1,5 @@
 module;
+#if !defined(__EMSCRIPTEN__)
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <cstddef>
@@ -27,7 +28,10 @@ module;
 #include <vulkan/vulkan_shared.hpp>
 #endif // !defined(__APPLE__) && defined(__clang__) && defined(_MSVC_STL_VERSION)
 
+#endif // !defined(__EMSCRIPTEN__)
+
 module fyuu_rhi:vulkan_instance;
+#if !defined(__EMSCRIPTEN__)
 #if !defined(__APPLE__)
 #if defined(__cpp_lib_modules)
 import std;
@@ -55,8 +59,8 @@ namespace {
 		try {
 			auto message = std::format(
 			    "Vulkan [{}{}{}] {} ({}): {}",
-			    types & vk::DebugUtilsMessageTypeFlagBitsEXT::eGeneral ? "General " : "",
-			    types & vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation ? "Validation " : "",
+			    types & vk::DebugUtilsMessageTypeFlagBitsEXT::eGeneral ? "General" : "",
+			    types & vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation ? "Validation" : "",
 			    types & vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance ? "Performance" : "",
 			    callback_data->pMessageIdName ? callback_data->pMessageIdName : "Unknown",
 			    callback_data->messageIdNumber,
@@ -389,7 +393,7 @@ namespace fyuu_rhi {
 				           vulkan::PhysicalDevice{
 				               vk::SharedPhysicalDevice(native, instance->impl),
 				               instance->dispatcher,
-				               instance->enabled_extensions
+				               {instance->enabled_extensions.begin(), instance->enabled_extensions.end()}
 				           }
 				       );
 			       }) |
@@ -397,3 +401,4 @@ namespace fyuu_rhi {
 		}
 	};
 } // namespace fyuu_rhi
+#endif // !defined(__EMSCRIPTEN__)

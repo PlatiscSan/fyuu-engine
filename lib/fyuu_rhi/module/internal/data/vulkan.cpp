@@ -1,4 +1,5 @@
 module;
+#if !defined(__EMSCRIPTEN__)
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <deque>
@@ -24,7 +25,10 @@ module;
 #include <vulkan/vulkan_shared.hpp>
 #endif // !defined(__APPLE__) && defined(__clang__) && defined(_MSVC_STL_VERSION)
 
+#endif // !defined(__EMSCRIPTEN__)
+
 module fyuu_rhi:vulkan_data;
+#if !defined(__EMSCRIPTEN__)
 #if !defined(__APPLE__)
 #if defined(__cpp_lib_modules)
 import std;
@@ -58,7 +62,7 @@ namespace fyuu_rhi::vulkan {
 	struct PhysicalDevice {
 		vk::SharedPhysicalDevice impl;
 		std::shared_ptr<vk::detail::DispatchLoaderDynamic> dispatcher;
-		std::unordered_set<std::string_view> enabled_instance_extensions;
+		std::vector<std::string_view> enabled_instance_extensions;
 	};
 
 	struct LogicalDevice {
@@ -68,7 +72,7 @@ namespace fyuu_rhi::vulkan {
 		std::shared_ptr<vk::detail::DispatchLoaderDynamic> dispatcher;
 		MemoryAllocator memory_allocator;
 		/// Feature structs that actually got enabled; runtime code branches on these.
-		std::unordered_set<vk::StructureType> enabled_features;
+		std::vector<vk::StructureType> enabled_features;
 		/// Core 1.0 features the created device asked for. getFeatures2 leaves only the
 		/// supported ones set, so these are exactly the enabled capabilities.
 		vk::PhysicalDeviceFeatures core_features{};
@@ -96,6 +100,8 @@ namespace fyuu_rhi::vulkan {
 			vk::SharedFence fence;
 			std::vector<vk::SharedSemaphore> consumed_semaphores;
 			bool submitted = false;
+			/// @brief Published resource completions keep this fence signaled until their references expire.
+			bool fence_published = false;
 
 			ManagedBinaryCompletionPoint(
 				std::shared_ptr<BinaryCompletionPointAllocator> const& owner,
@@ -318,6 +324,8 @@ namespace fyuu_rhi::vulkan {
 		bool timeline_semaphore_supported;
 		bool synchronization2_supported;
 		bool dynamic_rendering_supported;
+		/// @brief Actual device enablement; physical-device support alone cannot authorize present fences.
+		bool swapchain_maintenance1_enabled;
 
 		CommandSchedulerContext(
 			vk::SharedPhysicalDevice const& physical_device,
@@ -331,7 +339,8 @@ namespace fyuu_rhi::vulkan {
 			queue_allocator(queue_allocator),
 			timeline_semaphore_supported(false),
 			synchronization2_supported(false),
-			dynamic_rendering_supported(false) {
+			dynamic_rendering_supported(false),
+			swapchain_maintenance1_enabled(false) {
 		}
 
 		CommandSchedulerContext(CommandSchedulerContext const&) = delete;
@@ -347,15 +356,19 @@ namespace fyuu_rhi::vulkan {
 			presentations(std::move(other.presentations)),
 			timeline_semaphore_supported(other.timeline_semaphore_supported),
 			synchronization2_supported(other.synchronization2_supported),
-			dynamic_rendering_supported(other.dynamic_rendering_supported) {
+			dynamic_rendering_supported(other.dynamic_rendering_supported),
+			swapchain_maintenance1_enabled(other.swapchain_maintenance1_enabled) {
 		}
 	};
 
 	struct Resource {
 		std::shared_ptr<vk::detail::DispatchLoaderDynamic> dispatcher;
 		ManagedAllocation allocation;
+		/// @brief Actual graph-terminal owner; subsequent graphs transfer only when the family changes.
 		std::uint32_t owner_family = vk::QueueFamilyIgnored;
 		CompletionPoint completion;
+		/// @brief Creation default used only by attachment ClearDefault operations.
+		TextureClearValue default_clear_value{};
 	};
 
 	struct View {
@@ -449,3 +462,4 @@ namespace fyuu_rhi::vulkan {
 
 } // namespace fyuu_rhi::vulkan
 #endif // !defined(__APPLE__)
+#endif // !defined(__EMSCRIPTEN__)

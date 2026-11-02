@@ -1,4 +1,5 @@
 module;
+#if !defined(__EMSCRIPTEN__)
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <cstddef>
@@ -11,7 +12,10 @@ module;
 #include <wrl.h>
 #endif // defined(_WIN32)
 
+#endif // !defined(__EMSCRIPTEN__)
+
 module fyuu_rhi:d3d12_resource;
+#if !defined(__EMSCRIPTEN__)
 #if defined(_WIN32)
 #if defined(__cpp_lib_modules)
 import std;
@@ -20,6 +24,7 @@ import :d3d12_data;
 import :d3d12_descriptor_allocator;
 import :d3d12_utility;
 import :resource_dispatch;
+import :memory_pressure;
 import :view_factory;
 
 namespace {
@@ -375,3 +380,4 @@ namespace fyuu_rhi {
 
 } // namespace fyuu_rhi
 #endif // defined(_WIN32)
+#endif // !defined(__EMSCRIPTEN__)

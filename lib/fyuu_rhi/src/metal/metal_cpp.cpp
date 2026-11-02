@@ -1,3 +1,4 @@
+#if !defined(__EMSCRIPTEN__)
 #if defined(__APPLE__)
 #define NS_PRIVATE_IMPLEMENTATION
 #define CA_PRIVATE_IMPLEMENTATION
@@ -6,3 +7,4 @@
 #include <Metal/Metal.hpp>
 #include <QuartzCore/QuartzCore.hpp>
 #endif // defined(__APPLE__)
+#endif // !defined(__EMSCRIPTEN__)

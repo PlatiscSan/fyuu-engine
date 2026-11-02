@@ -47,13 +47,18 @@ module;
 #elif defined(__ANDROID__)
 #include <android/native_window.h>
 #endif // defined(_WIN32)
+#if defined(__EMSCRIPTEN__)
+#include <webgpu/webgpu_cpp.h>
+#else
 #include <dawn/webgpu_cpp.h>
+#endif // defined(__EMSCRIPTEN__)
 
 module fyuu_rhi:webgpu_command_scheduler;
 #if defined(__cpp_lib_modules)
 import std;
 #endif // defined(__cpp_lib_modules)
 import :command_scheduler_dispatch;
+import :memory_pressure;
 import :command_scheduler_factory;
 import :completion_token_factory;
 import :execution;
@@ -123,8 +128,51 @@ namespace {
 		return wgpu::IndexFormat::Uint32;
 	}
 
+	/** @brief Removes only the sRGB interpretation while preserving texel layout. */
+	wgpu::TextureFormat PresentationCopyFormat(wgpu::TextureFormat format) noexcept {
+		if (format == wgpu::TextureFormat::RGBA8UnormSrgb) {
+			return wgpu::TextureFormat::RGBA8Unorm;
+		}
+		if (format == wgpu::TextureFormat::BGRA8UnormSrgb) {
+			return wgpu::TextureFormat::BGRA8Unorm;
+		}
+		return format;
+	}
+
+	/** @brief Converts channel layout through linear views without decoding or encoding sRGB. */
+	wgpu::RenderPipeline CreatePresentationConversionPipeline(
+		wgpu::Device const& device, wgpu::TextureFormat format
+	) {
+		constexpr char Code[] = R"(
+@group(0) @binding(0) var source: texture_2d<f32>;
+@vertex fn vs(@builtin(vertex_index) index: u32) -> @builtin(position) vec4f {
+    let positions = array<vec2f, 3>(vec2f(-1.0, -1.0), vec2f(3.0, -1.0), vec2f(-1.0, 3.0));
+    return vec4f(positions[index], 0.0, 1.0);
+}
+@fragment fn fs(@builtin(position) position: vec4f) -> @location(0) vec4f {
+    return textureLoad(source, vec2i(position.xy), 0);
+}
+)";
+		wgpu::ShaderSourceWGSL source(wgpu::ShaderSourceWGSL::Init{nullptr, Code});
+		wgpu::ShaderModuleDescriptor shader{.nextInChain = &source};
+		auto module = device.CreateShaderModule(&shader);
+		wgpu::ColorTargetState target{.format = format};
+		wgpu::FragmentState fragment{.module = module, .entryPoint = "fs", .targetCount = 1u, .targets = &target};
+		wgpu::RenderPipelineDescriptor descriptor{
+			.vertex = {.module = module, .entryPoint = "vs"}, .fragment = &fragment};
+		return device.CreateRenderPipeline(&descriptor);
+	}
+
 	wgpu::Surface CreateSurface(wgpu::Instance const& instance, PlatformHandle const& handle) {
-#if defined(_WIN32)
+#if defined(__EMSCRIPTEN__)
+		if (handle.empty() || handle.find('\0') != std::string::npos) {
+			throw std::invalid_argument("A browser presentation target requires a nonempty Canvas selector without embedded nulls");
+		}
+		wgpu::EmscriptenSurfaceSourceCanvasHTMLSelector source;
+		source.selector = handle.c_str();
+		wgpu::SurfaceDescriptor descriptor{.nextInChain = &source};
+		return instance.CreateSurface(&descriptor);
+#elif defined(_WIN32)
 		wgpu::SurfaceSourceWindowsHWND source{};
 		source.hinstance = GetModuleHandle(nullptr);
 		source.hwnd = handle;
@@ -172,16 +220,19 @@ namespace fyuu_rhi::webgpu {
 		std::size_t source;
 		wgpu::Surface surface;
 		wgpu::Texture current_texture;
+		wgpu::Texture conversion_texture;
+		wgpu::RenderPipeline conversion_pipeline;
 	};
 
 	/// Encodes a batch's commands into a WebGPU command encoder. WebGPU
 	/// auto-synchronizes, so the plan's barrier/access machinery is ignored.
 	struct Replayer {
 		std::span<std::reference_wrapper<webgpu::Resource const> const> resources;
-		/// The flags of those resources, by the same index. Dawn only tells an attachment's
-		/// format through the texture its view was made from, which its C++ view type does not
-		/// expose, so the depth format is read from the RHI's own description instead.
-		std::span<ResourceFlags const> resource_flags;
+		/** @brief Borrows immutable RHI metadata for attachment aspect validation.
+		 * @note Recording finishes before ExecuteCommands returns, so no copied
+		 * flags array is needed. Native resources remain retained by the bindings.
+		 */
+		std::span<fyuu_rhi::Resource const> bound_resources;
 		std::span<std::reference_wrapper<webgpu::View const> const> views;
 		std::span<std::reference_wrapper<webgpu::Pipeline const> const> pipelines;
 		std::span<std::reference_wrapper<webgpu::PipelineResourceGroup const> const> groups;
@@ -281,7 +332,11 @@ namespace fyuu_rhi::webgpu {
 			}
 		}
 
-		wgpu::BindGroup BindGroup(
+		/** @brief Borrows a retained group instead of copying its native shared handle.
+		 * @note Bound resources and recording-local dynamic groups outlive each
+		 * immediate API call. Deferred pass bindings still retain their own handle.
+		 */
+		wgpu::BindGroup const& BindGroup(
 		    webgpu::PipelineResourceGroup const& group,
 		    std::span<std::size_t const> dynamic_offsets
 		) {
@@ -327,10 +382,10 @@ namespace fyuu_rhi::webgpu {
 			    .entries = entries.data()
 			};
 			auto result = group.device.CreateBindGroup(&descriptor);
-			dynamic_groups.emplace_back(result);
+			dynamic_groups.emplace_back(std::move(result));
 			dynamic_group_source = &group;
 			dynamic_group_offsets = dynamic_offsets;
-			return result;
+			return dynamic_groups.back();
 		}
 
 		webgpu::Pipeline::ConstantRange const& ConstantRange(
@@ -567,7 +622,8 @@ namespace fyuu_rhi::webgpu {
 			return *view;
 		}
 
-		wgpu::Texture TextureAt(std::size_t index) const {
+		/** @brief Borrows a texture retained by this execution's resource bindings. */
+		wgpu::Texture const& TextureAt(std::size_t index) const {
 			auto const* texture = std::get_if<wgpu::Texture>(&resources[index].get().impl);
 			if (!texture) {
 				throw std::invalid_argument("WebGPU command requires a texture resource");
@@ -575,7 +631,8 @@ namespace fyuu_rhi::webgpu {
 			return *texture;
 		}
 
-		wgpu::Buffer BufferAt(std::size_t index) const {
+		/** @brief Borrows a buffer retained by this execution's resource bindings. */
+		wgpu::Buffer const& BufferAt(std::size_t index) const {
 			auto const* buffer = std::get_if<wgpu::Buffer>(&resources[index].get().impl);
 			if (!buffer) {
 				throw std::invalid_argument("WebGPU command requires a buffer resource");
@@ -584,6 +641,18 @@ namespace fyuu_rhi::webgpu {
 		}
 
 		void operator()(BeginRendering const& value) {
+			/// @brief Resolve texture defaults before native attachment load operations are selected.
+			if (UsesDefaultClear(value)) {
+				auto resolved = value;
+				ResolveAttachmentClears(
+					resolved,
+					[this](std::size_t index) -> fyuu_rhi::TextureClearValue const& {
+						return resources[index].get().default_clear_value;
+					}
+				);
+				(*this)(resolved);
+				return;
+			}
 			EndPass();
 			std::vector<wgpu::RenderPassColorAttachment> colors;
 			colors.reserve(value.colors.size());
@@ -618,7 +687,7 @@ namespace fyuu_rhi::webgpu {
 				// aspect ("Both stencilLoadOp ... and stencilStoreOp ... must not be set if the
 				// attachment ... has no stencil aspect"), and the RHI's Discard defaults map to
 				// Clear/Discard, which is exactly the rejected combination.
-				if (webgpu::HasStencilAspect(resource_flags[attachment.resource])) {
+				if (webgpu::HasStencilAspect(bound_resources[attachment.resource].GetFlags())) {
 					ds.stencilLoadOp = NativeLoadOp(attachment.stencil_load);
 					ds.stencilStoreOp = NativeStoreOp(attachment.stencil_store);
 				}
@@ -685,7 +754,7 @@ namespace fyuu_rhi::webgpu {
 			if (group.space != value.space) {
 				throw std::invalid_argument("WebGPU resource group space mismatch");
 			}
-			auto impl = BindGroup(group, value.additional_buffer_offsets);
+			auto const& impl = BindGroup(group, value.additional_buffer_offsets);
 			if (render_pass || compute_pass) {
 				ApplyBindGroup(value.space, impl);
 			} else {
@@ -698,7 +767,7 @@ namespace fyuu_rhi::webgpu {
 		}
 
 		void operator()(BindVertexBuffer const& value) {
-			auto buffer = BufferAt(value.resource);
+			auto const& buffer = BufferAt(value.resource);
 			auto binding = std::ranges::find(
 				vertex_bindings,
 				value.slot,
@@ -723,7 +792,7 @@ namespace fyuu_rhi::webgpu {
 		}
 
 		void operator()(BindIndexBuffer const& value) {
-			auto buffer = BufferAt(value.resource);
+			auto const& buffer = BufferAt(value.resource);
 			auto format = NativeIndexFormat(value.type);
 			if (index_binding && index_binding->buffer.Get() == buffer.Get() &&
 				index_binding->format == format && index_binding->offset == value.offset) {
@@ -1016,7 +1085,7 @@ namespace fyuu_rhi::webgpu {
 			if (work.source != value.source) {
 				throw std::logic_error("WebGPU presentation work does not match its command");
 			}
-			auto source_texture = TextureAt(value.source);
+			auto const& source_texture = TextureAt(value.source);
 			wgpu::TexelCopyTextureInfo source;
 			source.texture = source_texture;
 			source.mipLevel = 0u;
@@ -1028,6 +1097,27 @@ namespace fyuu_rhi::webgpu {
 			destination.origin = {};
 			destination.aspect = wgpu::TextureAspect::All;
 			wgpu::Extent3D extent{source_texture.GetWidth(), source_texture.GetHeight(), 1u};
+			if (work.conversion_texture) {
+				/** @brief Copy encoded bytes before sampling through an UNORM view. */
+				auto intermediate = destination;
+				intermediate.texture = work.conversion_texture;
+				encoder.CopyTextureToTexture(&source, &intermediate, &extent);
+				wgpu::BindGroupEntry entry{.binding = 0u, .textureView = work.conversion_texture.CreateView()};
+				auto layout = work.conversion_pipeline.GetBindGroupLayout(0u);
+				wgpu::BindGroupDescriptor group_descriptor{.layout = layout, .entryCount = 1u, .entries = &entry};
+				auto group = device.CreateBindGroup(&group_descriptor);
+				wgpu::RenderPassColorAttachment attachment;
+				attachment.view = work.current_texture.CreateView();
+				attachment.loadOp = wgpu::LoadOp::Clear;
+				attachment.storeOp = wgpu::StoreOp::Store;
+				wgpu::RenderPassDescriptor pass_descriptor{.colorAttachmentCount = 1u, .colorAttachments = &attachment};
+				auto pass = encoder.BeginRenderPass(&pass_descriptor);
+				pass.SetPipeline(work.conversion_pipeline);
+				pass.SetBindGroup(0u, group);
+				pass.Draw(3u);
+				pass.End();
+				return;
+			}
 			encoder.CopyTextureToTexture(&source, &destination, &extent);
 		}
 	};
@@ -1069,6 +1159,7 @@ namespace fyuu_rhi::webgpu {
 		wgpu::Future future,
 		std::shared_ptr<CompletionState> const& state
 	) {
+#if !defined(__EMSCRIPTEN__)
 		if (!state || future.id == 0u || state->complete.load(std::memory_order_acquire)) {
 			return;
 		}
@@ -1082,8 +1173,16 @@ namespace fyuu_rhi::webgpu {
 		pump_futures.push_back(WatchedFuture{future, state});
 		lock.unlock();
 		pump_condition.notify_all();
+#else
+		/** @note AllowSpontaneous owns the completion state until its Promise callback
+		 * runs. No worker may poll browser WebGPU handles on another thread.
+		 */
+		(void)future;
+		(void)state;
+#endif // !defined(__EMSCRIPTEN__)
 	}
 
+#if !defined(__EMSCRIPTEN__)
 	void CommandSchedulerContext::Run(std::stop_token stop) {
 		// Device loss is only observable through this future: it is a plain wait-list
 		// event, so it can be waited on together with queue futures at a zero timeout, and
@@ -1194,27 +1293,37 @@ namespace fyuu_rhi::webgpu {
 		});
 		pump_futures.clear();
 	}
+#endif // !defined(__EMSCRIPTEN__)
 
 	CommandSchedulerContext::CommandSchedulerContext(CommandSchedulerContext&& other) noexcept
 		: instance(std::move(other.instance)),
+		adapter(std::move(other.adapter)),
 		device(std::move(other.device)),
 		errors(std::move(other.errors)),
-		surfaces(std::move(other.surfaces)),
+		surfaces(std::move(other.surfaces))
+#if !defined(__EMSCRIPTEN__)
+		,
 		pump_thread(
 			[this](std::stop_token stop_token) {
 				Run(stop_token);
 			}
-		) {
+		)
+#endif // !defined(__EMSCRIPTEN__)
+	{
+#if !defined(__EMSCRIPTEN__)
 		context_ready.wait(false, std::memory_order_acquire);
+#endif // !defined(__EMSCRIPTEN__)
 	}
 
 	CommandSchedulerContext::~CommandSchedulerContext() noexcept {
+#if !defined(__EMSCRIPTEN__)
 		/** @brief Publish stop under the idle-wait mutex to prevent a lost shutdown wakeup. */
 		{
 			std::unique_lock lock(pump_mutex);
 			pump_thread.request_stop();
 		}
 		pump_condition.notify_all();
+#endif // !defined(__EMSCRIPTEN__)
 	}
 
 } // namespace fyuu_rhi::webgpu
@@ -1228,6 +1337,7 @@ namespace fyuu_rhi {
 			return execution::MakeCommandScheduler(
 			    webgpu::CommandSchedulerContext{
 			        logical_device->instance,
+			        logical_device->adapter,
 			        logical_device->impl,
 			        logical_device->errors
 			    }
@@ -1253,16 +1363,12 @@ namespace fyuu_rhi::execution {
 		    StopTokenView stop_token
 		) const {
 			std::vector<std::reference_wrapper<webgpu::Resource const>> resources;
-			std::vector<ResourceFlags> resource_flags;
 			std::vector<std::reference_wrapper<webgpu::View const>> views;
-			std::vector<std::reference_wrapper<webgpu::Sampler const>> samplers;
 			std::vector<std::reference_wrapper<webgpu::Pipeline const>> pipelines;
 			std::vector<std::reference_wrapper<webgpu::PipelineResourceGroup const>>
 			    resource_groups;
 			resources.reserve(bound_resources.size());
-			resource_flags.reserve(bound_resources.size());
 			views.reserve(bound_views.size());
-			samplers.reserve(bound_samplers.size());
 			pipelines.reserve(bound_pipelines.size());
 			resource_groups.reserve(bound_resource_groups.size());
 
@@ -1283,13 +1389,6 @@ namespace fyuu_rhi::execution {
 			    }
 			);
 			std::ranges::transform(
-			    bound_resources,
-			    std::back_inserter(resource_flags),
-			    [](Resource const& resource) {
-				    return resource.GetFlags();
-			    }
-			);
-			std::ranges::transform(
 			    bound_views,
 			    std::back_inserter(views),
 			    [](View const& view) -> webgpu::View const& {
@@ -1303,10 +1402,10 @@ namespace fyuu_rhi::execution {
 				    return *native;
 			    }
 			);
-			std::ranges::transform(
+			/** @brief Validate standalone samplers without allocating an unused native list. */
+			std::ranges::for_each(
 			    bound_samplers,
-			    std::back_inserter(samplers),
-			    [](Sampler const& sampler) -> webgpu::Sampler const& {
+			    [](Sampler const& sampler) {
 				    if (!sampler.m_impl) {
 					    throw std::invalid_argument("A WebGPU execution sampler is empty");
 				    }
@@ -1316,7 +1415,6 @@ namespace fyuu_rhi::execution {
 					        "A WebGPU execution sampler uses another backend"
 					    );
 				    }
-				    return *native;
 			    }
 			);
 			std::ranges::transform(
@@ -1354,7 +1452,7 @@ namespace fyuu_rhi::execution {
 			// Phase 1a: validate all caller-owned data before observing stop.
 			if (resources.size() != plan.bindings.resource_count ||
 			    views.size() != plan.bindings.view_count ||
-			    samplers.size() != plan.bindings.sampler_count ||
+			    bound_samplers.size() != plan.bindings.sampler_count ||
 			    pipelines.size() != plan.bindings.pipeline_count ||
 			    resource_groups.size() != plan.bindings.resource_group_count) {
 				throw std::invalid_argument("WebGPU execution binding count mismatch");
@@ -1424,8 +1522,17 @@ namespace fyuu_rhi::execution {
 							}
 							auto const& source =
 							    std::get<wgpu::Texture>(resources[present->source].get().impl);
+#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
+							/** @brief Reject invalid caller windows before Dawn can emit a device validation error or cache a surface. */
+							auto window = presentation_targets[present->target];
+							if (!window || !IsWindow(window)) {
+								throw std::invalid_argument("WebGPU presentation target must be a live HWND");
+							}
+#endif // defined(_WIN32) && !defined(__EMSCRIPTEN__)
 							wgpu::SurfaceTexture current;
 							wgpu::Surface surface;
+							wgpu::Texture conversion_texture;
+							wgpu::RenderPipeline conversion_pipeline;
 							{
 								std::lock_guard lock(context->surfaces_mutex);
 								webgpu::CommandSchedulerContext::SurfaceState* surface_state =
@@ -1437,29 +1544,73 @@ namespace fyuu_rhi::execution {
 									}
 								}
 								if (!surface_state) {
-									context->surfaces.push_back({});
+									auto surface = CreateSurface(context->instance, presentation_targets[present->target]);
+									if (!surface) {
+										throw std::runtime_error("WebGPU presentation surface creation failed");
+									}
+									context->surfaces.push_back({.handle = presentation_targets[present->target],
+										.surface = std::move(surface), .conversion_pipeline = {}});
 									surface_state = &context->surfaces.back();
-									surface_state->handle = presentation_targets[present->target];
-									surface_state->surface =
-									    CreateSurface(context->instance, surface_state->handle);
 								}
 								auto width = source.GetWidth();
 								auto height = source.GetHeight();
 								auto format = source.GetFormat();
 								if (surface_state->width != width ||
 								    surface_state->height != height ||
-								    surface_state->format != format) {
+								    surface_state->source_format != format ||
+								    surface_state->vertical_sync != present->vertical_sync) {
+									wgpu::SurfaceCapabilities capabilities;
+									if (!surface_state->surface.GetCapabilities(context->adapter, &capabilities)) {
+										throw std::runtime_error("WebGPU surface capability query failed");
+									}
+									auto formats = std::span(capabilities.formats, capabilities.formatCount);
+									auto target_format = PresentationCopyFormat(format);
+									if (std::ranges::find(formats, target_format) == formats.end()) {
+										if (target_format == wgpu::TextureFormat::RGBA8Unorm) {
+											target_format = wgpu::TextureFormat::BGRA8Unorm;
+										} else if (target_format == wgpu::TextureFormat::BGRA8Unorm) {
+											target_format = wgpu::TextureFormat::RGBA8Unorm;
+										}
+										if (std::ranges::find(formats, target_format) == formats.end()) {
+											throw std::invalid_argument("WebGPU surface has no supported presentation format for the source texture");
+										}
+									}
+									bool convert = target_format != PresentationCopyFormat(format) ||
+										!(capabilities.usages & wgpu::TextureUsage::CopyDst);
+									if (convert && !(capabilities.usages & wgpu::TextureUsage::RenderAttachment)) {
+										throw std::invalid_argument("WebGPU surface does not support presentation format conversion");
+									}
+									if (convert && (!surface_state->conversion_pipeline || surface_state->format != target_format)) {
+										surface_state->conversion_pipeline = CreatePresentationConversionPipeline(context->device, target_format);
+									} else if (!convert) {
+										surface_state->conversion_pipeline = nullptr;
+									}
 									wgpu::SurfaceConfiguration config;
 									config.device = context->device;
-									config.format = format;
+									config.format = target_format;
 									config.width = width;
 									config.height = height;
-									config.usage = wgpu::TextureUsage::CopyDst;
+									config.usage = convert ? wgpu::TextureUsage::RenderAttachment : wgpu::TextureUsage::CopyDst;
 									config.presentMode = wgpu::PresentMode::Fifo;
+#if !defined(__EMSCRIPTEN__)
+									if (!present->vertical_sync) {
+										auto modes = std::span(capabilities.presentModes, capabilities.presentModeCount);
+										if (std::ranges::find(modes, wgpu::PresentMode::Immediate) != modes.end()) {
+											config.presentMode = wgpu::PresentMode::Immediate;
+										} else if (std::ranges::find(modes, wgpu::PresentMode::Mailbox) != modes.end()) {
+											config.presentMode = wgpu::PresentMode::Mailbox;
+										}
+									}
+#endif // !defined(__EMSCRIPTEN__)
 									surface_state->surface.Configure(&config);
+									if (context->errors->Failed()) {
+										throw std::runtime_error(std::format("WebGPU surface configuration failed: {}", context->errors->Message()));
+									}
 									surface_state->width = width;
 									surface_state->height = height;
-									surface_state->format = format;
+									surface_state->format = target_format;
+									surface_state->source_format = format;
+									surface_state->vertical_sync = present->vertical_sync;
 								}
 								surface = surface_state->surface;
 								// Blocking here is inherent to acquiring a surface image:
@@ -1467,6 +1618,15 @@ namespace fyuu_rhi::execution {
 								// engine frees one, and there is no asynchronous form of
 								// this call.
 								surface.GetCurrentTexture(&current);
+								if (surface_state->conversion_pipeline) {
+									wgpu::TextureDescriptor descriptor{
+										.usage = wgpu::TextureUsage::CopyDst | wgpu::TextureUsage::TextureBinding,
+										.dimension = wgpu::TextureDimension::e2D,
+										.size = {width, height, 1u},
+										.format = PresentationCopyFormat(format)};
+									conversion_texture = context->device.CreateTexture(&descriptor);
+									conversion_pipeline = surface_state->conversion_pipeline;
+								}
 							}
 							if (!current.texture) {
 								throw std::runtime_error(
@@ -1474,7 +1634,8 @@ namespace fyuu_rhi::execution {
 								);
 							}
 							presentations.emplace_back(
-							    webgpu::PresentationWork{present->source, surface, current.texture}
+							    webgpu::PresentationWork{present->source, surface, current.texture,
+									std::move(conversion_texture), std::move(conversion_pipeline)}
 							);
 						}
 					}
@@ -1551,6 +1712,10 @@ namespace fyuu_rhi::execution {
 									api_lock.unlock();
 								}
 								wgpu::WaitStatus wait_status;
+#if defined(__EMSCRIPTEN__)
+								/// @brief Browser futures progress while Asyncify suspends this call.
+								wait_status = context->instance.WaitAny(future, UINT64_MAX);
+#else
 								if (context->errors->implicit_synchronization) {
 									wait_status = context->instance.WaitAny(
 										future,
@@ -1567,6 +1732,7 @@ namespace fyuu_rhi::execution {
 										}
 									} while (wait_status == wgpu::WaitStatus::TimedOut);
 								}
+#endif // defined(__EMSCRIPTEN__)
 								api_lock = context->errors->LockApi();
 								if (wait_status != wgpu::WaitStatus::Success) {
 									throw std::runtime_error(
@@ -1591,33 +1757,7 @@ namespace fyuu_rhi::execution {
 				}
 
 
-#if defined(_WIN32)
-				// Opt-in wall/CPU timing is not a substitute for native stack sampling.
-				// Keep completion delivery and all submission semantics unchanged.
-				char diagnostic_setting[2]{};
-				bool const diagnose_submit = GetEnvironmentVariableA(
-					"FYUU_RHI_WEBGPU_SUBMIT_DIAGNOSTICS",
-					diagnostic_setting,
-					sizeof(diagnostic_setting)
-				) == 1u && diagnostic_setting[0] == '1';
-				auto const recording_started = diagnose_submit ? std::chrono::steady_clock::now() :
-					std::chrono::steady_clock::time_point{};
-#endif
-				// A/B switch only: the default remains parallel batch recording.
-				// WebGPU has one ordered queue; logical Graphics/Transfer boundaries
-				// need not be native command-buffer boundaries. Keep a fresh replayer
-				// and end every pass at each batch boundary, preserving RHI state scope.
-				bool merge_batches = false;
-#if defined(_WIN32)
-				char merge_setting[2]{};
-				merge_batches = GetEnvironmentVariableA(
-					"FYUU_RHI_WEBGPU_MERGE_BATCHES",
-					merge_setting,
-					sizeof(merge_setting)
-				) == 1u && merge_setting[0] == '1';
-#endif
-				auto const encoding_count = merge_batches && !plan.batches.empty() ?
-					std::size_t{1u} : plan.batches.size();
+				auto const encoding_count = plan.batches.size();
 				std::vector<wgpu::CommandBuffer> command_buffers(encoding_count);
 				std::vector<std::exception_ptr> recording_errors(encoding_count);
 				std::atomic_bool cancelled = false;
@@ -1627,8 +1767,8 @@ namespace fyuu_rhi::execution {
 							auto creation_lock = context->errors->LockApi();
 							return context->device.CreateCommandEncoder();
 						}();
-						auto const first = merge_batches ? std::size_t{0u} : encoding_index;
-						auto const last = merge_batches ? plan.batches.size() : encoding_index + 1u;
+						auto const first = encoding_index;
+						auto const last = encoding_index + 1u;
 						for (auto batch_index : std::views::iota(first, last)) {
 							if (cancelled.load(std::memory_order_acquire) || stop_token.stop_requested()) {
 								cancelled.store(true, std::memory_order_release);
@@ -1637,7 +1777,7 @@ namespace fyuu_rhi::execution {
 							auto const& batch = plan.batches[batch_index];
 							webgpu::Replayer replayer{
 								.resources = resources,
-								.resource_flags = resource_flags,
+								.bound_resources = bound_resources,
 								.views = views,
 								.pipelines = pipelines,
 								.groups = resource_groups,
@@ -1684,19 +1824,6 @@ namespace fyuu_rhi::execution {
 					ParallelFor(std::size_t{0u}, encoding_count, record);
 				}
 
-#if defined(_WIN32)
-				if (diagnose_submit) {
-					log::Info(
-						std::format(
-							"WebGPU recording: buffers={}, wall_ms={:.3f}",
-							command_buffers.size(),
-							std::chrono::duration<double, std::milli>(
-								std::chrono::steady_clock::now() - recording_started
-							).count()
-						)
-					);
-				}
-#endif
 				api_lock = context->errors->LockApi();
 				// Every batch has finished recording, so the upload buffers can be
 				// flushed and released. They must be unmapped before the queue is asked to
@@ -1720,35 +1847,9 @@ namespace fyuu_rhi::execution {
 				}
 
 				auto queue = context->device.GetQueue();
-#if defined(_WIN32)
-				FILETIME creation{}, exit{}, kernel_before{}, user_before{}, kernel_after{}, user_after{};
-				bool const cpu_before_valid = diagnose_submit && GetThreadTimes(
-					GetCurrentThread(), &creation, &exit, &kernel_before, &user_before
-				);
-				auto const submit_started = diagnose_submit ? std::chrono::steady_clock::now() :
-					std::chrono::steady_clock::time_point{};
-#endif
-				queue.Submit(command_buffers.size(), command_buffers.data());
-#if defined(_WIN32)
-				if (diagnose_submit) {
-					auto const submit_finished = std::chrono::steady_clock::now();
-					bool const cpu_after_valid = GetThreadTimes(
-						GetCurrentThread(), &creation, &exit, &kernel_after, &user_after
-					);
-					auto ticks = [](FILETIME value) {
-						return (std::uint64_t{value.dwHighDateTime} << 32u) | value.dwLowDateTime;
-					};
-					log::Info(
-						std::format(
-							"WebGPU Submit: buffers={}, wall_ms={:.3f}, thread_cpu_ms={:.3f}",
-							command_buffers.size(),
-							std::chrono::duration<double, std::milli>(submit_finished - submit_started).count(),
-							cpu_before_valid && cpu_after_valid ?
-								(ticks(kernel_after) + ticks(user_after) - ticks(kernel_before) - ticks(user_before)) / 10000.0 : -1.0
-						)
-					);
+				{
+					queue.Submit(command_buffers.size(), command_buffers.data());
 				}
-#endif
 				// A submit Dawn rejects is reported only through the device's uncaptured-error
 				// callback, which the queue-work future below does not observe: without this the
 				// graph would be reported as done even though its work never ran, and the next
@@ -1758,6 +1859,7 @@ namespace fyuu_rhi::execution {
 					    std::format("WebGPU submit failed: {}", context->errors->Message())
 					);
 				}
+#if !defined(__EMSCRIPTEN__)
 				for (auto const& work : presentations) {
 					auto status = work.surface.Present();
 					if (!status) {
@@ -1769,6 +1871,10 @@ namespace fyuu_rhi::execution {
 						}
 					}
 				}
+#endif // !defined(__EMSCRIPTEN__)
+				/** @note Browser Canvas presentation occurs when control returns to the
+				 * event loop; Surface::Present is a native-only operation.
+				 */
 				completion_future = queue.OnSubmittedWorkDone(
 					wgpu::CallbackMode::AllowSpontaneous,
 					[token_state](wgpu::QueueWorkDoneStatus status, wgpu::StringView message) noexcept {

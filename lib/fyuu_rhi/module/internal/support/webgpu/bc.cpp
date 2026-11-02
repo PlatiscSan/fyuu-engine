@@ -18,7 +18,11 @@ module;
 
 #include <variant>
 #endif
+#if defined(__EMSCRIPTEN__)
+#include <webgpu/webgpu_cpp.h>
+#else
 #include <dawn/webgpu_cpp.h>
+#endif // defined(__EMSCRIPTEN__)
 module fyuu_rhi:webgpu_bc;
 #if defined(__cpp_lib_modules)
 import std;

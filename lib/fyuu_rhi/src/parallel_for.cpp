@@ -1,5 +1,7 @@
 #include <cstddef>
+#if !defined(__EMSCRIPTEN__)
 #include <tbb/parallel_for.h>
+#endif // !defined(__EMSCRIPTEN__)
 
 extern "C" void ParallelFor(
 	std::size_t first,
@@ -17,6 +19,12 @@ extern "C" void ParallelFor(
 		invoke(function, first);
 		return;
 	}
+#if defined(__EMSCRIPTEN__)
+	/** @brief Encode on the browser thread; native workers cannot access JS WebGPU objects. */
+	for (auto index = first; index < last; ++index) {
+		invoke(function, index);
+	}
+#else
 	tbb::parallel_for(
 		first,
 		last,
@@ -24,4 +32,5 @@ extern "C" void ParallelFor(
 			invoke(function, index);
 		}
 	);
+#endif // defined(__EMSCRIPTEN__)
 }

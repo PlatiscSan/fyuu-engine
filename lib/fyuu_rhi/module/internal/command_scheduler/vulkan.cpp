@@ -1,4 +1,5 @@
 module;
+#if !defined(__EMSCRIPTEN__)
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <cstddef>
@@ -42,7 +43,10 @@ module;
 #endif
 #endif // !defined(__APPLE__)
 
+#endif // !defined(__EMSCRIPTEN__)
+
 module fyuu_rhi:vulkan_command_scheduler;
+#if !defined(__EMSCRIPTEN__)
 #if !defined(__APPLE__)
 #if defined(__cpp_lib_modules)
 import std;
@@ -720,11 +724,10 @@ namespace {
 		result.buffer_count = buffer_count;
 		result.present_mode = present_mode;
 		result.out_of_date = false;
-		vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR maintenance_features;
-		vk::PhysicalDeviceFeatures2 device_features;
-		device_features.pNext = &maintenance_features;
-		scheduler->physical_device->getFeatures2(&device_features, *scheduler->dispatcher);
-		result.swapchain_maintenance1_supported = maintenance_features.swapchainMaintenance1;
+		/** @note Present fences require logical-device enablement, not adapter support.
+		 * This also selects the acquire-fence fallback for devices without enablement.
+		 */
+		result.swapchain_maintenance1_supported = scheduler->swapchain_maintenance1_enabled;
 		result.fifo_latest_ready_supported = fifo_latest_ready_supported;
 		result.present_id_supported = false;
 		return result;
@@ -772,6 +775,18 @@ namespace {
 		}
 
 		void operator()(BeginRendering const& value) {
+			/// @brief Resolve texture defaults before native attachment load operations are selected.
+			if (UsesDefaultClear(value)) {
+				auto resolved = value;
+				ResolveAttachmentClears(
+					resolved,
+					[this](std::size_t index) -> fyuu_rhi::TextureClearValue const& {
+						return resources[index].get().default_clear_value;
+					}
+				);
+				(*this)(resolved);
+				return;
+			}
 			if (rendering) {
 				throw std::logic_error("Nested Vulkan BeginRendering is invalid");
 			}
@@ -1566,7 +1581,8 @@ namespace fyuu_rhi::vulkan {
 			// Give the buffer back to its own pool, then return that pool to the family's idle
 			// queue, so the next batch needing one can take it. The map is never erased from, so a
 			// plain lookup by family is enough and no address is held anywhere.
-			auto limit = details::IdleRetentionLimit(pool.retention_demand);
+			/// @brief Preserve the recurring graph's pools; pressure trims spare capacity.
+			auto limit = details::WorkingSetRetentionLimit(pool.retention_demand);
 			std::unique_lock<std::mutex> pools_lock(context->command_pools_mutex);
 			auto& idle = context->command_pools[family];
 			while (idle.size() > limit) {
@@ -1611,10 +1627,12 @@ namespace fyuu_rhi::vulkan {
 			    (std::numeric_limits<std::uint64_t>::max)(),
 			    *owner->dispatcher
 			);
-			owner->device->resetFences(*fence, *owner->dispatcher);
+			if (!fence_published) {
+				owner->device->resetFences(*fence, *owner->dispatcher);
+			}
 			std::unique_lock<std::mutex> lock(owner->mutex);
-			auto fence_limit = fyuu_rhi::details::IdleRetentionLimit(owner->fence_retention_demand);
-			auto semaphore_limit = fyuu_rhi::details::IdleRetentionLimit(owner->semaphore_retention_demand);
+			auto fence_limit = fyuu_rhi::details::WorkingSetRetentionLimit(owner->fence_retention_demand);
+			auto semaphore_limit = fyuu_rhi::details::WorkingSetRetentionLimit(owner->semaphore_retention_demand);
 			/// Consumer completion proves that these binary semaphore waits have finished.
 			/// Trim only this idle inventory; outstanding completion points keep their objects.
 			while (owner->fences.size() > fence_limit) {
@@ -1623,7 +1641,7 @@ namespace fyuu_rhi::vulkan {
 			while (owner->semaphores.size() > semaphore_limit) {
 				owner->semaphores.pop_back();
 			}
-			if (owner->fences.size() < fence_limit) {
+			if (!fence_published && owner->fences.size() < fence_limit) {
 				owner->fences.emplace_back(std::move(fence));
 			}
 			for (auto& semaphore : consumed_semaphores) {
@@ -1683,14 +1701,17 @@ namespace fyuu_rhi {
 			    logical_device->dispatcher,
 			    logical_device->queue_alloc
 			);
-			context.timeline_semaphore_supported = logical_device->enabled_features.contains(
+			context.timeline_semaphore_supported = std::ranges::contains(logical_device->enabled_features,
 			    vk::StructureType::ePhysicalDeviceTimelineSemaphoreFeatures
 			);
-			context.synchronization2_supported = logical_device->enabled_features.contains(
+			context.synchronization2_supported = std::ranges::contains(logical_device->enabled_features,
 			    vk::StructureType::ePhysicalDeviceSynchronization2Features
 			);
-			context.dynamic_rendering_supported = logical_device->enabled_features.contains(
+			context.dynamic_rendering_supported = std::ranges::contains(logical_device->enabled_features,
 			    vk::StructureType::ePhysicalDeviceDynamicRenderingFeatures
+			);
+			context.swapchain_maintenance1_enabled = std::ranges::contains(logical_device->enabled_features,
+				vk::StructureType::ePhysicalDeviceSwapchainMaintenance1FeaturesKHR
 			);
 			if (context.timeline_semaphore_supported) {
 				context.completion_points.emplace<vulkan::CommandSchedulerContext::TimelineMap>();
@@ -2029,15 +2050,13 @@ namespace fyuu_rhi::execution {
 			for (std::size_t index = 0u; index < plan.batches.size(); ++index) {
 				queue_identifiers.emplace_back(reservation.GetQueue(index).GetIdentifier());
 			}
-			// owner_family is a permanent queue-family anchor, not the last writer. A
-			// previously unowned resource adopts its first graph access family only after
-			// successful submission; the provisional value is used while recording this
-			// graph's matching acquire/release ownership transfers.
+			/// @brief Snapshot the previous owner for graph-entry transfers only.
 			std::vector<std::uint32_t> resource_anchors(
 			    resources.size(),
 			    (std::numeric_limits<std::uint32_t>::max)()
 			);
 			std::vector<bool> resource_had_anchor(resources.size(), false);
+			std::vector<std::uint32_t> resource_final_families(resources.size(), vk::QueueFamilyIgnored);
 			for (std::size_t resource = 0u; resource < resources.size(); ++resource) {
 				auto const& native = resources[resource].get();
 				if (native.owner_family != (std::numeric_limits<std::uint32_t>::max)()) {
@@ -2049,6 +2068,110 @@ namespace fyuu_rhi::execution {
 					resource_anchors[resource] =
 					    queue_identifiers[plan.first_accesses[resource].front().batch].family;
 				}
+			}
+
+			/**
+			 * @brief Reserve previous-owner releases and necessary multi-queue completion joins.
+			 * @note Prefix releases and suffix acquires use the same GENERAL layout and range
+			 * as their graph-side partners. An empty submission cannot transfer ownership.
+			 */
+			struct OwnershipBatch {
+				std::size_t resource;
+				bool release;
+				ExecutionBatch plan{};
+			};
+			std::deque<OwnershipBatch> ownership_batches;
+			std::vector<std::vector<std::uint32_t>> ownership_families;
+			ownership_families.reserve(resources.size() * 2u);
+			std::vector<QueueRequest> ownership_requests;
+			std::vector<std::vector<std::size_t>> dependencies;
+			std::ranges::transform(
+				plan.batches,
+				std::back_inserter(dependencies),
+				[](auto const& batch) { return batch.dependencies; }
+			);
+			std::vector<std::optional<std::size_t>> resource_returns(resources.size());
+			std::vector<std::size_t> prefixes;
+			std::vector<std::size_t> suffixes;
+			for (std::size_t resource = 0u; resource < resources.size(); ++resource) {
+				if (plan.first_accesses[resource].empty()) {
+					continue;
+				}
+				auto anchor = resource_anchors[resource];
+				auto AddOwnershipBatch = [&](
+					bool release,
+					std::uint32_t family,
+					std::vector<std::size_t> const& incoming
+				) {
+					auto index = dependencies.size();
+					dependencies.emplace_back(incoming);
+					ownership_batches.emplace_back(resource, release);
+					ownership_families.emplace_back(1u, family);
+					ownership_requests.emplace_back(
+						CommandQueueType::Copy,
+						0.5f,
+						std::uint64_t{1u},
+						family,
+						ownership_families.back(),
+						std::span<std::size_t const>{}
+					);
+					return index;
+				};
+				auto needs_release = resource_had_anchor[resource] && std::ranges::any_of(
+					plan.first_accesses[resource],
+					[&](auto const& access) {
+						return queue_identifiers[access.batch].family != anchor;
+					}
+				);
+				if (needs_release) {
+					auto prefix = AddOwnershipBatch(true, anchor, {});
+					prefixes.emplace_back(prefix);
+					for (auto const& access : plan.first_accesses[resource]) {
+						dependencies[access.batch].emplace_back(prefix);
+					}
+				}
+				std::vector<std::size_t> terminals;
+				std::ranges::transform(
+					plan.last_accesses[resource],
+					std::back_inserter(terminals),
+					[](auto const& access) { return access.batch; }
+				);
+				std::ranges::sort(terminals);
+				terminals.erase(std::ranges::unique(terminals).begin(), terminals.end());
+				/// @brief Keep the last access family; consolidate only terminal ranges owned by different families.
+				resource_final_families[resource] =
+					queue_identifiers[plan.last_accesses[resource].back().batch].family;
+				auto final_family = resource_final_families[resource];
+				auto needs_acquire = std::ranges::any_of(
+					terminals,
+					[&](auto batch) { return queue_identifiers[batch].family != final_family; }
+				);
+				auto needs_join = !terminals.empty() && std::ranges::any_of(
+					terminals,
+					[&](auto batch) { return queue_identifiers[batch] != queue_identifiers[terminals.front()]; }
+				);
+				if (needs_acquire || needs_join) {
+					auto suffix = AddOwnershipBatch(false, final_family, terminals);
+					suffixes.emplace_back(suffix);
+					resource_returns[resource] = suffix;
+				}
+			}
+			auto ownership_reservation = scheduler.queue_allocator.Reserve(
+				scheduler.device, scheduler.dispatcher, ownership_requests
+			);
+			auto GetQueue = [&](std::size_t index) -> ManagedQueue& {
+				return index < plan.batches.size() ?
+					reservation.GetQueue(index) :
+					ownership_reservation.GetQueue(index - plan.batches.size());
+			};
+			std::vector<std::size_t> submission_order = prefixes;
+			std::ranges::copy(
+				std::views::iota(std::size_t{0u}, plan.batches.size()),
+				std::back_inserter(submission_order)
+			);
+			std::ranges::copy(suffixes, std::back_inserter(submission_order));
+			for (std::size_t index = plan.batches.size(); index < dependencies.size(); ++index) {
+				queue_identifiers.emplace_back(GetQueue(index).GetIdentifier());
 			}
 
 			struct PreparedBatch {
@@ -2068,14 +2191,14 @@ namespace fyuu_rhi::execution {
 			};
 
 			std::vector<PreparedBatch> prepared;
-			prepared.reserve(plan.batches.size());
-			token.command_buffers.reserve(plan.batches.size());
-			for (std::size_t index = 0u; index < plan.batches.size(); ++index) {
+			prepared.reserve(dependencies.size());
+			token.command_buffers.reserve(dependencies.size());
+			for (std::size_t index = 0u; index < dependencies.size(); ++index) {
 				if (stop_token.stop_requested()) {
 					token.is_cancelled = true;
 					return MakeCompletionToken(std::move(token));
 				}
-				auto identifier = reservation.GetQueue(index).GetIdentifier();
+				auto identifier = GetQueue(index).GetIdentifier();
 				vk::CommandBuffer commands;
 				CommandPoolContext pool;
 				{
@@ -2132,7 +2255,10 @@ namespace fyuu_rhi::execution {
 				    std::move(pool),
 				    commands
 				);
-				prepared.emplace_back(&plan.batches[index], command_index);
+				auto batch_plan = index < plan.batches.size() ?
+					&plan.batches[index] :
+					&ownership_batches[index - plan.batches.size()].plan;
+				prepared.emplace_back(batch_plan, command_index);
 			}
 			std::vector<PresentationWork> presentation_works;
 			presentation_works.reserve(presentation_preparations.size());
@@ -2368,13 +2494,15 @@ namespace fyuu_rhi::execution {
 			// it immediately once the device is idle, releasing those references.
 			auto ReleaseRetirementFence = [&](PresentationWork const& work) {
 				try {
-					auto& queue = reservation.GetQueue(work.batch);
+					auto& queue = GetQueue(work.batch);
 					std::unique_lock<std::mutex> queue_lock(queue.GetSubmissionMutex());
-					queue.GetNativeQueue()->submit(
-					    vk::SubmitInfo{},
-					    *work.retirement_fence,
-					    *scheduler.dispatcher
-					);
+					{
+						queue.GetNativeQueue()->submit(
+						    vk::SubmitInfo{},
+						    *work.retirement_fence,
+						    *scheduler.dispatcher
+						);
+					}
 				} catch (...) {
 					// Device loss completes outstanding tokens through the error channel.
 				}
@@ -2410,6 +2538,13 @@ namespace fyuu_rhi::execution {
 				}
 			}
 
+			for (auto index : prefixes) {
+				auto resource = ownership_batches[index - plan.batches.size()].resource;
+				if (auto timeline = std::get_if<TimelineCompletion>(&resources[resource].get().completion)) {
+					prepared[index].external_waits.emplace_back(*timeline);
+				}
+			}
+
 			if (scheduler.timeline_semaphore_supported) {
 				// Reserve this graph's timeline values as one short transaction. Recording
 				// and submission do not hold the completion-point registry lock.
@@ -2419,8 +2554,8 @@ namespace fyuu_rhi::execution {
 				auto& timelines = std::get<vulkan::CommandSchedulerContext::TimelineMap>(
 				    scheduler.completion_points
 				);
-				for (std::size_t index = 0u; index < prepared.size(); ++index) {
-					auto identifier = reservation.GetQueue(index).GetIdentifier();
+				for (auto index : submission_order) {
+					auto identifier = GetQueue(index).GetIdentifier();
 					auto [timeline, inserted] = timelines.try_emplace(identifier);
 					if (inserted) {
 						vk::SemaphoreTypeCreateInfo type_info(vk::SemaphoreType::eTimeline, 0u);
@@ -2446,11 +2581,11 @@ namespace fyuu_rhi::execution {
 				);
 				token.binary_completions.reserve(prepared.size() + plan.last_accesses.size());
 				for (std::size_t index = 0u; index < prepared.size(); ++index) {
-					auto destination = reservation.GetQueue(index).GetIdentifier();
+					auto destination = GetQueue(index).GetIdentifier();
 					auto incoming = std::ranges::count_if(
-					    prepared[index].plan->dependencies,
+					    dependencies[index],
 					    [&](std::size_t dependency) {
-						    return reservation.GetQueue(dependency).GetIdentifier() != destination;
+						    return GetQueue(dependency).GetIdentifier() != destination;
 					    }
 					);
 					prepared[index].binary_completion = token.binary_completions.size();
@@ -2459,11 +2594,11 @@ namespace fyuu_rhi::execution {
 					);
 				}
 				for (std::size_t index = 0u; index < prepared.size(); ++index) {
-					auto destination = reservation.GetQueue(index).GetIdentifier();
+					auto destination = GetQueue(index).GetIdentifier();
 					auto& completion = token.binary_completions[*prepared[index].binary_completion];
 					std::size_t semaphore_index = 0u;
-					for (auto dependency : prepared[index].plan->dependencies) {
-						if (reservation.GetQueue(dependency).GetIdentifier() == destination) {
+					for (auto dependency : dependencies[index]) {
+						if (GetQueue(dependency).GetIdentifier() == destination) {
 							continue;
 						}
 						auto semaphore = *completion.consumed_semaphores[semaphore_index++];
@@ -2473,74 +2608,6 @@ namespace fyuu_rhi::execution {
 				}
 			}
 
-			struct ResourceJoin {
-				std::size_t resource;
-				std::size_t target_batch;
-				std::vector<std::size_t> terminal_batches;
-				std::optional<TimelineCompletion> timeline;
-				std::optional<std::size_t> binary_completion;
-				std::vector<vk::Semaphore> waits;
-				bool submitted = false;
-			};
-			std::vector<ResourceJoin> resource_joins;
-			for (std::size_t resource = 0u; resource < plan.last_accesses.size(); ++resource) {
-				std::vector<std::size_t> terminals;
-				for (auto const& access : plan.last_accesses[resource]) {
-					if (std::ranges::find(terminals, access.batch) == terminals.end()) {
-						terminals.emplace_back(access.batch);
-					}
-				}
-				if (terminals.size() < 2u) {
-					continue;
-				}
-				auto target = terminals.back();
-				auto target_queue = queue_identifiers[target];
-				bool multiple_queues = std::ranges::any_of(terminals, [&](std::size_t batch) {
-					return queue_identifiers[batch] != target_queue;
-				});
-				if (!multiple_queues) {
-					continue;
-				}
-				ResourceJoin join{
-				    .resource = resource,
-				    .target_batch = target,
-				    .terminal_batches = std::move(terminals)
-				};
-				if (scheduler.timeline_semaphore_supported) {
-					std::unique_lock<std::mutex> completion_points_lock(
-					    scheduler.completion_points_mutex
-					);
-					auto& timelines = std::get<vulkan::CommandSchedulerContext::TimelineMap>(
-					    scheduler.completion_points
-					);
-					auto timeline = timelines.find(target_queue);
-					++timeline->second.value;
-					join.timeline = timeline->second;
-				} else {
-					auto allocator = std::get<std::shared_ptr<BinaryCompletionPointAllocator>>(
-					    scheduler.completion_points
-					);
-					auto incoming =
-					    std::ranges::count_if(join.terminal_batches, [&](std::size_t batch) {
-						    return queue_identifiers[batch] != target_queue;
-					    });
-					join.binary_completion = token.binary_completions.size();
-					token.binary_completions.emplace_back(
-					    allocator->AllocateCompletionPoint(incoming)
-					);
-					auto& completion = token.binary_completions.back();
-					std::size_t semaphore = 0u;
-					for (auto batch : join.terminal_batches) {
-						if (queue_identifiers[batch] == target_queue) {
-							continue;
-						}
-						auto native = *completion.consumed_semaphores[semaphore++];
-						join.waits.emplace_back(native);
-						prepared[batch].signals.emplace_back(native);
-					}
-				}
-				resource_joins.emplace_back(std::move(join));
-			}
 			if (!scheduler.timeline_semaphore_supported) {
 				auto allocator = std::get<std::shared_ptr<BinaryCompletionPointAllocator>>(
 					scheduler.completion_points
@@ -2572,6 +2639,40 @@ namespace fyuu_rhi::execution {
 					    vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit),
 					    *scheduler.dispatcher
 					);
+
+					if (index >= plan.batches.size()) {
+						auto const& handoff = ownership_batches[index - plan.batches.size()];
+						auto resource = handoff.resource;
+						auto anchor = handoff.release ?
+							resource_anchors[resource] : resource_final_families[resource];
+						auto const& accesses = handoff.release ?
+							plan.first_accesses[resource] : plan.last_accesses[resource];
+						NativeAccess stable{
+							vk::PipelineStageFlagBits2::eAllCommands,
+							vk::AccessFlags2{},
+							vk::ImageLayout::eGeneral
+						};
+						for (auto const& access : accesses) {
+							auto family = queue_identifiers[access.batch].family;
+							if (family == anchor) {
+								continue;
+							}
+							EmitBarrier(
+								commands,
+								resources[resource].get(),
+								resource_metadata[resource],
+								stable,
+								stable,
+								access.range,
+								handoff.release ? anchor : family,
+								handoff.release ? family : anchor,
+								scheduler.synchronization2_supported,
+								*scheduler.dispatcher
+							);
+						}
+						commands.end(*scheduler.dispatcher);
+						return;
+					}
 					Recorder recorder{
 					    resources,
 					    resource_metadata,
@@ -2611,9 +2712,7 @@ namespace fyuu_rhi::execution {
 								if (resource_had_anchor[resource] &&
 								    anchor != (std::numeric_limits<std::uint32_t>::max)() &&
 								    anchor != family) {
-									// The previous graph released ownership in the stable layout.
-									// Acquire ownership first, then perform this graph's layout/access
-									// transition as an ordinary same-family barrier.
+									/// @brief Pair with the previous owner's prefix release before changing layout.
 									EmitBarrier(
 									    commands,
 									    resources[resource].get(),
@@ -2720,7 +2819,7 @@ namespace fyuu_rhi::execution {
 								    scheduler.synchronization2_supported,
 								    *scheduler.dispatcher
 								);
-								auto anchor = resource_anchors[resource];
+								auto anchor = resource_final_families[resource];
 								auto family = queue_identifiers[index].family;
 								if (anchor != (std::numeric_limits<std::uint32_t>::max)() &&
 								    anchor != family) {
@@ -2772,8 +2871,8 @@ namespace fyuu_rhi::execution {
 			// while different logical roles may resolve to the same physical queue.
 			std::vector<std::vector<std::size_t>> queue_batches;
 			std::unordered_map<QueueIdentifier, std::size_t> queue_indices;
-			for (std::size_t index = 0u; index < prepared.size(); ++index) {
-				auto identifier = reservation.GetQueue(index).GetIdentifier();
+			for (auto index : submission_order) {
+				auto identifier = GetQueue(index).GetIdentifier();
 				auto [queue, inserted] =
 				    queue_indices.try_emplace(identifier, queue_batches.size());
 				if (inserted) {
@@ -2791,7 +2890,7 @@ namespace fyuu_rhi::execution {
 				if (batches.empty()) {
 					return;
 				}
-				auto& queue = reservation.GetQueue(batches.front());
+				auto& queue = GetQueue(batches.front());
 				// Vulkan requires external synchronization for host access to VkQueue.
 				// Holding the device-level mutex for this graph's complete queue stream
 				// also prevents another scheduler from interleaving inside its FIFO group.
@@ -2833,7 +2932,11 @@ namespace fyuu_rhi::execution {
 						token.command_buffers[prepared[index].command_buffer].completion =
 						    completion.fence;
 					}
-					committed_work[index].emplace(reservation.Commit(index));
+					committed_work[index].emplace(
+						index < plan.batches.size() ?
+							reservation.Commit(index) :
+							ownership_reservation.Commit(index - plan.batches.size())
+					);
 					submission_states[index].store(1u, std::memory_order_release);
 					submission_states[index].notify_all();
 				};
@@ -2855,7 +2958,9 @@ namespace fyuu_rhi::execution {
 					}
 					std::size_t published = 0u;
 					try {
-						queue.GetNativeQueue()->submit(infos, vk::Fence{}, *scheduler.dispatcher);
+						{
+							queue.GetNativeQueue()->submit(infos, vk::Fence{}, *scheduler.dispatcher);
+						}
 						for (; published < merged.size(); ++published) {
 							Publish(submits[merged[published]]);
 						}
@@ -2870,10 +2975,10 @@ namespace fyuu_rhi::execution {
 
 				for (auto index : batches) {
 					bool dependency_failed = false;
-					for (auto dependency : prepared[index].plan->dependencies) {
+					for (auto dependency : dependencies[index]) {
 						auto state = submission_states[dependency].load(std::memory_order_acquire);
 						if (state == 0u &&
-						    reservation.GetQueue(dependency).GetIdentifier() !=
+						    GetQueue(dependency).GetIdentifier() !=
 						        queue.GetIdentifier()) {
 							// This queue's already prepared batches must reach the queue
 							// before this thread blocks: the producer may itself be waiting
@@ -2922,8 +3027,8 @@ namespace fyuu_rhi::execution {
 								unit.waits.emplace_back(*external.semaphore);
 								unit.wait_values.emplace_back(external.value);
 							}
-							for (auto dependency : prepared[index].plan->dependencies) {
-								if (reservation.GetQueue(dependency).GetIdentifier() ==
+							for (auto dependency : dependencies[index]) {
+								if (GetQueue(dependency).GetIdentifier() ==
 								    queue.GetIdentifier()) {
 									continue;
 								}
@@ -2959,11 +3064,13 @@ namespace fyuu_rhi::execution {
 						if (unit.fence) {
 							// A binary fence belongs to one submission unit only.
 							Flush();
-							queue.GetNativeQueue()->submit(
-							    unit.submit_info,
-							    unit.fence,
-							    *scheduler.dispatcher
-							);
+							{
+								queue.GetNativeQueue()->submit(
+								    unit.submit_info,
+								    unit.fence,
+								    *scheduler.dispatcher
+								);
+							}
 							Publish(unit);
 						} else {
 							merged.emplace_back(submits.size() - 1u);
@@ -2991,7 +3098,7 @@ namespace fyuu_rhi::execution {
 					std::vector<vk::Semaphore> waits;
 					std::size_t semaphore_index = 0u;
 					auto destination = queue_identifiers[index];
-					for (auto dependency : prepared[index].plan->dependencies) {
+					for (auto dependency : dependencies[index]) {
 						if (queue_identifiers[dependency] == destination) {
 							continue;
 						}
@@ -3008,18 +3115,20 @@ namespace fyuu_rhi::execution {
 						continue;
 					}
 					try {
-						auto& queue = reservation.GetQueue(index);
+						auto& queue = GetQueue(index);
 						std::unique_lock<std::mutex> queue_lock(queue.GetSubmissionMutex());
 						std::vector<vk::PipelineStageFlags> stages(
 						    waits.size(),
 						    vk::PipelineStageFlagBits::eAllCommands
 						);
 						vk::SubmitInfo cleanup(waits, stages, {}, {});
-						queue.GetNativeQueue()->submit(
-						    cleanup,
-						    *completion.fence,
-						    *scheduler.dispatcher
-						);
+						{
+							queue.GetNativeQueue()->submit(
+							    cleanup,
+							    *completion.fence,
+							    *scheduler.dispatcher
+							);
+						}
 						completion.submitted = true;
 					} catch (...) {
 						if (!prepared[index].submission_error) {
@@ -3071,7 +3180,7 @@ namespace fyuu_rhi::execution {
 				for (auto const& [identifier, work_indices] : present_groups) {
 					try {
 						auto& queue =
-						    reservation.GetQueue(presentation_works[work_indices.front()].batch);
+						    GetQueue(presentation_works[work_indices.front()].batch);
 						std::unique_lock<std::mutex> queue_lock(queue.GetSubmissionMutex());
 						std::vector<vk::Semaphore> waits;
 						std::vector<vk::SwapchainKHR> swapchains;
@@ -3133,11 +3242,13 @@ namespace fyuu_rhi::execution {
 								// Without maintenance1 Vulkan exposes no Present fence. A following
 								// empty submission provides the best available queue-side retirement
 								// point for the transient present-ready semaphore and frame slot.
-								queue.GetNativeQueue()->submit(
-								    vk::SubmitInfo{},
-								    *work.retirement_fence,
-								    *scheduler.dispatcher
-								);
+								{
+									queue.GetNativeQueue()->submit(
+									    vk::SubmitInfo{},
+									    *work.retirement_fence,
+									    *scheduler.dispatcher
+									);
+								}
 							}
 							token.presentation_semaphores.emplace_back(work.present_ready);
 							token.presentation_fences.emplace_back(work.retirement_fence);
@@ -3165,60 +3276,6 @@ namespace fyuu_rhi::execution {
 					}
 				}
 			}
-			if (!token.exception) {
-				// A resource with terminal work on several physical queues needs one
-				// publishable completion. The hidden empty submission joins those queue
-				// streams without adding an artificial command buffer or CPU wait.
-				for (auto& join : resource_joins) {
-					try {
-						auto& queue = reservation.GetQueue(join.target_batch);
-						std::unique_lock<std::mutex> queue_lock(queue.GetSubmissionMutex());
-						std::vector<vk::Semaphore> waits = join.waits;
-						std::vector<vk::PipelineStageFlags> stages(
-						    waits.size(),
-						    vk::PipelineStageFlagBits::eAllCommands
-						);
-						std::vector<vk::Semaphore> signals;
-						std::vector<std::uint64_t> wait_values;
-						std::vector<std::uint64_t> signal_values;
-						vk::TimelineSemaphoreSubmitInfo timeline_info;
-						if (join.timeline) {
-							// Index-parallel with waits, exactly as above: the pre-existing waits
-							// are binary semaphores and get value placeholders first.
-							wait_values.assign(waits.size(), 0u);
-							for (auto batch : join.terminal_batches) {
-								if (queue_identifiers[batch] == queue.GetIdentifier()) {
-									continue;
-								}
-								waits.emplace_back(*prepared[batch].timeline->semaphore);
-								stages.emplace_back(vk::PipelineStageFlagBits::eAllCommands);
-								wait_values.emplace_back(prepared[batch].timeline->value);
-							}
-							signals.emplace_back(*join.timeline->semaphore);
-							signal_values.emplace_back(join.timeline->value);
-							timeline_info =
-							    vk::TimelineSemaphoreSubmitInfo(wait_values, signal_values);
-						}
-						vk::SubmitInfo submit_info(waits, stages, {}, signals);
-						submit_info.pNext = join.timeline ? &timeline_info : nullptr;
-						vk::Fence fence;
-						if (join.binary_completion) {
-							fence = *token.binary_completions[*join.binary_completion].fence;
-						}
-						queue.GetNativeQueue()->submit(submit_info, fence, *scheduler.dispatcher);
-						if (join.timeline) {
-							token.timeline_completions.emplace_back(*join.timeline);
-						} else {
-							token.binary_completions[*join.binary_completion].submitted = true;
-						}
-						join.submitted = true;
-					} catch (...) {
-						token.exception = std::current_exception();
-						break;
-					}
-				}
-			}
-
 			bool device_drained_after_error = false;
 			if (token.exception) {
 				// Partial submission can leave both binary semaphores and resources without
@@ -3251,30 +3308,19 @@ namespace fyuu_rhi::execution {
 					continue;
 				}
 				auto const& last = plan.last_accesses[resource].back();
-				auto joined =
-				    std::ranges::find_if(resource_joins, [resource](ResourceJoin const& join) {
-					    return join.resource == resource;
-				    });
-				auto completion_batch =
-				    joined == resource_joins.end() ? last.batch : joined->target_batch;
-				if (joined != resource_joins.end() && !joined->submitted &&
-				    !device_drained_after_error) {
+				auto completion_batch = resource_returns[resource].value_or(last.batch);
+				if (submission_states[completion_batch].load(std::memory_order_acquire) != 1u) {
 					continue;
 				}
 				auto& native = resources[resource].get();
-				// Ownership was released back to the permanent anchor during recording.
-				// Never replace it with the completion queue: doing so would turn the
-				// anchor into last-writer-wins state and break the next graph's acquire.
-				native.owner_family = resource_anchors[resource];
+				/// @brief Publish the actual terminal owner after any required consolidation completes.
+				native.owner_family = resource_final_families[resource];
 				if (device_drained_after_error) {
 					native.completion = std::monostate{};
-				} else if (joined != resource_joins.end()) {
-					native.completion = joined->timeline ?
-					    CompletionPoint(*joined->timeline) :
-					    CompletionPoint(token.binary_completions[*joined->binary_completion].fence);
 				} else if (prepared[completion_batch].timeline) {
 					native.completion = *prepared[completion_batch].timeline;
 				} else {
+					token.binary_completions[*prepared[completion_batch].binary_completion].fence_published = true;
 					native.completion =
 					    token.binary_completions[*prepared[completion_batch].binary_completion]
 					        .fence;
@@ -3286,3 +3332,4 @@ namespace fyuu_rhi::execution {
 
 } // namespace fyuu_rhi::execution
 #endif // !defined(__APPLE__)
+#endif // !defined(__EMSCRIPTEN__)

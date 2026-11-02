@@ -1,4 +1,5 @@
 module;
+#if !defined(__EMSCRIPTEN__)
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <string>
@@ -9,7 +10,10 @@ module;
 #include <Metal/Metal.hpp>
 #endif // defined(__APPLE__)
 
+#endif // !defined(__EMSCRIPTEN__)
+
 module fyuu_rhi:metal_physical_device;
+#if !defined(__EMSCRIPTEN__)
 #if defined(__APPLE__)
 #if defined(__cpp_lib_modules)
 import std;
@@ -17,6 +21,7 @@ import std;
 import :metal_data;
 import :logical_device_factory;
 import :physical_device_dispatch;
+import :memory_pressure;
 
 namespace fyuu_rhi {
 
@@ -56,3 +61,4 @@ namespace fyuu_rhi {
 
 } // namespace fyuu_rhi
 #endif // defined(__APPLE__)
+#endif // !defined(__EMSCRIPTEN__)

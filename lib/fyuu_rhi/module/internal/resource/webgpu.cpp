@@ -16,13 +16,21 @@ module;
 
 #include <variant>
 #endif // !defined(__cpp_lib_modules)
+#if defined(__EMSCRIPTEN__)
+#include <webgpu/webgpu_cpp.h>
+#else
 #include <dawn/webgpu_cpp.h>
+#endif // defined(__EMSCRIPTEN__)
+#if defined(__EMSCRIPTEN__)
+#include <emscripten/emscripten.h>
+#endif // defined(__EMSCRIPTEN__)
 
 module fyuu_rhi:webgpu_resource;
 #if defined(__cpp_lib_modules)
 import std;
 #endif // defined(__cpp_lib_modules)
 import :resource_dispatch;
+import :memory_pressure;
 import :view_factory;
 import :webgpu_data;
 import :webgpu_utility;
@@ -88,6 +96,18 @@ namespace fyuu_rhi {
 				}
 				{
 					std::unique_lock lock(state->mutex);
+#if defined(__EMSCRIPTEN__)
+					/// @brief Yield through Asyncify, never block the event loop needed by MapAsync.
+					auto deadline = std::chrono::steady_clock::now() + MappingTimeout;
+					while (!state->completed && std::chrono::steady_clock::now() < deadline) {
+						lock.unlock();
+						emscripten_sleep(1u);
+						lock.lock();
+					}
+					if (!state->completed) {
+						throw std::runtime_error("WebGPU buffer mapping did not complete");
+					}
+#else
 					// Bounded: the device's own latch is checked again on the way out, because a
 					// rejected submit leaves the mapping pending forever rather than failing it.
 					if (!state->condition.wait_for(
@@ -106,6 +126,7 @@ namespace fyuu_rhi {
 								: std::string("WebGPU buffer mapping did not complete")
 						);
 					}
+#endif // defined(__EMSCRIPTEN__)
 					if (state->status != wgpu::MapAsyncStatus::Success) {
 						throw std::runtime_error(
 							state->error.empty()

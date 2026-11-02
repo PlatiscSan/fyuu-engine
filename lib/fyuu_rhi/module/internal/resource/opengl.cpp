@@ -1,4 +1,5 @@
 module;
+#if !defined(__EMSCRIPTEN__)
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <cstddef>
@@ -6,78 +7,33 @@ module;
 #include <utility>
 
 #include <optional>
+
+#include <format>
 #endif // !defined(__cpp_lib_modules)
 #if !defined(__APPLE__)
 #include <glad/glad.h>
 #endif // !defined(__APPLE__)
 
+#endif // !defined(__EMSCRIPTEN__)
+
 module fyuu_rhi:opengl_resource;
+#if !defined(__EMSCRIPTEN__)
 #if !defined(__APPLE__)
 #if defined(__cpp_lib_modules)
 import std;
 #endif // defined(__cpp_lib_modules)
+import :core;
+import :instance;
 import :opengl_data;
 import :opengl_utility;
 import :resource_dispatch;
+import :memory_pressure;
 import :view_factory;
 
 namespace fyuu_rhi::opengl {
-
-	Resource::Resource(GLuint buffer, GLsync creation_sync_) noexcept
-		: impl(buffer, ResourceDeleter{ ResourceType::Buffer }),
-		creation_sync(creation_sync_, SyncDeleter{}),
-		target(0u),
-		format(0u),
-		type(ResourceType::Buffer) {
-	}
-
-	Resource::Resource(
-		GLuint texture,
-		GLsync creation_sync_,
-		GLenum target_,
-		GLenum format_
-	) noexcept
-		: impl(texture, ResourceDeleter{ ResourceType::Texture }),
-		creation_sync(creation_sync_, SyncDeleter{}),
-		target(target_),
-		format(format_),
-		type(ResourceType::Texture) {
-	}
-
-	void ResourceDeleter::operator()(GLuint impl) const noexcept {
-		auto retired_type = RetiredObjectType::Texture;
-		if (type == ResourceType::Buffer) {
-			retired_type = RetiredObjectType::Buffer;
-		}
-		RetireObject(
-			retired_type,
-			impl
-		);
-	}
-
 	void SyncDeleter::operator()(GLsync sync) const noexcept {
 		RetireSync(sync);
 	}
-
-	View::View(
-		GLuint impl_,
-		std::optional<View::BufferRange> buffer_range_,
-		GLenum target_,
-		GLenum format_,
-		bool owned_
-	) noexcept
-		: impl(impl_, ViewDeleter{ owned_ }),
-		buffer_range(buffer_range_),
-		target(target_),
-		format(format_) {
-	}
-
-	void ViewDeleter::operator()(GLuint impl) const noexcept {
-		if (owned && impl != 0u) {
-			RetireObject(RetiredObjectType::Texture, impl);
-		}
-	}
-
 } // namespace fyuu_rhi::opengl
 
 namespace fyuu_rhi {
@@ -87,15 +43,17 @@ namespace fyuu_rhi {
 
 		static void Unmap(void* context, ResourceDataRange, bool) noexcept {
 			auto native = static_cast<opengl::Resource*>(context);
-			(void)glUnmapNamedBuffer(native->impl.get());
+			(void)glUnmapNamedBuffer(native->impl->get());
 		}
 
 		ResourceMapScope operator()(ResourceDataRange range, bool writable) const {
+			/** @brief Mapping is valid on completion and application threads through a per-thread shared context. */
+			RequestInstance(Backend::OpenGL).ShareContextOnThisThread();
 			if (resource->type != opengl::ResourceType::Buffer) {
 				throw std::invalid_argument("An OpenGL texture cannot be mapped directly");
 			}
 			auto data = glMapNamedBufferRange(
-				resource->impl.get(),
+				resource->impl->get(),
 				static_cast<GLintptr>(range.offset),
 				static_cast<GLsizeiptr>(range.size),
 				writable ? GL_MAP_WRITE_BIT : GL_MAP_READ_BIT
@@ -146,13 +104,13 @@ namespace fyuu_rhi {
 					glTextureBufferRange(
 						view,
 						internal_format,
-						resource->impl.get(),
+						resource->impl->get(),
 						static_cast<GLintptr>(offset),
 						static_cast<GLsizeiptr>(range)
 					);
 				}
 				else {
-					glTextureBuffer(view, internal_format, resource->impl.get());
+					glTextureBuffer(view, internal_format, resource->impl->get());
 				}
 			}
 			else {
@@ -161,13 +119,13 @@ namespace fyuu_rhi {
 					glTexBufferRange(
 						target,
 						internal_format,
-						resource->impl.get(),
+						resource->impl->get(),
 						static_cast<GLintptr>(offset),
 						static_cast<GLsizeiptr>(range)
 					);
 				}
 				else {
-					glTexBuffer(target, internal_format, resource->impl.get());
+					glTexBuffer(target, internal_format, resource->impl->get());
 				}
 				glBindTexture(target, 0u);
 			}
@@ -182,8 +140,7 @@ namespace fyuu_rhi {
 					view,
 					std::move(buffer_range),
 					target,
-					internal_format,
-					true
+					internal_format
 				)
 			);
 		}
@@ -209,18 +166,16 @@ namespace fyuu_rhi {
 				base_mip_lvl == 0u && mip_lvl_cnt == 1u &&
 				base_arr_layer == 0u && arr_layer_cnt == 1u &&
 				view_target == resource->target && internal_format == resource->format;
-			// Aliasing a 2D render target is the common whole-texture case; the view
-			// borrows the source texture and does not own it.
+			/** @brief Whole-texture aliases share the source texture owner. */
 			if (whole_texture &&
 				flags.Test(ResourceFlagBits::RenderAttachment) &&
 				resource->target == GL_TEXTURE_2D) {
 				return MakeView(
 					opengl::View(
-						resource->impl.get(),
+						resource->impl,
 						std::nullopt,
 						view_target,
-						internal_format,
-						false
+						internal_format
 					)
 				);
 			}
@@ -230,11 +185,10 @@ namespace fyuu_rhi {
 				if (whole_texture) {
 					return MakeView(
 						opengl::View(
-							resource->impl.get(),
+							resource->impl,
 							std::nullopt,
 							view_target,
-							internal_format,
-							false
+							internal_format
 						)
 					);
 				}
@@ -250,7 +204,7 @@ namespace fyuu_rhi {
 			glTextureView(
 				view,
 				view_target,
-				resource->impl.get(),
+				resource->impl->get(),
 				internal_format,
 				static_cast<GLuint>(base_mip_lvl),
 				static_cast<GLuint>(mip_lvl_cnt),
@@ -262,8 +216,7 @@ namespace fyuu_rhi {
 					view,
 					std::nullopt,
 					view_target,
-					internal_format,
-					true
+					internal_format
 				)
 			);
 		}
@@ -271,3 +224,4 @@ namespace fyuu_rhi {
 
 } // namespace fyuu_rhi
 #endif // !defined(__APPLE__)
+#endif // !defined(__EMSCRIPTEN__)

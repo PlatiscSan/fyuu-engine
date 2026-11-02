@@ -1,4 +1,5 @@
 module;
+#if !defined(__EMSCRIPTEN__)
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <exception>
@@ -14,7 +15,10 @@ module;
 #include <vulkan/vulkan_shared.hpp>
 #endif // !defined(__APPLE__) && defined(__clang__) && defined(_MSVC_STL_VERSION)
 
+#endif // !defined(__EMSCRIPTEN__)
+
 module fyuu_rhi:vulkan_completion_token;
+#if !defined(__EMSCRIPTEN__)
 #if !defined(__APPLE__)
 #if defined(__cpp_lib_modules)
 import std;
@@ -165,3 +169,4 @@ namespace fyuu_rhi::execution {
 
 } // namespace fyuu_rhi::execution
 #endif // !defined(__APPLE__)
+#endif // !defined(__EMSCRIPTEN__)

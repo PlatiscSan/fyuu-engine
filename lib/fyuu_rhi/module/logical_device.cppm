@@ -2,14 +2,11 @@ module;
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <cstddef>
-#include <memory>
-#include <utility>
-
-#include <cstdint>
 
 #include <span>
 #endif // !defined(__cpp_lib_modules)
 export module fyuu_rhi:logical_device;
+import :fast_pimpl;
 #if defined(__cpp_lib_modules)
 import std;
 #endif // defined(__cpp_lib_modules)
@@ -28,23 +25,21 @@ export namespace fyuu_rhi {
 	 */
 	class LogicalDevice {
 	public:
-		using UniqueHandle = std::unique_ptr<
-			struct LogicalDeviceImplementation,
-			void(*)(struct LogicalDeviceImplementation*)
-		>;
+		using ImplementationStorage = details::FastPimpl<struct LogicalDeviceImplementation, 384u>;
 
 	private:
-		UniqueHandle m_impl;
+		ImplementationStorage m_impl;
 
 	public:
-		LogicalDevice() noexcept
-			: m_impl(nullptr, [](LogicalDeviceImplementation*) {}) {
+		LogicalDevice() noexcept;
 
-		}
+		LogicalDevice(ImplementationStorage&& impl) noexcept;
 
-		LogicalDevice(UniqueHandle&& impl) noexcept
-			: m_impl(std::move(impl)) {
-		}
+		LogicalDevice(LogicalDevice const&) = delete;
+		LogicalDevice& operator=(LogicalDevice const&) = delete;
+		LogicalDevice(LogicalDevice&& other) noexcept;
+		LogicalDevice& operator=(LogicalDevice&& other) noexcept;
+		~LogicalDevice() noexcept;
 
 		explicit operator bool() const noexcept {
 			return static_cast<bool>(m_impl);
@@ -53,13 +48,18 @@ export namespace fyuu_rhi {
 		/// Creates a buffer of exactly @p size_in_bytes with the declared usage flags.
 		Resource CreateBuffer(std::size_t size_in_bytes, ResourceFlags const& flags);
 
-		/// Creates a texture; dimension, format, samples, memory, and usage come from flags.
+		/**
+		 * @brief Creates a texture; dimension, format, samples, memory, and usage come from flags.
+		 * @param clear_value Default attachment clear; actual initialization is deferred to a ClearDefault command.
+		 * @note Explicit BeginRendering clears may override this default, possibly losing native fast-clear optimization.
+		 */
 		Resource CreateTexture(
 			std::size_t width,
 			std::size_t height,
 			std::size_t depth_arr_layers,
 			std::size_t mip_lvl_cnt,
-			ResourceFlags const& flags
+			ResourceFlags const& flags,
+			TextureClearValue const& clear_value = {}
 		);
 
 		/// Creates immutable sampling state.

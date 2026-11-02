@@ -21,7 +21,11 @@ module;
 #include <stop_token>
 
 #endif // !defined(__cpp_lib_modules)
+#if defined(__EMSCRIPTEN__)
+#include <webgpu/webgpu_cpp.h>
+#else
 #include <dawn/webgpu_cpp.h>
+#endif // defined(__EMSCRIPTEN__)
 
 module fyuu_rhi:webgpu_data;
 #if defined(__cpp_lib_modules)
@@ -122,6 +126,9 @@ namespace fyuu_rhi::webgpu {
 			std::uint32_t width = 0u;
 			std::uint32_t height = 0u;
 			wgpu::TextureFormat format = wgpu::TextureFormat::Undefined;
+			wgpu::TextureFormat source_format = wgpu::TextureFormat::Undefined;
+			wgpu::RenderPipeline conversion_pipeline;
+			bool vertical_sync = true;
 		};
 
 		/// One Dawn future the pump thread waits on, together with the completion state
@@ -134,11 +141,13 @@ namespace fyuu_rhi::webgpu {
 		};
 
 		wgpu::Instance instance;
+		wgpu::Adapter adapter;
 		wgpu::Device device;
 		std::shared_ptr<DeviceError> errors;
 		std::vector<SurfaceState> surfaces;
 		std::mutex surfaces_mutex;
 
+#if !defined(__EMSCRIPTEN__)
 		/// Outstanding completion futures, published by `Watch` and consumed by the pump
 		/// thread. The pump copies this list out instead of holding the lock across a wait.
 		std::mutex pump_mutex;
@@ -156,13 +165,16 @@ namespace fyuu_rhi::webgpu {
 		/// The completion pump. Declared last so it is joined while the instance and device
 		/// handles it waits on are still alive.
 		std::jthread pump_thread;
+#endif // !defined(__EMSCRIPTEN__)
 
 		CommandSchedulerContext(
 			wgpu::Instance const& instance,
+			wgpu::Adapter const& adapter,
 			wgpu::Device const& device,
 			std::shared_ptr<DeviceError> errors
 		) noexcept
 			: instance(instance),
+			adapter(adapter),
 			device(device),
 			errors(std::move(errors)) {
 		}
@@ -176,9 +188,11 @@ namespace fyuu_rhi::webgpu {
 		/// Publishes one outstanding Dawn future to the pump thread.
 		void Watch(wgpu::Future future, std::shared_ptr<CompletionState> const& state);
 
+#if !defined(__EMSCRIPTEN__)
 		/// The pump thread: waits on every published future plus the device-loss future
 		/// with a zero timeout, and publishes each completion it observes.
 		void Run(std::stop_token stop_token);
+#endif // !defined(__EMSCRIPTEN__)
 	};
 
 	/** @brief Shared GPU decoder for one live device and decoded output format. */
@@ -205,6 +219,8 @@ namespace fyuu_rhi::webgpu {
 		std::shared_ptr<DeviceError> errors;
 		/// @brief Empty for ordinary resources; preserves exact BC bytes for readback.
 		BCStorage bc;
+		/// @brief Creation default used only by attachment ClearDefault operations.
+		TextureClearValue default_clear_value{};
 	};
 
 	struct View {

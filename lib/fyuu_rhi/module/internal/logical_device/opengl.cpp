@@ -1,4 +1,5 @@
 module;
+#if !defined(__EMSCRIPTEN__)
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <cstddef>
@@ -38,7 +39,10 @@ module;
 #include <spirv_glsl.hpp>
 #endif // !defined(__APPLE__)
 
+#endif // !defined(__EMSCRIPTEN__)
+
 module fyuu_rhi:opengl_logical_device;
+#if !defined(__EMSCRIPTEN__)
 #if !defined(__APPLE__)
 #if defined(__cpp_lib_modules)
 import std;
@@ -46,6 +50,7 @@ import std;
 import :cache;
 import :instance_dispatch;
 import :logical_device_dispatch;
+import :memory_pressure;
 import :opengl_data;
 import :opengl_utility;
 import :pipeline;
@@ -231,7 +236,8 @@ namespace {
 		std::visit(
 			[]<class Instance>(Instance instance) {
 				if constexpr (!std::same_as<Instance, std::monostate>) {
-					ShareContextOnCurrentThread<std::remove_pointer_t<Instance>>{
+					/** @brief Dispatch on the instance type, not its borrowed pointer constness. */
+					ShareContextOnCurrentThread<std::remove_cv_t<std::remove_pointer_t<Instance>>>{
 						instance
 					}();
 				}
@@ -887,13 +893,6 @@ namespace fyuu_rhi::opengl {
 		RetireObject(RetiredObjectType::Program, impl);
 	}
 
-	void SamplerDeleter::operator()(GLuint impl) const noexcept {
-		RetireObject(RetiredObjectType::Sampler, impl);
-	}
-
-	Sampler::Sampler(GLuint impl_) noexcept
-		: impl(impl_, SamplerDeleter{}) {
-	}
 
 } // namespace fyuu_rhi::opengl
 
@@ -958,8 +957,10 @@ namespace fyuu_rhi {
 			std::size_t height,
 			std::size_t depth_or_array_layers,
 			std::size_t mip_levels,
-			ResourceFlags const& flags
+			ResourceFlags const& flags,
+			TextureClearValue const& clear_value
 		) const {
+			auto default_clear_value = ResolveTextureClearValue(flags, clear_value);
 			ShareContext(logical_device);
 			while (glGetError() != GL_NO_ERROR) {
 			}
@@ -1023,7 +1024,8 @@ namespace fyuu_rhi {
 					.depth_or_array_layers = static_cast<std::uint32_t>(depth_or_array_layers),
 					.mip_levels = static_cast<std::uint32_t>(mip_levels)
 				},
-				flags
+				flags,
+				default_clear_value
 			);
 		}
 	};
@@ -1124,15 +1126,13 @@ namespace fyuu_rhi {
 			ShareContext(logical_device);
 			auto shader_target = SelectShaderTarget();
 			slang::TargetDesc target{
-				.format = shader_target.format,
-				.profile = shader::SlangGlobalSession()->findProfile(
-					shader_target.profile.data()
-				)
+				.format = shader_target.format
 			};
 			shader::SlangProgram program(
 				target,
 				descriptor.program,
-				CacheTag(shader_target.cache_name)
+				CacheTag(shader_target.cache_name),
+				shader_target.profile.data()
 			);
 			auto combined_samplers = MakeCombinedSamplers(
 				program.GetEntryPoints()
@@ -1251,15 +1251,13 @@ namespace fyuu_rhi {
 			}
 			auto shader_target = SelectShaderTarget();
 			slang::TargetDesc target{
-				.format = shader_target.format,
-				.profile = shader::SlangGlobalSession()->findProfile(
-					shader_target.profile.data()
-				)
+				.format = shader_target.format
 			};
 			shader::SlangProgram program(
 				target,
 				descriptor.program,
-				CacheTag(shader_target.cache_name)
+				CacheTag(shader_target.cache_name),
+				shader_target.profile.data()
 			);
 			auto combined_samplers = MakeCombinedSamplers(
 				program.GetEntryPoints()
@@ -1315,3 +1313,4 @@ namespace fyuu_rhi {
 
 } // namespace fyuu_rhi
 #endif // !defined(__APPLE__)
+#endif // !defined(__EMSCRIPTEN__)

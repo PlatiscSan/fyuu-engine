@@ -1,8 +1,5 @@
 module;
 #include <version>
-#if !defined(__cpp_lib_modules)
-
-#endif // !defined(__cpp_lib_modules)
 
 export module fyuu_rhi;
 #if defined(__cpp_lib_modules)

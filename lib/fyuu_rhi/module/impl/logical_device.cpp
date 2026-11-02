@@ -2,6 +2,7 @@ module;
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <stdexcept>
+#include <utility>
 #include <variant>
 #endif // !defined(__cpp_lib_modules)
 
@@ -12,13 +13,13 @@ import std;
 import :logical_device;
 import :logical_device_dispatch;
 import :logical_device_factory;
-#if defined(_WIN32)
+#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
 import :d3d12_logical_device;
 #endif // defined(_WIN32)
-#if defined(__APPLE__)
+#if defined(__APPLE__) && !defined(__EMSCRIPTEN__)
 import :metal_command_scheduler;
 import :metal_logical_device;
-#else
+#elif !defined(__EMSCRIPTEN__)
 import :opengl_command_scheduler;
 import :opengl_logical_device;
 import :vulkan_logical_device;
@@ -28,6 +29,13 @@ import :webgpu_logical_device;
 import :webgpu_command_scheduler;
 
 namespace fyuu_rhi {
+
+	LogicalDevice::LogicalDevice() noexcept = default;
+	LogicalDevice::LogicalDevice(ImplementationStorage&& impl) noexcept : m_impl(std::move(impl)) {
+	}
+	LogicalDevice::LogicalDevice(LogicalDevice&& other) noexcept = default;
+	LogicalDevice& LogicalDevice::operator=(LogicalDevice&& other) noexcept = default;
+	LogicalDevice::~LogicalDevice() noexcept = default;
 
 	Resource LogicalDevice::CreateBuffer(std::size_t size_in_bytes, ResourceFlags const& flags) {
 		if (!m_impl) {
@@ -46,7 +54,8 @@ namespace fyuu_rhi {
 		std::size_t height,
 		std::size_t depth_arr_layers,
 		std::size_t mip_lvl_cnt,
-		ResourceFlags const& flags
+		ResourceFlags const& flags,
+		TextureClearValue const& clear_value
 	) {
 		if (!m_impl) {
 			throw std::runtime_error("Cannot create a texture from an empty logical device");
@@ -58,7 +67,8 @@ namespace fyuu_rhi {
 					height,
 					depth_arr_layers,
 					mip_lvl_cnt,
-					flags
+					flags,
+					clear_value
 				);
 			},
 			m_impl->native

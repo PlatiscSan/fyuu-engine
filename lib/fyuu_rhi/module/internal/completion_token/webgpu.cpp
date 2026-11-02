@@ -11,7 +11,12 @@ module;
 
 #include <stop_token>
 #endif // !defined(__cpp_lib_modules)
+#if defined(__EMSCRIPTEN__)
+#include <emscripten/emscripten.h>
+#include <webgpu/webgpu_cpp.h>
+#else
 #include <dawn/webgpu_cpp.h>
+#endif // defined(__EMSCRIPTEN__)
 
 module fyuu_rhi:webgpu_completion_token;
 #if defined(__cpp_lib_modules)
@@ -22,6 +27,7 @@ import :webgpu_data;
 
 namespace fyuu_rhi::execution {
 
+#if !defined(__EMSCRIPTEN__)
 	namespace {
 		/// Blocks up to the timeout for one completion broadcast.
 		///
@@ -38,6 +44,7 @@ namespace fyuu_rhi::execution {
 			(void)condition.wait_for(lock, std::chrono::milliseconds(50u));
 		}
 	}
+#endif // !defined(__EMSCRIPTEN__)
 
 	template <>
 	struct PollCompletionToken<webgpu::CompletionToken> {
@@ -90,7 +97,16 @@ namespace fyuu_rhi::execution {
 				if (stop_token.stop_requested()) {
 					return false;
 				}
+#if defined(__EMSCRIPTEN__)
+				/** @brief Yield through Asyncify without holding the callback's mutex.
+				 * Browser Promise callbacks cannot run during a native blocking wait.
+				 */
+				lock.unlock();
+				emscripten_sleep(1u);
+				lock.lock();
+#else
 				WaitForCompletionBroadcast(token->state->condition, lock);
+#endif // defined(__EMSCRIPTEN__)
 			}
 			return true;
 		}

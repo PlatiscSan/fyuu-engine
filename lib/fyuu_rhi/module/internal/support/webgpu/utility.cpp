@@ -7,7 +7,11 @@ module;
 #include <cstdint>
 #include <array>
 #endif // !defined(__cpp_lib_modules)
+#if defined(__EMSCRIPTEN__)
+#include <webgpu/webgpu_cpp.h>
+#else
 #include <dawn/webgpu_cpp.h>
+#endif // defined(__EMSCRIPTEN__)
 
 module fyuu_rhi:webgpu_utility;
 #if defined(__cpp_lib_modules)
@@ -52,17 +56,13 @@ namespace fyuu_rhi::webgpu {
 		// require callers to describe an implementation-specific transfer path.
 		// Dawn implements that command as a buffer upload and therefore requires
 		// CopyDst on every GPU-consumable destination buffer.
-		if (!flags.Test(Bits::DeviceReadback)) {
+		if (!flags.Test(Bits::DeviceReadback) && !flags.Test(Bits::HostVisible)) {
 			result |= wgpu::BufferUsage::CopyDst;
 		}
 		if (flags.TestMultipleInRange(Bits::DeviceLocal, Bits::DeviceReadback)) {
 			throw std::invalid_argument("A WebGPU buffer cannot request multiple memory access policies");
 		}
 
-		// WebGPU separates GPU-resident buffers from mappable ones: a buffer with
-		// shader usage (Vertex/Index/Uniform/Storage/...) cannot also be mappable.
-		// If shader usage is requested the buffer is device-local; host data must
-		// arrive through a separate staging buffer via CopyBufferToBuffer.
 		bool has_gpu_usage =
 			flags.Test(Bits::UniformTexelBuffer) ||
 			flags.Test(Bits::StorageTexelBuffer) ||
@@ -71,15 +71,18 @@ namespace fyuu_rhi::webgpu {
 			flags.Test(Bits::IndexBuffer) ||
 			flags.Test(Bits::VertexBuffer) ||
 			flags.Test(Bits::IndirectBuffer);
-		if (!has_gpu_usage) {
-			if (flags.Test(Bits::HostVisible)) {
-				result |= wgpu::BufferUsage::MapWrite;
-				// WebGPU: a MapWrite buffer may only also be CopySrc.
-				result &= wgpu::BufferUsage::MapWrite | wgpu::BufferUsage::CopySrc;
+		/** @brief Reject unsupported mapping policies before native creation instead of dropping requested usages. */
+		if (flags.Test(Bits::HostVisible)) {
+			if (has_gpu_usage || flags.Test(Bits::CopyDST)) {
+				throw std::invalid_argument("WebGPU HostVisible buffers support only CopySRC usage");
 			}
-			else if (flags.Test(Bits::DeviceReadback)) {
-				result |= wgpu::BufferUsage::MapRead;
+			result |= wgpu::BufferUsage::MapWrite;
+		}
+		else if (flags.Test(Bits::DeviceReadback)) {
+			if (has_gpu_usage || flags.Test(Bits::CopySRC)) {
+				throw std::invalid_argument("WebGPU DeviceReadback buffers support only CopyDST usage");
 			}
+			result |= wgpu::BufferUsage::MapRead;
 		}
 		return result;
 	}

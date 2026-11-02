@@ -21,11 +21,11 @@ module;
 
 #include <format>
 #endif // !defined(__cpp_lib_modules)
+#if defined(__EMSCRIPTEN__)
+#include <webgpu/webgpu_cpp.h>
+#else
 #include <dawn/webgpu_cpp.h>
-#if defined(_WIN32)
-#include <Windows.h>
-#include <dawn/native/DawnNative.h>
-#endif
+#endif // defined(__EMSCRIPTEN__)
 
 module fyuu_rhi:webgpu_physical_device;
 #if defined(__cpp_lib_modules)
@@ -34,6 +34,7 @@ import std;
 import :log;
 import :logical_device_factory;
 import :physical_device_dispatch;
+import :memory_pressure;
 import :physical_device_factory;
 import :webgpu_data;
 
@@ -194,7 +195,11 @@ namespace fyuu_rhi {
 			auto errors = std::make_shared<webgpu::DeviceError>();
 			wgpu::DeviceDescriptor descriptor;
 			descriptor.label = "fyuu-rhi";
+#if defined(__EMSCRIPTEN__)
+			descriptor.SetDeviceLostCallback(wgpu::CallbackMode::AllowSpontaneous, OnDeviceLost);
+#else
 			descriptor.SetDeviceLostCallback(wgpu::CallbackMode::AllowProcessEvents, OnDeviceLost);
+#endif // defined(__EMSCRIPTEN__)
 			descriptor.SetUncapturedErrorCallback(OnUncapturedErrorWithLatch, errors.get());
 
 			// A device request may only name features the adapter advertises;
@@ -207,11 +212,15 @@ namespace fyuu_rhi {
 				std::string_view label;
 			};
 			static constexpr FeatureRequest requests[] = {
+#if !defined(__EMSCRIPTEN__)
 				{ wgpu::FeatureName::ImplicitDeviceSynchronization, "ImplicitDeviceSynchronization" },
+#endif // !defined(__EMSCRIPTEN__)
 				{ wgpu::FeatureName::TextureCompressionBC, "TextureCompressionBC" },
 				{ wgpu::FeatureName::Unorm16TextureFormats, "Unorm16TextureFormats" },
 				{ wgpu::FeatureName::TextureFormatsTier1, "TextureFormatsTier1" },
+#if !defined(__EMSCRIPTEN__)
 				{ wgpu::FeatureName::Unorm16Filterable, "Unorm16Filterable" },
+#endif // !defined(__EMSCRIPTEN__)
 				{ wgpu::FeatureName::TextureFormatsTier2, "TextureFormatsTier2" },
 				{ wgpu::FeatureName::Depth32FloatStencil8, "Depth32FloatStencil8" },
 				{ wgpu::FeatureName::TimestampQuery, "TimestampQuery" },
@@ -222,38 +231,15 @@ namespace fyuu_rhi {
 				{ wgpu::FeatureName::Subgroups, "Subgroups" }
 			};
 			std::vector<wgpu::FeatureName> required_features;
-			/// @brief Test switch exercises the same external-lock path as unsupported adapters.
-			bool force_external_synchronization = false;
-			/// @brief Omits the native feature so tests cannot accidentally decode BC in hardware.
-			bool disable_bc = false;
-#if defined(_WIN32)
-			char external_sync_setting[2]{};
-			force_external_synchronization = GetEnvironmentVariableA(
-				"FYUU_RHI_WEBGPU_FORCE_EXTERNAL_SYNC",
-				external_sync_setting,
-				sizeof(external_sync_setting)
-			) == 1u && external_sync_setting[0] == '1';
-			char bc_setting[2]{};
-			disable_bc = GetEnvironmentVariableA(
-				"FYUU_RHI_WEBGPU_DISABLE_BC",
-				bc_setting,
-				sizeof(bc_setting)
-			) == 1u && bc_setting[0] == '1';
-#endif // defined(_WIN32)
 			required_features.reserve(std::size(requests));
 			for (auto const& request : requests) {
-				if (disable_bc && request.name == wgpu::FeatureName::TextureCompressionBC) {
-					continue;
-				}
-				if (force_external_synchronization &&
-					request.name == wgpu::FeatureName::ImplicitDeviceSynchronization) {
-					continue;
-				}
 				if (HasFeature(supported_features, request.name)) {
 					required_features.push_back(request.name);
+#if !defined(__EMSCRIPTEN__)
 					if (request.name == wgpu::FeatureName::ImplicitDeviceSynchronization) {
 						errors->implicit_synchronization = true;
 					}
+#endif // !defined(__EMSCRIPTEN__)
 					continue;
 				}
 				try {
@@ -282,38 +268,32 @@ namespace fyuu_rhi {
 				descriptor.requiredLimits = &limits;
 			}
 
+#if defined(__EMSCRIPTEN__)
+			/// @brief Asyncify suspends the synchronous RHI call while the browser requests the device.
+			wgpu::Device device;
+			std::string request_error;
+			auto future = physical_device->adapter.RequestDevice(
+				&descriptor,
+				wgpu::CallbackMode::WaitAnyOnly,
+				[&device, &request_error](wgpu::RequestDeviceStatus status, wgpu::Device result, wgpu::StringView message) {
+					if (status == wgpu::RequestDeviceStatus::Success) {
+						device = std::move(result);
+					} else if (message.data && message.length != 0u) {
+						request_error.assign(message.data, message.length);
+					}
+				}
+			);
+			if (physical_device->instance.WaitAny(future, UINT64_MAX) != wgpu::WaitStatus::Success || !device) {
+				throw std::runtime_error(
+					request_error.empty() ? "Browser WebGPU device creation failed" : request_error
+				);
+			}
+#else
 			wgpu::Device device = physical_device->adapter.CreateDevice(&descriptor);
+#endif // defined(__EMSCRIPTEN__)
 			if (!device) {
 				throw std::runtime_error("WebGPU device creation failed; verify that the selected backend runtime is installed");
 			}
-#if defined(_WIN32)
-			char diagnostic_setting[2]{};
-			if (GetEnvironmentVariableA(
-				"FYUU_RHI_WEBGPU_SUBMIT_DIAGNOSTICS",
-				diagnostic_setting,
-				sizeof(diagnostic_setting)
-			) == 1u && diagnostic_setting[0] == '1') {
-				wgpu::AdapterInfo info;
-				if (physical_device->adapter.GetInfo(&info)) {
-					log::Info(
-						std::format(
-							"WebGPU adapter: device={}, description={}, backend={}, vendor=0x{:X}, device=0x{:X}",
-							std::string_view(info.device.data, info.device.length),
-							std::string_view(info.description.data, info.description.length),
-							static_cast<int>(info.backendType),
-							info.vendorID,
-							info.deviceID
-						)
-					);
-				}
-				bool skip_validation = false;
-				for (auto toggle : dawn::native::GetTogglesUsed(device.Get())) {
-					log::Info(std::format("WebGPU enabled toggle: {}", toggle));
-					skip_validation = skip_validation || std::string_view{toggle} == "skip_validation";
-				}
-				log::Info(std::format("WebGPU Dawn validation enabled: {}", !skip_validation));
-			}
-#endif
 			return MakeLogicalDevice(
 				webgpu::LogicalDevice{
 					physical_device->instance,

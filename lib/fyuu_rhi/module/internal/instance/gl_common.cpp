@@ -1,4 +1,5 @@
 module;
+#if !defined(__EMSCRIPTEN__)
 #include <version>
 #if !defined(__cpp_lib_modules)
 
@@ -12,7 +13,10 @@ module;
 #include <glad/glad.h>
 #endif // !defined(__APPLE__)
 
+#endif // !defined(__EMSCRIPTEN__)
+
 module fyuu_rhi:opengl_instance_common;
+#if !defined(__EMSCRIPTEN__)
 #if !defined(__APPLE__)
 #if defined(__cpp_lib_modules)
 import std;
@@ -77,3 +81,4 @@ namespace fyuu_rhi::opengl {
 
 } // namespace fyuu_rhi::opengl
 #endif // !defined(__APPLE__)
+#endif // !defined(__EMSCRIPTEN__)

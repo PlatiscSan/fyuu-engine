@@ -1,8 +1,6 @@
 module;
 #include <version>
 #if !defined(__cpp_lib_modules)
-#include <memory>
-#include <utility>
 #include <string>
 
 #include <cstdint>
@@ -12,6 +10,7 @@ module;
 #include <span>
 #endif // !defined(__cpp_lib_modules)
 export module fyuu_rhi:physical_device;
+import :fast_pimpl;
 #if defined(__cpp_lib_modules)
 import std;
 #endif // defined(__cpp_lib_modules)
@@ -22,13 +21,10 @@ export namespace fyuu_rhi {
 	/** @brief Move-only handle describing one adapter exposed by an Instance. */
 	class PhysicalDevice {
 	public:
-		using UniqueHandle = std::unique_ptr<
-			struct PhysicalDeviceImplementation,
-			void(*)(struct PhysicalDeviceImplementation*)
-		>;
+		using ImplementationStorage = details::FastPimpl<struct PhysicalDeviceImplementation, 96u>;
 
 	private:
-		UniqueHandle m_impl;
+		ImplementationStorage m_impl;
 
 	public:
 		/// Backend-independent adapter information; unavailable numeric fields are empty.
@@ -46,14 +42,15 @@ export namespace fyuu_rhi {
 			} type;
 		};
 
-		PhysicalDevice() noexcept
-			: m_impl(nullptr, [](struct PhysicalDeviceImplementation*) {}) {
+		PhysicalDevice() noexcept;
 
-		}
+		PhysicalDevice(ImplementationStorage&& impl) noexcept;
 
-		PhysicalDevice(UniqueHandle&& impl) noexcept
-			: m_impl(std::move(impl)) {
-		}
+		PhysicalDevice(PhysicalDevice const&) = delete;
+		PhysicalDevice& operator=(PhysicalDevice const&) = delete;
+		PhysicalDevice(PhysicalDevice&& other) noexcept;
+		PhysicalDevice& operator=(PhysicalDevice&& other) noexcept;
+		~PhysicalDevice() noexcept;
 
 		explicit operator bool() const noexcept {
 			return static_cast<bool>(m_impl);

@@ -1,4 +1,5 @@
 module;
+#if !defined(__EMSCRIPTEN__)
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <cstddef>
@@ -17,7 +18,10 @@ module;
 #include <vma/vk_mem_alloc.h>
 #endif // !defined(__APPLE__)
 
+#endif // !defined(__EMSCRIPTEN__)
+
 module fyuu_rhi:vulkan_memory_allocator;
+#if !defined(__EMSCRIPTEN__)
 #if !defined(__APPLE__)
 #if defined(__cpp_lib_modules)
 import std;
@@ -86,3 +90,4 @@ namespace fyuu_rhi::vulkan {
 
 } // namespace fyuu_rhi::vulkan
 #endif // !defined(__APPLE__)
+#endif // !defined(__EMSCRIPTEN__)

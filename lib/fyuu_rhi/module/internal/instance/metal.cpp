@@ -1,4 +1,5 @@
 module;
+#if !defined(__EMSCRIPTEN__)
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <stdexcept>
@@ -9,7 +10,10 @@ module;
 #include <Metal/Metal.hpp>
 #endif // defined(__APPLE__)
 
+#endif // !defined(__EMSCRIPTEN__)
+
 module fyuu_rhi:metal_instance;
+#if !defined(__EMSCRIPTEN__)
 #if defined(__APPLE__)
 #if defined(__cpp_lib_modules)
 import std;
@@ -60,3 +64,4 @@ namespace fyuu_rhi {
 
 } // namespace fyuu_rhi
 #endif // defined(__APPLE__)
+#endif // !defined(__EMSCRIPTEN__)

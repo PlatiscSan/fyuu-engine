@@ -1,4 +1,5 @@
 module;
+#if !defined(__EMSCRIPTEN__)
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <exception>
@@ -15,7 +16,10 @@ module;
 #include <wrl.h>
 #endif // defined(_WIN32)
 
+#endif // !defined(__EMSCRIPTEN__)
+
 module fyuu_rhi:d3d12_completion_token;
+#if !defined(__EMSCRIPTEN__)
 #if defined(_WIN32)
 #if defined(__cpp_lib_modules)
 import std;
@@ -27,6 +31,26 @@ import :memory_pressure;
 
 namespace {
 	constexpr std::uint64_t FailedFence = (std::numeric_limits<std::uint64_t>::max)();
+
+	/** @brief Keeps one working set while pressure controls only spare capacity.
+	 * @note Saturation prevents overflow when combining the two bounded budgets.
+	 */
+	constexpr std::size_t CommandListRetentionLimit(
+		std::size_t demand,
+		std::size_t spare
+	) noexcept {
+		auto maximum = (std::numeric_limits<std::size_t>::max)();
+		return spare > maximum - demand ? maximum : demand + spare;
+	}
+
+	static_assert(CommandListRetentionLimit(1u, 0u) == 1u);
+	static_assert(CommandListRetentionLimit(3u, 0u) == 3u);
+	static_assert(CommandListRetentionLimit(3u, 3u) == 6u);
+	static_assert(CommandListRetentionLimit(0u, 0u) == 0u);
+	static_assert(
+		CommandListRetentionLimit((std::numeric_limits<std::size_t>::max)(), 1u) ==
+		(std::numeric_limits<std::size_t>::max)()
+	);
 }
 
 namespace fyuu_rhi::d3d12 {
@@ -65,7 +89,12 @@ namespace fyuu_rhi::d3d12 {
 			if (is_open) {
 				(void)impl->Close();
 			}
-			auto limit = details::IdleRetentionLimit(retention_demand);
+			/// @brief Pressure trims spare lists, never the next graph's working set.
+			/// A zero idle budget formerly destroyed every single-batch allocator.
+			auto limit = CommandListRetentionLimit(
+				retention_demand,
+				details::IdleRetentionLimit(retention_demand)
+			);
 			std::unique_lock<std::mutex> lock(owner->command_lists_mutex);
 			while (owner->command_lists.size() > limit) {
 				owner->command_lists.pop_back();
@@ -194,3 +223,4 @@ namespace fyuu_rhi::execution {
 	};
 }
 #endif // defined(_WIN32)
+#endif // !defined(__EMSCRIPTEN__)

@@ -2,7 +2,6 @@ module;
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <cstddef>
-#include <memory>
 #include <utility>
 #include <string>
 #include <limits>
@@ -18,6 +17,7 @@ module;
 #include <span>
 #endif // !defined(__cpp_lib_modules)
 export module fyuu_rhi:pipeline;
+import :fast_pimpl;
 #if defined(__cpp_lib_modules)
 import std;
 #endif // defined(__cpp_lib_modules)
@@ -421,24 +421,23 @@ export namespace fyuu_rhi {
 	 */
 	class PipelineResourceGroup {
 	public:
-		using UniqueHandle = std::unique_ptr<
-			struct PipelineResourceGroupImplementation,
-			void(*)(struct PipelineResourceGroupImplementation*)
-		>;
+		using ImplementationStorage = details::FastPimpl<struct PipelineResourceGroupImplementation, 160u>;
 
 	private:
 		template <class Native>
 		friend struct execution::ExecuteCommands;
-		UniqueHandle m_impl;
+		ImplementationStorage m_impl;
 
 	public:
-		PipelineResourceGroup() noexcept
-			: m_impl(nullptr, nullptr) {
-		}
+		PipelineResourceGroup() noexcept;
 
-		explicit PipelineResourceGroup(UniqueHandle&& impl) noexcept
-			: m_impl(std::move(impl)) {
-		}
+		explicit PipelineResourceGroup(ImplementationStorage&& impl) noexcept;
+
+		PipelineResourceGroup(PipelineResourceGroup const&) = delete;
+		PipelineResourceGroup& operator=(PipelineResourceGroup const&) = delete;
+		PipelineResourceGroup(PipelineResourceGroup&& other) noexcept;
+		PipelineResourceGroup& operator=(PipelineResourceGroup&& other) noexcept;
+		~PipelineResourceGroup() noexcept;
 
 		explicit operator bool() const noexcept {
 			return static_cast<bool>(m_impl);
@@ -454,24 +453,23 @@ export namespace fyuu_rhi {
 	 */
 	class Pipeline {
 	public:
-		using UniqueHandle = std::unique_ptr<
-			struct PipelineImplementation,
-			void(*)(struct PipelineImplementation*)
-		>;
+		using ImplementationStorage = details::FastPimpl<struct PipelineImplementation, 320u>;
 
 	private:
 		template <class Native>
 		friend struct execution::ExecuteCommands;
-		UniqueHandle m_impl;
+		ImplementationStorage m_impl;
 
 	public:
-		Pipeline() noexcept
-			: m_impl(nullptr, nullptr) {
-		}
+		Pipeline() noexcept;
 
-		explicit Pipeline(UniqueHandle&& impl) noexcept
-			: m_impl(std::move(impl)) {
-		}
+		explicit Pipeline(ImplementationStorage&& impl) noexcept;
+
+		Pipeline(Pipeline const&) = delete;
+		Pipeline& operator=(Pipeline const&) = delete;
+		Pipeline(Pipeline&& other) noexcept;
+		Pipeline& operator=(Pipeline&& other) noexcept;
+		~Pipeline() noexcept;
 
 		explicit operator bool() const noexcept {
 			return static_cast<bool>(m_impl);

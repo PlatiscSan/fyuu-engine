@@ -1,13 +1,12 @@
 module;
 #include <version>
 #if !defined(__cpp_lib_modules)
-#include <memory>
-#include <utility>
 #include <limits>
 
 #include <cstdint>
 #endif // !defined(__cpp_lib_modules)
 export module fyuu_rhi:sampler;
+import :fast_pimpl;
 #if defined(__cpp_lib_modules)
 import std;
 #endif // defined(__cpp_lib_modules)
@@ -67,10 +66,7 @@ export namespace fyuu_rhi {
 	/** @brief Move-only owner of immutable texture-sampling state. */
 	class Sampler {
 	public:
-		using UniqueHandle = std::unique_ptr<
-			struct SamplerImplementation,
-			void(*)(struct SamplerImplementation*)
-		>;
+		using ImplementationStorage = details::FastPimpl<struct SamplerImplementation, 64u>;
 
 	private:
 		template <class Native>
@@ -78,16 +74,18 @@ export namespace fyuu_rhi {
 		template <class Native>
 		friend struct execution::ExecuteCommands;
 
-		UniqueHandle m_impl;
+		ImplementationStorage m_impl;
 
 	public:
-		Sampler() noexcept
-			: m_impl(nullptr, nullptr) {
-		}
+		Sampler() noexcept;
 
-		explicit Sampler(UniqueHandle&& impl) noexcept
-			: m_impl(std::move(impl)) {
-		}
+		explicit Sampler(ImplementationStorage&& impl) noexcept;
+
+		Sampler(Sampler const&) = delete;
+		Sampler& operator=(Sampler const&) = delete;
+		Sampler(Sampler&& other) noexcept;
+		Sampler& operator=(Sampler&& other) noexcept;
+		~Sampler() noexcept;
 
 		explicit operator bool() const noexcept {
 			return static_cast<bool>(m_impl);

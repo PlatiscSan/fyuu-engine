@@ -67,6 +67,11 @@ The public API follows the lifetime of a rendering device:
 5. `Pipeline` creates resource groups matching its reflected shader interface.
 6. `CommandScheduler` builds and executes command graphs.
 
+Physical devices, logical devices, resources, views, samplers, pipelines, resource
+groups, and completion tokens use fast pimpl with inline storage. Their opaque
+implementations need no separate allocation. Size and alignment are checked at
+compile time, and moved-from objects are empty.
+
 Native objects remain opaque. Objects from different backends or different
 logical devices must never be mixed. Most GPU objects are move-only owners;
 `CommandScheduler` is copyable and shares its scheduling context. Starting a
@@ -76,7 +81,18 @@ back when the operation succeeds, fails, or is stopped.
 ## Initialization and device selection
 
 Initialize the process-wide context before requesting a backend. The log sink
-is called synchronously and must remain alive while the RHI may emit messages.
+is called synchronously and must remain alive until `RebindRHISink()` replaces it.
+`InitializeRHIContext()` may be called repeatedly: each call updates names, versions,
+cache configuration and platform state, and synchronously replaces the Sink (or
+disables logging when passed `nullptr`). Serialize initialization with other RHI
+operations; previously borrowed metadata string views may be invalidated. Existing
+Vulkan-derived objects must be released before reinitialization. The Vulkan Instance
+is retired and recreated on its next request; other backend roots are retained.
+No Runtime lifetime reference is acquired.
+Each initialization also retires the Slang global session after active compilation
+finishes. Each compile miss uses a local session so loaded module names cannot
+retain stale source. Valid disk-cache hits remain session-free, and existing
+pipeline outputs stay valid.
 
 ```cpp
 fyuu_rhi::InitializeRHIContext(
@@ -129,6 +145,19 @@ auto texture = device.CreateTexture(width, height, 1u, 1u, flags);
 auto view = texture.CreateTextureView(0u, 1u, 0u, 1u, flags);
 ```
 
+Attachment textures may pass a final `TextureClearValue` to `CreateTexture`:
+`ColorClearValue{r, g, b, a}` for color, or `DepthStencilClearValue{depth, stencil}`
+for depth/stencil. This is metadata, not texture initialization. Use
+`LoadOperation::ClearDefault` on an attachment to clear with that texture's default;
+`LoadOperation::Clear` continues to use the explicit attachment value. Depth and
+stencil select their load operations independently.
+
+Omitting the value gives attachment textures transparent black or depth 1/stencil 0.
+Non-attachment textures cannot specify a clear value. All backends use these
+defaults during rendering; D3D12 additionally supplies them as optimized clear
+values at resource creation. An explicit override remains valid, but a different
+value may trigger a D3D12 fast-clear performance warning.
+
 Views are created by their source resource so backend and device ownership can
 be checked without exposing native handles. Use `CreateBufferView()` for
 buffers. A buffer written by `WriteBuffer`, for example, must include
@@ -137,9 +166,24 @@ buffers. A buffer written by `WriteBuffer`, for example, must include
 ### Mapping buffers
 
 `Resource::Map()` maps a byte interval and returns a move-only
-`ResourceMapScope`. A `HostVisible` buffer is writable; pass bytes to
+`ResourceMapScope`. All backends require offsets aligned to
+`Resource::MapOffsetAlignment` (8 bytes) and non-empty resolved lengths aligned to
+`Resource::MapSizeAlignment` (4 bytes). A zero length selects the remaining bytes,
+which must still meet these requirements. Invalid intervals throw
+`std::invalid_argument` before native mapping.
+
+Buffer/texture copies require offsets aligned to `TextureDataLayout::OffsetAlignment`
+(512 bytes), non-zero row pitches aligned to `TextureDataLayout::RowPitchAlignment`
+(256 bytes), and non-zero `rows_per_image`. Format block and copy bounds still apply.
+The graph rejects misaligned layouts during connection. These constants define a
+portable contract shared by every backend, rather than backend minimum limits.
+
+A `HostVisible` buffer is writable; pass bytes to
 `ResourceMapScope::Write()` instead of retaining a backend mapping pointer.
 A `DeviceReadback` buffer is readable through `ResourceMapScope::Read()`.
+
+On WebGPU, `HostVisible` buffers allow only an additional `CopySRC` usage, and `DeviceReadback` buffers allow only an additional `CopyDST` usage. Neither policy can be combined with vertex, index, uniform, storage, texel or indirect usages. Unsupported combinations throw `std::invalid_argument` at creation instead of silently dropping mapping support. Upload GPU vertex data through a separate staging buffer.
+Keep the Resource alive and do not move it until the mapping ends.
 
 ```cpp
 fyuu_rhi::ResourceFlags upload_flags;
@@ -292,6 +336,26 @@ Bind each native window with `SetPresentationTarget()`. The application still
 owns the window and event loop, responds to size changes, and submits frames
 until the window closes.
 
+Before closing a window or switching backends, await all graphs on the logical
+device and destroy the old schedulers and backend resources.
+
+Native WebGPU uses FIFO with `vertical_sync=true`. With `false`, it selects
+Immediate, then Mailbox, according to surface capabilities, falling back to FIFO
+when neither is supported. Changing this setting reconfigures the existing surface.
+Browser Canvas presentation is controlled by the browser; this parameter cannot
+disable vertical synchronization there.
+
+WebGPU selects a supported surface format. RGBA8/BGRA8 sRGB sources are copied
+to the matching UNORM surface format when available, preserving encoded pixels
+without another sRGB conversion. When only the other channel layout is supported,
+RHI converts RGBA/BGRA through an internal UNORM intermediate texture and a
+presentation draw; the source texture does not need sampling usage.
+
+Release does not reset native window state. A Windows window's pixel format is
+immutable once assigned, and OpenGL reports incompatible formats explicitly.
+Reusing the same HWND across backends is not guaranteed. For arbitrary backend
+switching, the host must supply a new native presentation window.
+
 ## Starting work and receiving completion
 
 Connect a finished graph to a receiver, fill every registered slot, and start
@@ -322,6 +386,8 @@ synchronize application state shared with that thread. Stop requests are
 effective before native submission; already submitted GPU work is not generally
 cancellable.
 
+Readback and rendering both use asynchronous `start()` submission. Receivers may submit further graphs, but must not block waiting for another receiver on the completion thread. Express GPU dependencies in the graph and read back buffers after graph completion.
+
 ## Validation and diagnostics
 
 Execution proceeds through preparation, parallel command recording, and queue
@@ -329,6 +395,13 @@ submission. Binding errors are reported before submission; recording and GPU
 errors flow through the receiver's error channel.
 
 Backend diagnostics are written to the configured `fyuu_rhi::log::Sink`.
+Use `fyuu_rhi::RebindRHISink(new_sink)` to replace the diagnostic destination.
+Pass `nullptr` before destroying the current Sink if no replacement is needed.
+Rebinding blocks new admission, waits for all admitted old `Write()` calls to
+return, then publishes the new borrowed pointer. A null destination discards
+diagnostics without stopping GPU work. Calling before initialization completes
+throws `std::logic_error`. Never rebind from `Write()` or while holding a lock
+that `Write()` needs. Coordinate Sink lifetimes across concurrent rebinders.
 Automated tests should treat Error and Fatal records as failures even when a
 backend or process returns success.
 
@@ -357,9 +430,7 @@ that scope; missing entries are rebuilt on the next pipeline creation. Programs
 with several modules are grouped under the first module; `manifest.json` lists
 all modules. Sanitized names are only labels: hashes still distinguish variants.
 
-Old `bundles/` entries are not migrated or automatically deleted by this layout
-change, and can be removed manually. They remain included in the cache size
-budget. Automatic eviction removes whole variants rather than individual files.
+Automatic eviction removes whole variants rather than individual files.
 
 Native pipeline caches use the adjacent `pipelines/` directory:
 
@@ -379,8 +450,7 @@ D3D12 root signatures are shared by layout. Vulkan caches are shared by device
 and driver, not one shader; clearing `device-shared/` clears that native cache.
 WebGPU and Metal currently have no RHI-managed native pipeline disk cache.
 Driver/runtime-owned caches are outside this directory. Close RHI applications
-before deleting files or directories. Cache misses rebuild the native objects;
-old flat cache files are left untouched by this change and may be removed manually.
+before deleting files or directories. Cache misses rebuild the native objects.
 
 ## WebGPU progress and CPU usage
 
@@ -406,7 +476,7 @@ When `TextureCompressionBC` is unavailable, BC1–BC7 GPU software decoding is
 automatic for NVIDIA, Intel and AMD profiles, without an opt-in switch. BC6H/BC7
 also have vendor-independent, specification-defined decoders. AMD BC1–BC5 still
 await native hardware verification; unknown BC1–BC5 profiles are rejected rather
-than approximated. See [BC verification results](test/WEBGPU_FALLBACK_RESULTS.md).
+than approximated.
 
 sRGB remains sRGB. BC4/BC5 use signed or unsigned normalized16 sampling storage
 on NVIDIA/Intel, while BC6H uses RGBA16Float. BC1–BC3 and BC7 use RGBA8 storage.
@@ -431,8 +501,8 @@ cannot be resized. Empty pages are released when their final group is destroyed.
 D3D12 descriptor heaps are created only when first used.
 
 OpenGL keeps owned submission snapshots in contiguous metadata arrays and trims
-idle VAO and presentation-target caches. Slang retains at most eight recent
-session configurations, with a smaller budget under pressure. WebGPU shares BC
+idle VAO and presentation-target caches. Slang retains only its lazy global session;
+compilation sessions retire with each compile operation. WebGPU shares BC
 decode pipelines between live textures of the same device and decoded format;
 fallback constants use aligned recording-local pages with a separate slice for
 each update. None of these changes alter resource ownership or binding semantics.

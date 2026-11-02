@@ -1,10 +1,16 @@
 module;
 #include <version>
 #if !defined(__cpp_lib_modules)
+#include <memory>
 #include <stdexcept>
+#include <utility>
+
+#include <vector>
+
+#include <optional>
+#include <variant>
 
 #include <span>
-#include <variant>
 #endif // !defined(__cpp_lib_modules)
 
 #include <frozen/unordered_map.h>
@@ -17,21 +23,21 @@ import :core;
 import :instance;
 import :instance_dispatch;
 import :instance_factory;
-#if defined(__APPLE__)
+#if defined(__APPLE__) && !defined(__EMSCRIPTEN__)
 import :metal_data;
 import :metal_instance;
 #endif // defined(__APPLE__)
-#if defined(_WIN32)
+#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
 import :d3d12_data;
 import :d3d12_instance;
 import :opengl_instance_wgl;
 #endif // defined(_WIN32)
-#if !defined(__APPLE__)
+#if !defined(__APPLE__) && !defined(__EMSCRIPTEN__)
 import :opengl_data;
 import :vulkan_data;
 import :vulkan_instance;
 #endif // !defined(__APPLE__)
-#if defined(__linux__) && !defined(__ANDROID__)
+#if defined(__linux__) && !defined(__ANDROID__) && !defined(__EMSCRIPTEN__)
 import :opengl_instance_egl;
 import :opengl_instance_glx;
 #endif // defined(__linux__) && !defined(__ANDROID__)
@@ -46,182 +52,189 @@ namespace fyuu_rhi {
 }
 
 namespace {
-	using NativeInstance = std::variant<
-	    std::monostate,
-#if defined(_WIN32)
-	    fyuu_rhi::d3d12::Instance,
-	    fyuu_rhi::opengl::Instance,
-#elif defined(__APPLE__)
-	    fyuu_rhi::metal::Instance,
-#elif defined(__linux__) && !defined(__ANDROID__)
-	    fyuu_rhi::opengl::EGLInstance,
-	    fyuu_rhi::opengl::GLXInstance,
-#elif defined(__ANDROID__)
-	    fyuu_rhi::opengl::Instance,
-#endif
-#if !defined(__APPLE__)
-	    fyuu_rhi::vulkan::Instance,
-#endif // !defined(__APPLE__)
-	    fyuu_rhi::webgpu::Instance>;
-} // namespace
-
-namespace fyuu_rhi {
-	struct InstanceImplementation {
-		NativeInstance native;
+	/** @brief Inline native ownership and a stable public handle for one backend. */
+	template <class Native, fyuu_rhi::Backend Type> struct InstanceSlot {
+		std::optional<Native> native;
+		fyuu_rhi::Instance instance{Type};
 	};
-} // namespace fyuu_rhi
 
-namespace {
+	/** @brief Stores each native backend at its actual size instead of repeating the largest variant. */
+	struct BackendInstances {
+#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
+		InstanceSlot<fyuu_rhi::d3d12::Instance, fyuu_rhi::Backend::DirectX12> d3d12;
+#endif // defined(_WIN32) && !defined(__EMSCRIPTEN__)
+#if !defined(__APPLE__) && !defined(__EMSCRIPTEN__)
+		InstanceSlot<fyuu_rhi::vulkan::Instance, fyuu_rhi::Backend::Vulkan> vulkan;
+#if defined(__linux__) && !defined(__ANDROID__)
+		/// @brief Only OpenGL's mutually exclusive window-system implementations share storage.
+		InstanceSlot<
+		    std::variant<fyuu_rhi::opengl::EGLInstance, fyuu_rhi::opengl::GLXInstance>,
+		    fyuu_rhi::Backend::OpenGL>
+		    opengl;
+#else
+		InstanceSlot<fyuu_rhi::opengl::Instance, fyuu_rhi::Backend::OpenGL> opengl;
+#endif // defined(__linux__) && !defined(__ANDROID__)
+#elif defined(__APPLE__) && !defined(__EMSCRIPTEN__)
+		InstanceSlot<fyuu_rhi::metal::Instance, fyuu_rhi::Backend::Metal> metal;
+#endif // !defined(__APPLE__) && !defined(__EMSCRIPTEN__)
+		InstanceSlot<fyuu_rhi::webgpu::Instance, fyuu_rhi::Backend::WebGPU> webgpu;
+	};
+
+	/**
+	 * @brief Suppresses native root destruction under DLL loader lock once for the whole registry.
+	 * @note The active member is constructed normally. Explicit Vulkan refresh runs outside
+	 * DLL teardown; other retained native roots remain alive until process reclamation.
+	 */
 	union InstanceStorage {
-		fyuu_rhi::InstanceImplementation implementation;
+		BackendInstances instances;
 
-		InstanceStorage()
-			: implementation{} {
+		InstanceStorage() : instances{} {
 		}
 
-		// FyuuRHI is linked into a DLL. Releasing a process-level graphics instance
-		// from DLL_PROCESS_DETACH would enter DXGI, Vulkan, Dawn, or an OpenGL loader
-		// while the Windows loader lock is held. Keep the native root alive until the
-		// process reclaims it instead; the active union member remains valid for the
-		// entire static-storage lifetime.
 		~InstanceStorage() noexcept {
 		}
 	};
 
-#if defined(_WIN32)
-	InstanceStorage d3d12_storage;
-	fyuu_rhi::Instance d3d12_instance{&d3d12_storage.implementation};
-#endif // defined(_WIN32)
+	InstanceStorage storage;
 
-#if !defined(__APPLE__)
-	InstanceStorage vulkan_storage;
-	fyuu_rhi::Instance vulkan_instance{&vulkan_storage.implementation};
+	/** @brief Creates a backend lazily without moving its stable handle or allocating a slot. */
+	template <class Native, fyuu_rhi::Backend Type>
+	fyuu_rhi::Instance& RequestSlot(InstanceSlot<Native, Type>* slot) {
+		if (!slot->native) {
+			slot->native.emplace(fyuu_rhi::CreateInstance<Native>{}());
+		}
+		return slot->instance;
+	}
 
-	InstanceStorage opengl_storage;
-	fyuu_rhi::Instance opengl_instance{&opengl_storage.implementation};
+	/** @brief Passes the existing native address, or a typed null while its slot is retired. */
+	template <class Native, fyuu_rhi::Backend Type, class Function>
+	decltype(auto) VisitSlot(InstanceSlot<Native, Type> const* slot, Function&& Invoke) {
+		return Invoke(slot->native ? std::addressof(*slot->native) : nullptr);
+	}
+
+	/** @brief Dispatches through the backend identity rather than an oversized owning variant. */
+	template <class Function>
+	decltype(auto) VisitInstance(fyuu_rhi::Backend backend, Function&& Invoke) {
+		switch (backend) {
+#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
+			case fyuu_rhi::Backend::DirectX12:
+				return VisitSlot(&storage.instances.d3d12, Invoke);
+#endif // defined(_WIN32) && !defined(__EMSCRIPTEN__)
+#if !defined(__APPLE__) && !defined(__EMSCRIPTEN__)
+			case fyuu_rhi::Backend::Vulkan:
+				return VisitSlot(&storage.instances.vulkan, Invoke);
+			case fyuu_rhi::Backend::OpenGL:
+#if defined(__linux__) && !defined(__ANDROID__)
+				if (!storage.instances.opengl.native) {
+					return Invoke(static_cast<fyuu_rhi::opengl::EGLInstance const*>(nullptr));
+				}
+				return std::visit(
+				    [&Invoke](auto const& native) {
+					    return Invoke(&native);
+				    },
+				    *storage.instances.opengl.native
+				);
 #else
-	InstanceStorage metal_storage;
-	fyuu_rhi::Instance metal_instance{&metal_storage.implementation};
-#endif // !defined(__APPLE__)
+				return VisitSlot(&storage.instances.opengl, Invoke);
+#endif // defined(__linux__) && !defined(__ANDROID__)
+#elif defined(__APPLE__) && !defined(__EMSCRIPTEN__)
+			case fyuu_rhi::Backend::Metal:
+				return VisitSlot(&storage.instances.metal, Invoke);
+#endif // !defined(__APPLE__) && !defined(__EMSCRIPTEN__)
+			case fyuu_rhi::Backend::WebGPU:
+				return VisitSlot(&storage.instances.webgpu, Invoke);
+			default:
+				throw std::invalid_argument("Requested RHI instance backend is not available");
+		}
+	}
 
-	InstanceStorage webgpu_storage;
-	fyuu_rhi::Instance webgpu_instance{&webgpu_storage.implementation};
-
-#if defined(_WIN32)
+#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
 	fyuu_rhi::Instance& RequestD3D12() {
-		auto& implementation = d3d12_storage.implementation;
-		if (std::holds_alternative<std::monostate>(implementation.native)) {
-			implementation.native.emplace<fyuu_rhi::d3d12::Instance>(
-				fyuu_rhi::CreateInstance<fyuu_rhi::d3d12::Instance>{}()
-			);
-		}
-		return d3d12_instance;
+		return RequestSlot(&storage.instances.d3d12);
 	}
-#endif // defined(_WIN32)
+#endif // defined(_WIN32) && !defined(__EMSCRIPTEN__)
 
-#if !defined(__APPLE__)
+#if !defined(__APPLE__) && !defined(__EMSCRIPTEN__)
 	fyuu_rhi::Instance& RequestVulkan() {
-		auto& implementation = vulkan_storage.implementation;
-		if (std::holds_alternative<std::monostate>(implementation.native)) {
-			implementation.native.emplace<fyuu_rhi::vulkan::Instance>(
-				fyuu_rhi::CreateInstance<fyuu_rhi::vulkan::Instance>{}()
-			);
-		}
-		return vulkan_instance;
+		return RequestSlot(&storage.instances.vulkan);
 	}
-#else
+#elif defined(__APPLE__) && !defined(__EMSCRIPTEN__)
 	fyuu_rhi::Instance& RequestMetal() {
-		auto& implementation = metal_storage.implementation;
-		if (std::holds_alternative<std::monostate>(implementation.native)) {
-			implementation.native.emplace<fyuu_rhi::metal::Instance>(
-				fyuu_rhi::CreateInstance<fyuu_rhi::metal::Instance>{}()
-			);
-		}
-		return metal_instance;
+		return RequestSlot(&storage.instances.metal);
 	}
-#endif // !defined(__APPLE__)
+#endif // !defined(__APPLE__) && !defined(__EMSCRIPTEN__)
 
 	fyuu_rhi::Instance& RequestWebGPU() {
-#if defined(_WIN32) && !defined(NDEBUG)
-		// Dawn uses D3D12 on Windows. Configure the process-wide D3D12 debug
-		// layer before Dawn creates its first device; enabling it afterwards
-		// invalidates existing devices and prevents a later native backend switch.
+#if defined(_WIN32) && !defined(NDEBUG) && !defined(__EMSCRIPTEN__)
+		/// @brief Configure D3D12 debug validation before Dawn creates its first device.
 		(void)RequestD3D12();
-#endif // defined(_WIN32) && !defined(NDEBUG)
-		auto& implementation = webgpu_storage.implementation;
-		if (std::holds_alternative<std::monostate>(implementation.native)) {
-			implementation.native.emplace<fyuu_rhi::webgpu::Instance>(
-				fyuu_rhi::CreateInstance<fyuu_rhi::webgpu::Instance>{}()
-			);
-		}
-		return webgpu_instance;
+#endif // defined(_WIN32) && !defined(NDEBUG) && !defined(__EMSCRIPTEN__)
+		return RequestSlot(&storage.instances.webgpu);
 	}
 
-#if defined(__linux__) && !defined(__ANDROID__)
+#if defined(__linux__) && !defined(__ANDROID__) && !defined(__EMSCRIPTEN__)
 	fyuu_rhi::Instance& RequestOpenGL() {
-		auto& implementation = opengl_storage.implementation;
-		if (fyuu_rhi::IsWayland()) {
-			if (std::holds_alternative<std::monostate>(implementation.native)) {
-				implementation.native.emplace<fyuu_rhi::opengl::EGLInstance>(
-					fyuu_rhi::CreateInstance<fyuu_rhi::opengl::EGLInstance>{}()
+		if (!storage.instances.opengl.native) {
+			if (fyuu_rhi::IsWayland()) {
+				storage.instances.opengl.native.emplace(
+				    std::in_place_type<fyuu_rhi::opengl::EGLInstance>,
+				    fyuu_rhi::CreateInstance<fyuu_rhi::opengl::EGLInstance>{}()
+				);
+			} else {
+				storage.instances.opengl.native.emplace(
+				    std::in_place_type<fyuu_rhi::opengl::GLXInstance>,
+				    fyuu_rhi::CreateInstance<fyuu_rhi::opengl::GLXInstance>{}()
 				);
 			}
-			return opengl_instance;
 		}
-		if (std::holds_alternative<std::monostate>(implementation.native)) {
-			implementation.native.emplace<fyuu_rhi::opengl::GLXInstance>(
-				fyuu_rhi::CreateInstance<fyuu_rhi::opengl::GLXInstance>{}()
-			);
-		}
-		return opengl_instance;
+		return storage.instances.opengl.instance;
 	}
-#elif !defined(__APPLE__)
+#elif !defined(__APPLE__) && !defined(__EMSCRIPTEN__)
 	fyuu_rhi::Instance& RequestOpenGL() {
-		auto& implementation = opengl_storage.implementation;
-		if (std::holds_alternative<std::monostate>(implementation.native)) {
-			implementation.native.emplace<fyuu_rhi::opengl::Instance>(
-				fyuu_rhi::CreateInstance<fyuu_rhi::opengl::Instance>{}()
-			);
-		}
-		return opengl_instance;
+		return RequestSlot(&storage.instances.opengl);
 	}
-#endif // defined(__linux__) && !defined(__ANDROID__)
+#endif // defined(__linux__) && !defined(__ANDROID__) && !defined(__EMSCRIPTEN__)
 
 } // namespace
 
 namespace fyuu_rhi {
+	/**
+	 * @brief Retires the Vulkan root so the next request uses the current context metadata.
+	 * @note The host releases all Vulkan-derived objects before context reinitialization.
+	 * Retired inline ownership releases messenger, instance and dispatcher in member order.
+	 */
+	void RefreshVulkanInstance() {
+#if !defined(__APPLE__) && !defined(__EMSCRIPTEN__)
+		auto retired = std::move(storage.instances.vulkan.native);
+		storage.instances.vulkan.native = std::nullopt;
+#endif // !defined(__APPLE__) && !defined(__EMSCRIPTEN__)
+	}
+
 	std::vector<PhysicalDevice> Instance::EnumeratePhysicalDevices() const {
-		return std::visit(
-		    []<class Native>(Native const& native) {
-			    if constexpr (std::same_as<Native, std::monostate>) {
-				    return std::vector<PhysicalDevice>{};
-			    } else {
-				    return fyuu_rhi::EnumeratePhysicalDevices<Native>{&native}();
-			    }
-		    },
-		    m_impl->native
-		);
+		return VisitInstance(m_backend, []<class Native>(Native const* native) {
+			if (!native) {
+				return std::vector<PhysicalDevice>{};
+			}
+			return fyuu_rhi::EnumeratePhysicalDevices<Native>{native}();
+		});
 	}
 
 	void Instance::ShareContextOnThisThread() {
-		std::visit(
-		    []<class Native>(Native const& native) {
-			    if constexpr (!std::same_as<Native, std::monostate>) {
-				    ShareContextOnCurrentThread<Native>{&native}();
-			    }
-		    },
-		    m_impl->native
-		);
+		VisitInstance(m_backend, []<class Native>(Native const* native) {
+			if (native) {
+				ShareContextOnCurrentThread<Native>{native}();
+			}
+		});
 	}
 
 	std::span<Backend const> EnumerateBackends() noexcept {
 		static constexpr Backend backends[]{
-#if defined(_WIN32)
+#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
 		    Backend::DirectX12,
 #endif // defined(_WIN32)
-#if defined(__APPLE__)
+#if defined(__APPLE__) && !defined(__EMSCRIPTEN__)
 		    Backend::Metal,
-#else
+#elif !defined(__EMSCRIPTEN__)
 		    Backend::Vulkan,
 		    Backend::OpenGL,
 #endif // defined(__APPLE__)
@@ -236,7 +249,11 @@ namespace fyuu_rhi {
 		}
 
 		using RequestFunction = Instance& (*)();
-#if defined(_WIN32)
+#if defined(__EMSCRIPTEN__)
+		static constexpr frozen::unordered_map<Backend, RequestFunction, 1u> requests{
+		    {Backend::WebGPU, RequestWebGPU}
+		};
+#elif defined(_WIN32)
 		static constexpr frozen::unordered_map<Backend, RequestFunction, 4u> requests{
 		    {Backend::DirectX12, RequestD3D12},
 		    {Backend::Vulkan, RequestVulkan},

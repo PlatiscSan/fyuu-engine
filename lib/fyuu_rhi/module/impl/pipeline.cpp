@@ -2,6 +2,7 @@ module;
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 #include <variant>
@@ -16,18 +17,25 @@ import std;
 import :pipeline;
 import :pipeline_dispatch;
 import :pipeline_factory;
-#if defined(_WIN32)
+#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
 import :d3d12_pipeline;
 #endif // defined(_WIN32)
-#if defined(__APPLE__)
+#if defined(__APPLE__) && !defined(__EMSCRIPTEN__)
 import :metal_pipeline;
-#else
+#elif !defined(__EMSCRIPTEN__)
 import :opengl_pipeline;
 import :vulkan_pipeline;
 #endif // !defined(__APPLE__)
 import :webgpu_pipeline;
 
 namespace fyuu_rhi {
+
+	Pipeline::Pipeline() noexcept = default;
+	Pipeline::Pipeline(ImplementationStorage&& impl) noexcept : m_impl(std::move(impl)) {
+	}
+	Pipeline::Pipeline(Pipeline&& other) noexcept = default;
+	Pipeline& Pipeline::operator=(Pipeline&& other) noexcept = default;
+	Pipeline::~Pipeline() noexcept = default;
 
 	std::vector<pipeline::BindingMetadata> Pipeline::Bindings() const {
 		if (!m_impl) {

@@ -1,4 +1,5 @@
 module;
+#if !defined(__EMSCRIPTEN__)
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <cstddef>
@@ -26,7 +27,10 @@ module;
 #endif // !defined(__APPLE__) && defined(__clang__) && defined(_MSVC_STL_VERSION)
 #include <slang.h>
 
+#endif // !defined(__EMSCRIPTEN__)
+
 module fyuu_rhi:vulkan_logical_device;
+#if !defined(__EMSCRIPTEN__)
 #if !defined(__APPLE__)
 #if defined(__cpp_lib_modules)
 import std;
@@ -37,6 +41,7 @@ import vulkan;
 import :cache;
 import :log;
 import :logical_device_dispatch;
+import :memory_pressure;
 import :pipeline;
 import :pipeline_factory;
 import :resource_factory;
@@ -410,8 +415,10 @@ namespace fyuu_rhi {
 			std::size_t height,
 			std::size_t depth_or_array_layers,
 			std::size_t mip_levels,
-			ResourceFlags const& flags
+			ResourceFlags const& flags,
+			TextureClearValue const& clear_value
 		) const {
+			auto default_clear_value = ResolveTextureClearValue(flags, clear_value);
 			auto image_type = vulkan::ImageType(flags);
 			auto format = vulkan::ResourceFormat(flags);
 			return MakeResource(
@@ -449,7 +456,8 @@ namespace fyuu_rhi {
 					.depth_or_array_layers = static_cast<std::uint32_t>(depth_or_array_layers),
 					.mip_levels = static_cast<std::uint32_t>(mip_levels)
 				},
-				flags
+				flags,
+				default_clear_value
 			);
 		}
 	};
@@ -515,7 +523,7 @@ namespace fyuu_rhi {
 		vulkan::LogicalDevice* logical_device;
 
 		Pipeline operator()(GraphicsPipelineDescriptor const& descriptor) const {
-			bool dynamic_rendering_enabled = logical_device->enabled_features.contains(
+			bool dynamic_rendering_enabled = std::ranges::contains(logical_device->enabled_features,
 				vk::StructureType::ePhysicalDeviceDynamicRenderingFeatures
 			);
 
@@ -524,8 +532,7 @@ namespace fyuu_rhi {
 			);
 			auto spirv_profile = SPIRVProfile(properties.apiVersion);
 			slang::TargetDesc target{
-				.format = SLANG_SPIRV,
-				.profile = shader::SlangGlobalSession()->findProfile(spirv_profile.data())
+				.format = SLANG_SPIRV
 			};
 			auto cache_tag = std::format(
 				"vulkan-{:04x}-{:04x}-{:08x}-api-{:08x}-{}",
@@ -538,7 +545,8 @@ namespace fyuu_rhi {
 			shader::SlangProgram program(
 				target,
 				descriptor.program,
-				cache_tag
+				cache_tag,
+				spirv_profile.data()
 			);
 			auto pipeline = CreatePipelineInterface(logical_device, program);
 
@@ -903,8 +911,7 @@ namespace fyuu_rhi {
 			);
 			auto spirv_profile = SPIRVProfile(properties.apiVersion);
 			slang::TargetDesc target{
-				.format = SLANG_SPIRV,
-				.profile = shader::SlangGlobalSession()->findProfile(spirv_profile.data())
+				.format = SLANG_SPIRV
 			};
 			auto cache_tag = std::format(
 				"vulkan-compute-{:04x}-{:04x}-{:08x}-api-{:08x}-{}",
@@ -917,7 +924,8 @@ namespace fyuu_rhi {
 			shader::SlangProgram program(
 				target,
 				descriptor.program,
-				cache_tag
+				cache_tag,
+				spirv_profile.data()
 			);
 			if (
 				program.GetEntryPoints().size() != 1u ||
@@ -991,3 +999,4 @@ namespace fyuu_rhi {
 
 } // namespace fyuu_rhi
 #endif // !defined(__APPLE__)
+#endif // !defined(__EMSCRIPTEN__)

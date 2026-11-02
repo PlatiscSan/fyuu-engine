@@ -1,4 +1,5 @@
 module;
+#if !defined(__EMSCRIPTEN__)
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <cstddef>
@@ -19,12 +20,16 @@ module;
 #include <Metal/Metal.hpp>
 #endif // defined(__APPLE__)
 
+#endif // !defined(__EMSCRIPTEN__)
+
 module fyuu_rhi:metal_data;
+#if !defined(__EMSCRIPTEN__)
 #if defined(__APPLE__)
 #if defined(__cpp_lib_modules)
 import std;
 #endif // defined(__cpp_lib_modules)
 import :pipeline;
+import :resource;
 
 namespace fyuu_rhi::metal {
 
@@ -74,6 +79,8 @@ namespace fyuu_rhi::metal {
 
 	struct Resource {
 		std::variant<NS::SharedPtr<MTL::Buffer>, NS::SharedPtr<MTL::Texture>> impl;
+		/// @brief Creation default used only by attachment ClearDefault operations.
+		TextureClearValue default_clear_value{};
 	};
 
 	/// A texture view is itself an MTL::Texture created from the parent texture.
@@ -135,3 +142,4 @@ namespace fyuu_rhi::metal {
 
 } // namespace fyuu_rhi::metal
 #endif // defined(__APPLE__)
+#endif // !defined(__EMSCRIPTEN__)

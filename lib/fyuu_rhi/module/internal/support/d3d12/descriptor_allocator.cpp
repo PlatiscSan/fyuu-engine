@@ -1,4 +1,5 @@
 module;
+#if !defined(__EMSCRIPTEN__)
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <cstddef>
@@ -19,7 +20,10 @@ module;
 #include <wrl.h>
 #endif // defined(_WIN32)
 
+#endif // !defined(__EMSCRIPTEN__)
+
 module fyuu_rhi:d3d12_descriptor_allocator;
+#if !defined(__EMSCRIPTEN__)
 #if defined(_WIN32)
 #if defined(__cpp_lib_modules)
 import std;
@@ -340,3 +344,4 @@ namespace fyuu_rhi::d3d12 {
 
 } // namespace fyuu_rhi::d3d12
 #endif // defined(_WIN32)
+#endif // !defined(__EMSCRIPTEN__)

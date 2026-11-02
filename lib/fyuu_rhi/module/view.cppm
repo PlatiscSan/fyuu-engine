@@ -1,12 +1,11 @@
 module;
 #include <version>
 #if !defined(__cpp_lib_modules)
-#include <memory>
-#include <utility>
 
 #include <cstdint>
 #endif // !defined(__cpp_lib_modules)
 export module fyuu_rhi:view;
+import :fast_pimpl;
 #if defined(__cpp_lib_modules)
 import std;
 #endif // defined(__cpp_lib_modules)
@@ -25,10 +24,7 @@ export namespace fyuu_rhi {
 	 */
 	class View {
 	public:
-		using UniqueHandle = std::unique_ptr<
-			struct ViewImplementation,
-			void(*)(struct ViewImplementation*)
-		>;
+		using ImplementationStorage = details::FastPimpl<struct ViewImplementation, 224u>;
 
 	private:
 		template <class Native>
@@ -36,16 +32,18 @@ export namespace fyuu_rhi {
 		template <class Native>
 		friend struct execution::ExecuteCommands;
 
-		UniqueHandle m_impl;
+		ImplementationStorage m_impl;
 
 	public:
-		View() noexcept
-			: m_impl(nullptr, nullptr) {
-		}
+		View() noexcept;
 
-		explicit View(UniqueHandle&& impl) noexcept
-			: m_impl(std::move(impl)) {
-		}
+		explicit View(ImplementationStorage&& impl) noexcept;
+
+		View(View const&) = delete;
+		View& operator=(View const&) = delete;
+		View(View&& other) noexcept;
+		View& operator=(View&& other) noexcept;
+		~View() noexcept;
 
 		explicit operator bool() const noexcept {
 			return static_cast<bool>(m_impl);

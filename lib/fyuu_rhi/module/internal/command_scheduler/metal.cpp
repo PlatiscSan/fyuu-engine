@@ -1,4 +1,5 @@
 module;
+#if !defined(__EMSCRIPTEN__)
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <exception>
@@ -28,12 +29,16 @@ module;
 #include <QuartzCore/CAMetalLayer.hpp>
 #endif // defined(__APPLE__)
 
+#endif // !defined(__EMSCRIPTEN__)
+
 module fyuu_rhi:metal_command_scheduler;
+#if !defined(__EMSCRIPTEN__)
 #if defined(__APPLE__)
 #if defined(__cpp_lib_modules)
 import std;
 #endif // defined(__cpp_lib_modules)
 import :command_scheduler_dispatch;
+import :memory_pressure;
 import :command_scheduler_factory;
 import :completion_token_factory;
 import :execution;
@@ -376,6 +381,18 @@ namespace fyuu_rhi::metal {
 		}
 
 		void operator()(BeginRendering const& value) {
+			/// @brief Resolve texture defaults before native attachment load operations are selected.
+			if (UsesDefaultClear(value)) {
+				auto resolved = value;
+				ResolveAttachmentClears(
+					resolved,
+					[this](std::size_t index) -> fyuu_rhi::TextureClearValue const& {
+						return resources[index].get().default_clear_value;
+					}
+				);
+				(*this)(resolved);
+				return;
+			}
 			EndEncoders();
 			auto descriptor = MTL::RenderPassDescriptor::renderPassDescriptor();
 			std::ranges::for_each(
@@ -1139,7 +1156,9 @@ namespace fyuu_rhi::execution {
 				std::ranges::for_each(
 					command_buffers,
 					[](auto const& command_buffer) {
-						command_buffer->commit();
+						{
+							command_buffer->commit();
+						}
 					}
 				);
 			}
@@ -1166,3 +1185,4 @@ namespace fyuu_rhi::execution {
 
 } // namespace fyuu_rhi::execution
 #endif // defined(__APPLE__)
+#endif // !defined(__EMSCRIPTEN__)

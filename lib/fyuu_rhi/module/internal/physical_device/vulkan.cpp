@@ -1,4 +1,5 @@
 module;
+#if !defined(__EMSCRIPTEN__)
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <cstddef>
@@ -32,7 +33,10 @@ module;
 #include <vma/vk_mem_alloc.h>
 #endif // !defined(__APPLE__)
 
+#endif // !defined(__EMSCRIPTEN__)
+
 module fyuu_rhi:vulkan_physical_device;
+#if !defined(__EMSCRIPTEN__)
 #if !defined(__APPLE__)
 #if defined(__cpp_lib_modules)
 import std;
@@ -43,6 +47,7 @@ import vulkan;
 import :log;
 import :logical_device_factory;
 import :physical_device_dispatch;
+import :memory_pressure;
 import :physical_device_factory;
 import :vulkan_data;
 import :vulkan_memory_allocator;
@@ -295,7 +300,7 @@ namespace fyuu_rhi {
 
 			// Swapchain / present chain; the instance-gated extensions only when the
 			// matching instance extension was actually enabled.
-			if (physical_device->enabled_instance_extensions.contains(
+			if (std::ranges::contains(physical_device->enabled_instance_extensions,
 			        vk::EXTSurfaceMaintenance1ExtensionName
 			    )) {
 				AddOptionalExtension(
@@ -322,7 +327,7 @@ namespace fyuu_rhi {
 				    (std::numeric_limits<std::uint32_t>::max)()
 				);
 			}
-			if (physical_device->enabled_instance_extensions.contains(
+			if (std::ranges::contains(physical_device->enabled_instance_extensions,
 			        vk::KHRGetSurfaceCapabilities2ExtensionName
 			    )) {
 				AddOptionalExtension(
@@ -334,7 +339,10 @@ namespace fyuu_rhi {
 				);
 			}
 
-			// Ray tracing: never promoted to core, enabled via the KHR extension set.
+			/** @brief Enables the supported KHR ray-tracing extension set.
+			 * @note Enabling acceleration-structure extensions may increase driver-side
+			 * process memory during device creation, even before any structure is built.
+			 */
 			if (supported_extensions.contains(vk::KHRAccelerationStructureExtensionName)) {
 				AddOptionalExtension(
 				    device_version,
@@ -758,7 +766,7 @@ namespace fyuu_rhi {
 				mesh_shader.primitiveFragmentShadingRateMeshShader = vk::False;
 			}
 
-			std::unordered_set<vk::StructureType> enabled_features;
+			std::vector<vk::StructureType> enabled_features;
 			// Every probed feature (core via the promoted structs, the rest via their
 			// own structs) whose bool survived getFeatures2 is enabled.
 			auto available_features = probed | std::views::filter([](auto const& feature) {
@@ -766,14 +774,16 @@ namespace fyuu_rhi {
 			                          });
 			std::ranges::transform(
 			    available_features,
-			    std::inserter(enabled_features, enabled_features.end()),
+			    std::back_inserter(enabled_features),
 			    [](auto const& feature) {
 				    return feature.first;
 			    }
 			);
 
-			// Build one VkDeviceQueueCreateInfo per queue family from the immutable
-			// queue pool, preserving the priorities computed at QueueAllocator creation.
+			/** @brief Preserves every queue and its priority from the immutable queue pool.
+			 * @note Requesting all physical queues may increase driver-side process memory
+			 * during device creation. Full queue availability is intentional RHI behavior.
+			 */
 			auto queue_create_infos = queue_alloc.GetCreatePlans() |
 			    std::views::transform([](auto const& plan) {
 				                          return vk::DeviceQueueCreateInfo(
@@ -822,6 +832,8 @@ namespace fyuu_rhi {
 			allocator_info.device = *device;
 			allocator_info.instance = *physical_device->impl.getDestructorType();
 			allocator_info.pVulkanFunctions = &vulkan_functions;
+			/// @brief Bound default large-heap growth to 64 MiB; VMA still selects smaller initial blocks.
+			allocator_info.preferredLargeHeapBlockSize = 64ull * 1024ull * 1024ull;
 			VmaAllocator allocator_impl = nullptr;
 			if (vmaCreateAllocator(&allocator_info, &allocator_impl) != VK_SUCCESS ||
 			    !allocator_impl) {
@@ -846,3 +858,4 @@ namespace fyuu_rhi {
 
 } // namespace fyuu_rhi
 #endif // !defined(__APPLE__)
+#endif // !defined(__EMSCRIPTEN__)

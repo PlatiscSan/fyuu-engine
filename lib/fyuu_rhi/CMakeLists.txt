@@ -2,24 +2,20 @@ cmake_minimum_required(VERSION 3.28)
 project(FyuuRHI VERSION 1.0.0 LANGUAGES CXX)
 
 option(FYUU_RHI_BUILD_DOCUMENTATION "Build FyuuRHI API documentation with Doxygen" OFF)
-
 set(CMAKE_C_STANDARD 23)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+if(EMSCRIPTEN)
+	include(cmake/browser.cmake)
+	return()
+endif()
+
 # Boost
 find_package(Boost REQUIRED COMPONENTS locale)
-find_package(Boost REQUIRED COMPONENTS system)
-find_package(Boost REQUIRED COMPONENTS uuid)
-find_package(Boost REQUIRED COMPONENTS container)
-find_package(Boost REQUIRED COMPONENTS preprocessor)
 find_package(Boost REQUIRED COMPONENTS scope)
-find_package(Boost REQUIRED COMPONENTS any)
-find_package(Boost REQUIRED COMPONENTS asio)
-find_package(Boost REQUIRED COMPONENTS lockfree)
-find_package(Boost REQUIRED COMPONENTS pool)
 find_package(Boost REQUIRED COMPONENTS hash2)
 
 # parallel programming
@@ -45,14 +41,6 @@ find_package(Dawn CONFIG REQUIRED)
 # shader compiler
 find_package(spirv_cross_core CONFIG REQUIRED)
 find_package(spirv_cross_glsl CONFIG REQUIRED)
-find_package(spirv_cross_hlsl CONFIG REQUIRED)
-find_package(spirv_cross_msl CONFIG REQUIRED)
-find_package(spirv_cross_reflect CONFIG REQUIRED)
-find_package(spirv_cross_util CONFIG REQUIRED)
-find_package(spirv_cross_cpp CONFIG REQUIRED)
-find_package(spirv_cross_c CONFIG REQUIRED)
-find_package(glslang CONFIG REQUIRED)
-find_package(directx-dxc CONFIG REQUIRED)
 find_package(slang CONFIG REQUIRED)
 
 # serialization
@@ -148,7 +136,6 @@ target_compile_definitions(${PROJECT_NAME}
 	PRIVATE
 		VULKAN_HPP_DISPATCH_LOADER_DYNAMIC=1
 		PIX_ENABLED
-		#BOOST_USE_MODULES
 		__STDC_WANT_LIB_EXT1__
 )
 
@@ -156,16 +143,8 @@ target_link_libraries(${PROJECT_NAME}
 	PRIVATE
 		plastic
 		#-- Boost
-		Boost::system
 		Boost::locale
-		Boost::uuid
-		Boost::container
-		Boost::preprocessor
 		Boost::scope
-		Boost::any
-		Boost::asio
-		Boost::lockfree
-		Boost::pool
 		Boost::hash2
 		# parallel programming
 		TBB::tbb TBB::tbbmalloc TBB::tbbbind_2_5 TBB::tbbmalloc_proxy
@@ -177,12 +156,6 @@ target_link_libraries(${PROJECT_NAME}
 		#-- shader compiler
 		spirv-cross-core
 		spirv-cross-glsl
-		spirv-cross-hlsl
-		spirv-cross-msl
-		spirv-cross-reflect
-		spirv-cross-util
-		spirv-cross-cpp
-		slang::gfx
 		slang::slang
 		#-- serialization
 		nlohmann_json::nlohmann_json
@@ -245,15 +218,12 @@ endif()
 
 disable_rtti(${PROJECT_NAME})
 
-if(BUILD_TESTING)
-	add_subdirectory(test/completion_pool)
-	add_subdirectory(test/draw_probe)
-	add_subdirectory(test/draw_shapes)
-	add_subdirectory(test/graph_validation)
-	add_subdirectory(test/binding_probe)
-	add_subdirectory(test/bc_copy)
-endif()
 
 if(FYUU_RHI_BUILD_DOCUMENTATION)
 	add_subdirectory(doc)
+endif()
+
+option(FYUU_RHI_BUILD_WINDOW_REUSE_TEST "Build the Windows cross-backend window reuse test" OFF)
+if(FYUU_RHI_BUILD_WINDOW_REUSE_TEST AND WIN32)
+	add_subdirectory(test/window_reuse)
 endif()

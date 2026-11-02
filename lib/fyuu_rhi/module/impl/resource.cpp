@@ -1,6 +1,7 @@
 module;
 #include <version>
 #if !defined(__cpp_lib_modules)
+#include <utility>
 #include <algorithm>
 #include <stdexcept>
 #include <variant>
@@ -16,19 +17,27 @@ import :resource;
 import :resource_dispatch;
 import :resource_factory;
 import :view;
-#if defined(__APPLE__)
+#if defined(__APPLE__) && !defined(__EMSCRIPTEN__)
 import :metal_resource;
 #endif // defined(__APPLE__)
-#if defined(_WIN32)
+#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
 import :d3d12_resource;
 #endif // defined(_WIN32)
-#if !defined(__APPLE__)
+#if !defined(__APPLE__) && !defined(__EMSCRIPTEN__)
 import :opengl_resource;
 import :vulkan_resource;
 #endif // !defined(__APPLE__)
 import :webgpu_resource;
 
 namespace fyuu_rhi {
+
+	Resource::Resource() noexcept = default;
+	Resource::Resource(ImplementationStorage&& impl) noexcept : m_impl(std::move(impl)) {
+	}
+	Resource::Resource(Resource&& other) noexcept = default;
+	Resource& Resource::operator=(Resource&& other) noexcept = default;
+	Resource::~Resource() noexcept = default;
+
 	void ResourceMapScope::Reset() noexcept {
 		if (m_unmap) {
 			m_unmap(m_context, ResourceDataRange{m_offset, m_size}, m_writable);
@@ -155,6 +164,10 @@ namespace fyuu_rhi {
 		}
 		if (range.size > *size - range.offset) {
 			throw std::out_of_range("The mapped range exceeds the buffer size");
+		}
+		if (range.offset % MapOffsetAlignment != 0u || range.size == 0u ||
+		    range.size % MapSizeAlignment != 0u) {
+			throw std::invalid_argument("Map requires an eight-byte-aligned offset and a non-empty four-byte-aligned size");
 		}
 		return std::visit(
 		    [&]<class NativeResource>(NativeResource& native) {

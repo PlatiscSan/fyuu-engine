@@ -1,4 +1,5 @@
 module;
+#if !defined(__EMSCRIPTEN__)
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <cstddef>
@@ -19,7 +20,10 @@ module;
 #include <Metal/Metal.hpp>
 #endif // defined(__APPLE__)
 
+#endif // !defined(__EMSCRIPTEN__)
+
 module fyuu_rhi:metal_pipeline;
+#if !defined(__EMSCRIPTEN__)
 #if defined(__APPLE__)
 #if defined(__cpp_lib_modules)
 import std;
@@ -27,6 +31,7 @@ import std;
 import :metal_data;
 import :pipeline;
 import :pipeline_dispatch;
+import :memory_pressure;
 import :pipeline_resource_group_factory;
 import :resource_factory;
 import :sampler_factory;
@@ -309,3 +314,4 @@ namespace fyuu_rhi {
 
 } // namespace fyuu_rhi
 #endif // defined(__APPLE__)
+#endif // !defined(__EMSCRIPTEN__)

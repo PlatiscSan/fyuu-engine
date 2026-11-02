@@ -1,33 +1,47 @@
 module;
 #include <version>
 #if !defined(__cpp_lib_modules)
-#include <algorithm>
 #include <cstddef>
+#include <exception>
 #include <stdexcept>
 #include <utility>
+
 #include <vector>
-#include <functional>
+
+#include <algorithm>
 #include <iterator>
+
 #include <string>
+
 #include <limits>
+
 #include <fstream>
 
 #include <cstdint>
+
 #include <array>
 #include <unordered_map>
+
 #include <mutex>
-#include <thread>
 
-#include <shared_mutex>
-
-#include <ranges>
 #include <string_view>
+
 #include <filesystem>
 
-#include <source_location>
+#include <ranges>
 #include <span>
+
 #include <format>
 #endif
+
+#if defined(_WIN32)
+#include <windows.h>
+#include <psapi.h>
+/** @brief Keep the Windows COM spelling macro from rewriting Slang reflection identifiers. */
+#if defined(interface)
+#undef interface
+#endif // defined(interface)
+#endif // defined(_WIN32)
 
 #include <slang.h>
 #include <slang-com-ptr.h>
@@ -41,1321 +55,1250 @@ import std;
 import :pipeline;
 import :log;
 import :cache;
-import :memory_pressure;
-
-namespace fs = std::filesystem;
 
 namespace fyuu_rhi::pipeline {
 
+	/** @brief Reflected logical binding and target-specific resource/sampler registers. */
 	struct SlangPipelineBinding {
+		/// @brief Source declaration name.
 		std::string name;
+		/// @brief Resource shape and shader access properties.
 		ResourceFlags flags;
-		/// Backend-neutral binding consumed by the public RHI resource-group API.
+
+		/// @brief Backend-neutral binding slot.
 		std::uint32_t slot = 0;
+		/// @brief Backend-neutral resource space.
 		std::uint32_t space = 0;
-		/// Native resource register. For a combined binding this is the texture
-		/// register and is independent from sampler_slot.
+
+		/// @brief Resource register in the target shader.
 		std::uint32_t resource_slot = 0;
+		/// @brief Resource register space in the target shader.
 		std::uint32_t resource_space = 0;
-		/// Native sampler register used by sampler and combined bindings.
+
+		/// @brief Sampler register in the target shader.
 		std::uint32_t sampler_slot = 0;
+		/// @brief Sampler register space in the target shader.
 		std::uint32_t sampler_space = 0;
+		/// @brief Declared descriptor array length.
 		std::uint32_t count = 1;
+		/// @brief Bit mask of shader stages that use this declaration.
 		std::uint32_t visibility = 0;
 	};
 
+	/** @brief Vertex attribute identity and semantic expected by the pipeline. */
 	struct SlangPipelineVertexInput {
+		/// @brief Source declaration name.
 		std::string name;
+		/// @brief Shader varying location.
 		std::uint32_t location = 0;
+		/// @brief Native input semantic name.
 		std::string semantic_name;
+		/// @brief Native input semantic index.
 		std::uint32_t semantic_index = 0;
 	};
 
+	/** @brief Fragment output location and source name. */
 	struct SlangPipelineFragmentOutput {
+		/// @brief Source declaration name.
 		std::string name;
+		/// @brief Shader varying location.
 		std::uint32_t location = 0;
 	};
 
-	/// Slang and Vulkan call this block a *push constant*; the engine API calls it
-	/// a *pipeline constant* (`SetPipelineConstants`). Every backend emulates it
-	/// differently: Vulkan natively (`vk::PushConstantRange`), D3D12 as a
-	/// root-signature `32BIT_CONSTANTS` range, OpenGL as a uniform buffer, and
-	/// WebGPU as a bind-group binding.
+	/** @brief Pipeline-constant ABI range and target-specific register. */
 	struct SlangPipelinePushConstantRange {
+		/// @brief First byte of the pipeline-constant range.
 		std::uint32_t offset = 0;
+		/// @brief Number of bytes in the pipeline-constant range.
 		std::uint32_t size = 0;
-		/// Backend-neutral ABI identity, not a register: a resource binding's
-		/// `slot`/`space` is the register itself, but a pipeline-constant range is
-		/// matched to SetPipelineConstants by this pair alone (the SPIR-V layout's
-		/// PushConstantBuffer binding). The bytecode register is below.
+
+		/// @brief Backend-neutral pipeline-constant slot.
 		std::uint32_t abi_slot = 0;
+		/// @brief Backend-neutral pipeline-constant space.
 		std::uint32_t abi_space = 0;
-		/// The CBV register the compiled bytecode of the active target reads the
-		/// block from. Slang assigns this per target, so it must come from that
-		/// target's own layout; D3D12 declares its root-signature
-		/// 32BIT_CONSTANTS range here, because a root constant range is only
-		/// correct when its declared register equals the one the shader reads.
+
+		/// @brief Register used by the native pipeline-constant binding.
 		std::uint32_t register_slot = 0;
+		/// @brief Native pipeline-constant register space.
 		std::uint32_t register_space = 0;
+		/// @brief Bit mask of shader stages that use this declaration.
 		std::uint32_t visibility = 0;
 	};
 
+	/** @brief Owned binding, varying and pipeline-constant reflection. */
 	struct SlangPipelineInterface {
+		/// @brief Owned resource binding reflection.
 		std::vector<SlangPipelineBinding> bindings;
+		/// @brief Owned vertex input reflection.
 		std::vector<SlangPipelineVertexInput> vertex_inputs;
+		/// @brief Owned fragment output reflection.
 		std::vector<SlangPipelineFragmentOutput> fragment_outputs;
+		/// @brief Owned pipeline-constant ranges.
 		std::vector<SlangPipelinePushConstantRange> push_constants;
 	};
 
-	/// Drops the reflection-only name/visibility so backends can iterate the
-	/// layout without the shader module.
-	std::vector<BindingMetadata> MakePipelineBindingMetadata(SlangPipelineInterface const& interface) {
+	/** @brief Produces backend binding metadata after validating combined descriptor arrays. */
+	std::vector<BindingMetadata> MakePipelineBindingMetadata(
+	    SlangPipelineInterface const& interface
+	) {
 		std::vector<BindingMetadata> result;
 		result.reserve(interface.bindings.size());
 		std::ranges::transform(
-			interface.bindings,
-			std::back_inserter(result),
-			[&interface](auto const& entry) {
-				bool combined =
-					entry.flags.Test(ResourceFlagBits::TextureBinding) &&
-					entry.flags.Test(ResourceFlagBits::SamplerBinding);
-				if (combined && entry.count != 1u) {
-					throw std::invalid_argument(
-						"Combined texture/sampler binding arrays are not supported"
-					);
-				}
-				return BindingMetadata{
-					.flags = entry.flags,
-					.slot = entry.slot,
-					.space = entry.space,
-					.count = entry.count,
-					.sampler_slot = entry.sampler_slot
-				};
-			}
+		    interface.bindings,
+		    std::back_inserter(result),
+		    [](auto const& entry) {
+			    bool combined = entry.flags.Test(ResourceFlagBits::TextureBinding) &&
+			        entry.flags.Test(ResourceFlagBits::SamplerBinding);
+			    if (combined && entry.count != 1u) {
+				    throw std::invalid_argument(
+				        "Combined texture/sampler binding arrays are not supported"
+				    );
+			    }
+			    return BindingMetadata{
+			        .flags = entry.flags,
+			        .slot = entry.slot,
+			        .space = entry.space,
+			        .count = entry.count,
+			        .sampler_slot = entry.sampler_slot
+			    };
+		    }
 		);
 		return result;
 	}
 
-}
+} // namespace fyuu_rhi::pipeline
 
 namespace fyuu_rhi::shader {
-
-	using namespace fyuu_rhi::pipeline;
-
-	Slang::ComPtr<slang::IGlobalSession> SlangGlobalSession() {
-		static std::once_flag once;
-		static Slang::ComPtr<slang::IGlobalSession> session;
-		static SlangResult creation_result = SLANG_FAIL;
-		std::call_once(
-			once, 
-			[&](){
-				creation_result = slang::createGlobalSession(session.writeRef());
-			}
-		);
-		if (SLANG_FAILED(creation_result) || !session) {
-			throw std::runtime_error(std::format("Failed to create Slang global session ({})", creation_result));
-		}
-		return session;
-	}
-
+	/** @brief Owned backend bytecode for one requested shader stage. */
 	struct SlangCompiledEntryPoint {
-		Stage stage;
+		/// @brief Requested shader stage.
+		fyuu_rhi::pipeline::Stage stage;
+		/// @brief Source declaration name.
 		std::string name;
+		/// @brief Independent compiled bytecode.
 		std::vector<std::byte> code;
 	};
 
-	/// Compiles a set of Slang modules and entry points to a backend bytecode
-	/// (DXIL / SPIR-V / WGSL / MSL) and reflects the pipeline interface out of
-	/// the program: resource bindings, vertex inputs, fragment outputs and push
-	/// constant ranges.
-	///
-	/// Compilation is expensive, so every result is persisted to the disk cache
-	/// (`cache::GetCacheDirectory`) under a key derived from the source, target
-	/// and cache tag. On a later construction with the same key the compiled
-	/// entry points, the reflected interface and the raw reflection JSON are
-	/// loaded back without invoking the compiler. Construction is additionally
-	/// serialized behind a process-wide mutex so concurrent pipeline creation
-	/// cannot race the cache read/write.
-	///
-	/// Consumers use the result through GetEntryPoints() (per-stage bytecode),
-	/// GetInterface() (the reflection backends build their binding layout from)
-	/// and GetReflectionJSON() (the raw Slang reflection dump, for tooling).
-	class SlangProgram {
-	private:
-		/// Bumped whenever the on-disk cache format changes; older entries are
-		/// ignored instead of being parsed with a mismatched schema. Version 7
-		/// added the pipeline-constant register fields to the interface, so
-		/// entries written before that would restore a root signature at the
-		/// placeholder register. Version 8 takes the sampler register and space of
-		/// a combined binding from the target's own layout, so entries written
-		/// before that carry the logical binding instead. Version 9 makes the
-		/// logical slot unique within its space, so entries written before that can
-		/// hand two bindings of different kinds the same slot.
-		static constexpr std::uint32_t CACHE_SCHEMA_VERSION = 9u;
+	/** @brief Owns compiler-independent output; no SDK object survives compilation. */
+	struct SlangProgramData {
+		/// @brief Compiled outputs in descriptor entry-point order.
+		std::vector<SlangCompiledEntryPoint> entry_points;
+		/// @brief Owned pipeline ABI reflection.
+		fyuu_rhi::pipeline::SlangPipelineInterface interface;
+		/// @brief Independent JSON reflection text.
+		std::string reflection_json;
+	};
+} // namespace fyuu_rhi::shader
 
-		/// Per-entry-point compiled bytecode, in program order.
-		std::vector<SlangCompiledEntryPoint> m_entry_points;
-		/// The reflected pipeline interface (bindings / varyings / push constants).
-		SlangPipelineInterface m_interface;
-		/// The raw Slang reflection dump (JSON), preserved verbatim for tooling.
-		std::string m_reflection_json;
+namespace fs = std::filesystem;
 
-		// Throws if a Slang call failed, and logs the compiler diagnostics blob
-		// as a warning when present (Slang often reports recoverable notices).
-		static void Check(SlangResult result, slang::IBlob* diagnostics, std::string_view operation) {
-			std::string_view message;
-			if (diagnostics && diagnostics->getBufferPointer() && diagnostics->getBufferSize() != 0) {
-				message = {
-					static_cast<char const*>(diagnostics->getBufferPointer()),
-					diagnostics->getBufferSize()
-				};
+namespace {
+	/** @brief Owns the global compiler and serializes SDK object lifetimes.
+	 * @note Compilation holds mutex until all session-derived objects have been
+	 * destroyed. Context refresh must acquire this same mutex, not a second
+	 * cache-only lock which could race module/component/reflection use.
+	 */
+	struct SlangCompilerState {
+		/// @brief Outlives every owned compiler object, including during normal static destruction.
+		std::mutex mutex;
+		/// @brief Retired only while no compilation owns a child session or reflection object.
+		Slang::ComPtr<slang::IGlobalSession> global;
+	};
+
+	/** @brief Returns the process-local cache without constructing a Slang session. */
+	SlangCompilerState& CompilerState() {
+		static SlangCompilerState cache;
+		return cache;
+	}
+
+	/** @brief Emits Debug cache/session events without constructing a compiler session.
+	 * @note The DLL build tag is the SDK's session-independent version identity.
+	 * No teardown callback or DLL detach cleanup is introduced by diagnostics.
+	 */
+	void TraceSlangEvent(std::string_view event, std::string_view key = {}) noexcept {
+#if !defined(NDEBUG)
+		try {
+#if defined(_WIN32)
+			PROCESS_MEMORY_COUNTERS_EX counters{};
+			if (!GetProcessMemoryInfo(
+			        GetCurrentProcess(),
+			        reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&counters),
+			        sizeof(counters)
+			    )) {
+				throw std::runtime_error("Cannot sample Slang diagnostic process commitment");
 			}
-			if (SLANG_FAILED(result)) {
-				throw std::runtime_error(std::format("{} failed ({}): {}", operation, result, message));
+			fyuu_rhi::log::Debug(
+			    std::format(
+			        "Slang diagnostic: event={}, version={}, key={}, pid={}, private_bytes={}",
+			        event,
+			        spGetBuildTagString(),
+			        key,
+			        GetCurrentProcessId(),
+			        counters.PrivateUsage
+			    )
+			);
+#else
+			fyuu_rhi::log::Debug(
+			    std::format(
+			        "Slang diagnostic: event={}, version={}, key={}",
+			        event,
+			        spGetBuildTagString(),
+			        key
+			    )
+			);
+#endif // defined(_WIN32)
+		} catch (...) {
+			/// @brief Diagnostic failure must not affect cache hits or compilation.
+		}
+#else
+		(void)event;
+		(void)key;
+#endif // !defined(NDEBUG)
+	}
+	/// @brief Current disk schema; version and compiler build identity are always validated.
+	constexpr std::uint32_t CACHE_SCHEMA_VERSION = 9u;
+
+	/** @brief Lazily creates the global compiler while the lifetime guard is held. */
+	slang::IGlobalSession* SlangGlobalUnderLock() {
+		auto& cache = CompilerState();
+		if (!cache.global) {
+			auto result = slang::createGlobalSession(cache.global.writeRef());
+			if (SLANG_FAILED(result) || !cache.global) {
+				throw std::runtime_error(
+				    std::format("Failed to create Slang global session ({})", result)
+				);
 			}
-			if (!message.empty()) {
-				log::Warning(std::format("{}: {}", operation, message));
-			}
+			TraceSlangEvent("global-created");
+		}
+		return cache.global.get();
+	}
+
+	/** @brief Reports SDK errors and preserves nonfatal compiler diagnostics. */
+	void Check(SlangResult result, slang::IBlob* diagnostics, std::string_view operation) {
+		std::string_view message;
+		if (diagnostics && diagnostics->getBufferPointer() && diagnostics->getBufferSize() != 0) {
+			message = {
+			    static_cast<char const*>(diagnostics->getBufferPointer()),
+			    diagnostics->getBufferSize()
+			};
+		}
+		if (SLANG_FAILED(result)) {
+			throw std::runtime_error(std::format("{} failed ({}): {}", operation, result, message));
+		}
+		if (!message.empty()) {
+			fyuu_rhi::log::Warning(std::format("{}: {}", operation, message));
+		}
+	}
+
+	/** @brief Hashes string length and bytes so concatenated identifiers remain distinct. */
+	void HashString(boost::hash2::xxhash_64& hash, std::string_view value) {
+		auto size = static_cast<std::uint64_t>(value.size());
+		hash.update(&size, sizeof(size));
+		hash.update(value.data(), value.size());
+	}
+
+	/** @brief Computes the bytecode and reflection integrity fingerprint. */
+	std::uint64_t HashBytes(std::span<std::byte const> bytes) {
+		boost::hash2::xxhash_64 hash;
+		hash.update(bytes.data(), bytes.size());
+		return hash.result();
+	}
+
+	/** @brief Fingerprints source dependencies without loading an entire file into memory. */
+	std::uint64_t HashFile(fs::path const& path) {
+		std::ifstream input(path, std::ios::binary);
+		if (!input) {
+			throw std::runtime_error(
+			    std::format("Cannot read Slang dependency '{}'", path.string())
+			);
 		}
 
-		// Length-prefixed hash of a string so "ab"+"c" and "a"+"bc" differ.
-		static void HashString(boost::hash2::xxhash_64& hash, std::string_view value) {
-			auto size = static_cast<std::uint64_t>(value.size());
-			hash.update(&size, sizeof(size));
-			hash.update(value.data(), value.size());
-		}
-
-		static std::uint64_t HashBytes(std::span<std::byte const> bytes) {
-			boost::hash2::xxhash_64 hash;
-			hash.update(bytes.data(), bytes.size());
-			return hash.result();
-		}
-
-		// Stream-hashes a whole file; used to fingerprint included .slang
-		// dependencies so the cache invalidates when they change on disk.
-		static std::uint64_t HashFile(fs::path const& path) {
-			std::ifstream input(path, std::ios::binary);
-			if (!input) {
-				throw std::runtime_error(std::format("Cannot read Slang dependency '{}'", path.string()));
+		boost::hash2::xxhash_64 hash;
+		std::array<char, 64u * 1024u> buffer;
+		while (input) {
+			input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+			auto count = input.gcount();
+			if (count > 0) {
+				hash.update(buffer.data(), static_cast<std::size_t>(count));
 			}
-
-			boost::hash2::xxhash_64 hash;
-			std::array<char, 64u * 1024u> buffer;
-			while (input) {
-				input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-				auto count = input.gcount();
-				if (count > 0) {
-					hash.update(buffer.data(), static_cast<std::size_t>(count));
-				}
-			}
-			if (!input.eof()) {
-				throw std::runtime_error(std::format("Failed while reading Slang dependency '{}'", path.string()));
-			}
-			return hash.result();
 		}
+		if (!input.eof()) {
+			throw std::runtime_error(
+			    std::format("Failed while reading Slang dependency '{}'", path.string())
+			);
+		}
+		return hash.result();
+	}
 
-		// Derives the disk-cache key from everything that can change the compiled
-		// output: schema version, Slang build tag, the caller's cache tag (usually
-		// the driver identity, e.g. d3d12 vendor/device/driver), the target, the
-		// optimization/debug/matrix-layout settings and the module source itself.
-		static std::string BuildCacheKey(slang::TargetDesc const& target, SlangPipelineProgramDescriptor const& desc, std::string_view cache_tag) {
-			boost::hash2::xxhash_64 hash;
-			HashString(hash, "fyuu-rhi-slang-program");
-			hash.update(&CACHE_SCHEMA_VERSION, sizeof(CACHE_SCHEMA_VERSION));
-			HashString(hash, SlangGlobalSession()->getBuildTagString());
-			HashString(hash, cache_tag);
-			hash.update(&target.format, sizeof(target.format));
+	/** @brief Identifies source, compiler build, target and options without creating a session. */
+	std::string BuildCacheKey(
+	    slang::TargetDesc const& target,
+	    fyuu_rhi::pipeline::SlangPipelineProgramDescriptor const& desc,
+	    std::string_view cache_tag,
+	    std::string_view profile_name
+	) {
+		boost::hash2::xxhash_64 hash;
+		HashString(hash, "fyuu-rhi-slang-program");
+		hash.update(&CACHE_SCHEMA_VERSION, sizeof(CACHE_SCHEMA_VERSION));
+		HashString(hash, spGetBuildTagString());
+		HashString(hash, cache_tag);
+		hash.update(&target.format, sizeof(target.format));
+		if (profile_name.empty()) {
 			hash.update(&target.profile, sizeof(target.profile));
-			hash.update(&desc.optimization, sizeof(desc.optimization));
-			hash.update(&desc.enable_debug_info, sizeof(desc.enable_debug_info));
-			hash.update(&desc.matrix_layout, sizeof(desc.matrix_layout));
+		} else {
 
-			for (auto const& module : desc.modules) {
-				HashString(hash, module.name);
-				HashString(hash, module.source);
-			}
-			for (auto const& entry : desc.entry_points) {
-				HashString(hash, entry.name);
-				hash.update(&entry.stage, sizeof(entry.stage));
-			}
-			for (auto const& macro : desc.macros) {
-				HashString(hash, macro.name);
-				HashString(hash, macro.value);
-			}
-			for (auto const& path : desc.include_paths) {
-				std::error_code error;
-				auto normalized = fs::weakly_canonical(path, error);
-				HashString(hash, (error ? path.lexically_normal() : normalized).generic_string());
-			}
-			return std::format("slang-program-{:016x}", hash.result());
+			HashString(hash, "named-profile");
+			HashString(hash, profile_name);
+		}
+		hash.update(&desc.optimization, sizeof(desc.optimization));
+		hash.update(&desc.enable_debug_info, sizeof(desc.enable_debug_info));
+		hash.update(&desc.matrix_layout, sizeof(desc.matrix_layout));
+
+		for (auto const& module : desc.modules) {
+			HashString(hash, module.name);
+			HashString(hash, module.source);
+		}
+		for (auto const& entry : desc.entry_points) {
+			HashString(hash, entry.name);
+			hash.update(&entry.stage, sizeof(entry.stage));
+		}
+		for (auto const& macro : desc.macros) {
+			HashString(hash, macro.name);
+			HashString(hash, macro.value);
+		}
+		for (auto const& path : desc.include_paths) {
+			std::error_code error;
+			auto normalized = fs::weakly_canonical(path, error);
+			HashString(hash, (error ? path.lexically_normal() : normalized).generic_string());
+		}
+		return std::format("slang-program-{:016x}", hash.result());
+	}
+
+	/**
+	 * @brief Creates a fresh module namespace for each compile miss.
+	 * @note A reused ISession remembers loaded module names and can return stale
+	 * source or includes. The global session remains reusable; owned ISession
+	 * objects retire with compilation under the same lifetime guard.
+	 */
+	Slang::ComPtr<slang::ISession> CreateSession(
+	    slang::TargetDesc const& target,
+	    fyuu_rhi::pipeline::SlangPipelineProgramDescriptor const& desc
+	) {
+		std::vector<std::string> path_storage;
+		path_storage.reserve(desc.include_paths.size());
+		for (auto const& path : desc.include_paths) {
+			path_storage.push_back(path.generic_string());
+		}
+		std::vector<char const*> search_paths;
+		search_paths.reserve(path_storage.size());
+		for (auto const& path : path_storage) {
+			search_paths.push_back(path.c_str());
 		}
 
-		static std::uint64_t SessionHash(slang::TargetDesc const& target, SlangPipelineProgramDescriptor const& desc) {
-			boost::hash2::xxhash_64 hash;
-			hash.update(&target.format, sizeof(target.format));
-			hash.update(&target.profile, sizeof(target.profile));
-			hash.update(&desc.optimization, sizeof(desc.optimization));
-			hash.update(&desc.enable_debug_info, sizeof(desc.enable_debug_info));
-			hash.update(&desc.matrix_layout, sizeof(desc.matrix_layout));
-			for (auto const& path : desc.include_paths) {
-				std::error_code error;
-				auto normalized = fs::weakly_canonical(path, error);
-				HashString(hash, (error ? path.lexically_normal() : normalized).generic_string());
-			}
-			for (auto const& macro : desc.macros) {
-				HashString(hash, macro.name);
-				HashString(hash, macro.value);
-			}
-			return hash.result();
+		std::vector<slang::PreprocessorMacroDesc> macros;
+		macros.reserve(desc.macros.size());
+		for (auto const& macro : desc.macros) {
+			macros.push_back({macro.name.c_str(), macro.value.c_str()});
 		}
 
-		/** @brief Retains recent compiler configurations, reducing the budget under memory pressure.
-		 * Eviction drops only the cache reference; compiling programs retain their
-		 * own session reference, so active compilation is never invalidated.
-		 */
-		static Slang::ComPtr<slang::ISession> RequestSession(slang::TargetDesc const& target, SlangPipelineProgramDescriptor const& desc) {
-			static std::unordered_map<std::uint64_t, Slang::ComPtr<slang::ISession>> session_cache;
-			static std::vector<std::uint64_t> recent;
-			static std::shared_mutex mutex;
-			auto key = SessionHash(target, desc);
-			auto limit = details::IdleRetentionLimit(8u);
-			auto TrimCache = [&]() {
-				while (recent.size() > limit) {
-					session_cache.erase(recent.front());
-					recent.erase(recent.begin());
-				}
-			};
+		std::array compiler_options = {
+		    slang::CompilerOptionEntry{
+		        slang::CompilerOptionName::Optimization,
+		        {slang::CompilerOptionValueKind::Int, static_cast<int>(desc.optimization)}
+		    },
+		    slang::CompilerOptionEntry{
+		        slang::CompilerOptionName::DebugInformation,
+		        {slang::CompilerOptionValueKind::Int,
+				 static_cast<std::int32_t>(
+		             desc.enable_debug_info ? SLANG_DEBUG_INFO_LEVEL_MAXIMAL :
+		                                      SLANG_DEBUG_INFO_LEVEL_NONE
+		         )}
+		    }
+		};
 
-			{
-				std::unique_lock lock(mutex);
-				if (auto it = session_cache.find(key); it != session_cache.end()) {
-					auto position = std::ranges::find(recent, key);
-					std::rotate(position, position + 1u, recent.end());
-					auto session = it->second;
-					TrimCache();
-					return session;
-				}
-			}
+		auto reflection_target = target;
+		reflection_target.format = SLANG_SPIRV;
+		reflection_target.profile = SlangGlobalUnderLock()->findProfile("spirv_1_0");
+		std::array targets{target, reflection_target};
+		slang::SessionDesc session_desc{};
+		session_desc.targets = targets.data();
+		session_desc.targetCount = static_cast<SlangInt>(targets.size());
+		session_desc.searchPaths = search_paths.data();
+		session_desc.searchPathCount = static_cast<SlangInt>(search_paths.size());
+		session_desc.preprocessorMacros = macros.data();
+		session_desc.preprocessorMacroCount = static_cast<SlangInt>(macros.size());
+		session_desc.compilerOptionEntries = compiler_options.data();
+		session_desc.compilerOptionEntryCount = static_cast<std::uint32_t>(compiler_options.size());
+		session_desc.defaultMatrixLayoutMode = desc.matrix_layout ==
+		        fyuu_rhi::pipeline::SlangPipelineProgramDescriptor::MatrixLayout::RowMajor ?
+		    SLANG_MATRIX_LAYOUT_ROW_MAJOR :
+		    SLANG_MATRIX_LAYOUT_COLUMN_MAJOR;
 
-			std::vector<std::string> path_storage;
-			path_storage.reserve(desc.include_paths.size());
-			for (auto const& path : desc.include_paths) {
-				path_storage.push_back(path.generic_string());
-			}
-			std::vector<char const*> search_paths;
-			search_paths.reserve(path_storage.size());
-			for (auto const& path : path_storage) {
-				search_paths.push_back(path.c_str());
-			}
+		Slang::ComPtr<slang::ISession> created;
+		auto result = SlangGlobalUnderLock()->createSession(session_desc, created.writeRef());
+		Check(result, nullptr, "Creating Slang session");
+		TraceSlangEvent("session-created");
 
-			std::vector<slang::PreprocessorMacroDesc> macros;
-			macros.reserve(desc.macros.size());
-			for (auto const& macro : desc.macros) {
-				macros.push_back({ macro.name.c_str(), macro.value.c_str() });
-			}
+		return created;
+	}
 
-			std::array compiler_options = {
-				slang::CompilerOptionEntry{
-					slang::CompilerOptionName::Optimization,
-					{ slang::CompilerOptionValueKind::Int, static_cast<int>(desc.optimization) }
-				},
-				slang::CompilerOptionEntry{
-					slang::CompilerOptionName::DebugInformation,
-					{
-						slang::CompilerOptionValueKind::Int,
-						static_cast<std::int32_t>(
-							desc.enable_debug_info ? SLANG_DEBUG_INFO_LEVEL_MAXIMAL : SLANG_DEBUG_INFO_LEVEL_NONE
-						)
-					}
-				}
-			};
-
-			auto reflection_target = target;
-			reflection_target.format = SLANG_SPIRV;
-			reflection_target.profile = SlangGlobalSession()->findProfile("spirv_1_0");
-			std::array targets{ target, reflection_target };
-			slang::SessionDesc session_desc{};
-			session_desc.targets = targets.data();
-			session_desc.targetCount = static_cast<SlangInt>(targets.size());
-			session_desc.searchPaths = search_paths.data();
-			session_desc.searchPathCount = static_cast<SlangInt>(search_paths.size());
-			session_desc.preprocessorMacros = macros.data();
-			session_desc.preprocessorMacroCount = static_cast<SlangInt>(macros.size());
-			session_desc.compilerOptionEntries = compiler_options.data();
-			session_desc.compilerOptionEntryCount = static_cast<std::uint32_t>(compiler_options.size());
-			session_desc.defaultMatrixLayoutMode =
-				desc.matrix_layout == SlangPipelineProgramDescriptor::MatrixLayout::RowMajor
-				? SLANG_MATRIX_LAYOUT_ROW_MAJOR
-				: SLANG_MATRIX_LAYOUT_COLUMN_MAJOR;
-
-			Slang::ComPtr<slang::ISession> created;
-			auto result = SlangGlobalSession()->createSession(session_desc, created.writeRef());
-			Check(result, nullptr, "Creating Slang session");
-
-			std::unique_lock lock(mutex);
-			recent.reserve(8u);
-			auto [it, inserted] = session_cache.try_emplace(key, created);
-			auto session = it->second;
-			if (inserted) {
-				if (recent.size() == 8u) {
-					session_cache.erase(recent.front());
-					recent.erase(recent.begin());
-				}
-				recent.emplace_back(key);
-			}
-			TrimCache();
-			return session;
+	/** @brief Reads a complete cache payload; missing or short reads reject the entry. */
+	bool ReadBinary(fs::path const& path, std::vector<std::byte>& output) {
+		std::ifstream input(path, std::ios::binary | std::ios::ate);
+		if (!input) {
+			return false;
 		}
+		auto size = input.tellg();
+		if (size < 0) {
+			return false;
+		}
+		output.resize(static_cast<std::size_t>(size));
+		input.seekg(0, std::ios::beg);
+		if (!output.empty()) {
+			input.read(reinterpret_cast<char*>(output.data()), size);
+		}
+		return input && static_cast<std::size_t>(input.gcount()) == output.size();
+	}
 
-		// Reads a whole binary file; returns false instead of throwing when the
-		// file is missing or unreadable (used while probing the disk cache).
-		static bool ReadBinary(fs::path const& path, std::vector<std::byte>& output) {
-			std::ifstream input(path, std::ios::binary | std::ios::ate);
-			if (!input) {
+	/** @brief Rejects cached programs when included source files change. */
+	bool ValidateDependencies(nlohmann::json const& manifest) {
+		if (!manifest.contains("dependencies") || !manifest["dependencies"].is_array()) {
+			return false;
+		}
+		for (auto const& dependency : manifest["dependencies"]) {
+			auto path = fs::path(dependency.at("path").get<std::string>());
+			std::error_code error;
+			if (!fs::is_regular_file(path, error) || error) {
 				return false;
 			}
-			auto size = input.tellg();
-			if (size < 0) {
+			if (HashFile(path) != dependency.at("hash").get<std::uint64_t>()) {
 				return false;
 			}
-			output.resize(static_cast<std::size_t>(size));
-			input.seekg(0, std::ios::beg);
-			if (!output.empty()) {
-				input.read(reinterpret_cast<char*>(output.data()), size);
-			}
-			return input.good() || input.eof();
 		}
+		return true;
+	}
 
-		// A cached entry lists the included .slang files it was built from. Before
-		// trusting the cache each dependency must still exist and hash to the same
-		// value; any change invalidates the whole entry.
-		static bool ValidateDependencies(nlohmann::json const& manifest) {
-			if (!manifest.contains("dependencies") || !manifest["dependencies"].is_array()) {
-				return false;
+	/** @brief Serializes the current binding ABI and native register assignments. */
+	nlohmann::json SerializeInterface(fyuu_rhi::pipeline::SlangPipelineInterface const& interface) {
+		nlohmann::json result{
+		    {"bindings", nlohmann::json::array()},
+		    {"vertex_inputs", nlohmann::json::array()},
+		    {"fragment_outputs", nlohmann::json::array()},
+		    {"push_constants", nlohmann::json::array()}
+		};
+		for (auto const& entry : interface.bindings) {
+			nlohmann::json flags = nlohmann::json::array();
+			auto words = entry.flags.Snapshot();
+			for (auto word : words) {
+				flags.push_back(word);
 			}
-			for (auto const& dependency : manifest["dependencies"]) {
-				auto path = fs::path(dependency.at("path").get<std::string>());
-				std::error_code error;
-				if (!fs::is_regular_file(path, error) || error) {
-					return false;
-				}
-				if (HashFile(path) != dependency.at("hash").get<std::uint64_t>()) {
-					return false;
-				}
-			}
-			return true;
+			result["bindings"].push_back(
+			    {{"name", entry.name},
+				 {"flags", std::move(flags)},
+				 {"binding", entry.slot},
+				 {"space", entry.space},
+				 {"resource_binding", entry.resource_slot},
+				 {"resource_space", entry.resource_space},
+				 {"sampler_binding", entry.sampler_slot},
+				 {"sampler_space", entry.sampler_space},
+				 {"count", entry.count},
+				 {"visibility", entry.visibility}}
+			);
 		}
-
-		// JSON round-trip of the reflected interface so it can be persisted next
-		// to the compiled bytecode and restored without re-running reflection.
-		static nlohmann::json SerializeInterface(SlangPipelineInterface const& interface) {
-			nlohmann::json result{
-				{ "bindings", nlohmann::json::array() },
-				{ "vertex_inputs", nlohmann::json::array() },
-				{ "fragment_outputs", nlohmann::json::array() },
-				{ "push_constants", nlohmann::json::array() }
-			};
-			for (auto const& entry : interface.bindings) {
-				nlohmann::json flags = nlohmann::json::array();
-				auto words = entry.flags.Snapshot();
-				for (auto word : words) {
-					flags.push_back(word);
-				}
-				result["bindings"].push_back(
-					{
-						{ "name", entry.name },
-						{ "flags", std::move(flags) },
-						{ "binding", entry.slot },
-						{ "space", entry.space },
-						{ "resource_binding", entry.resource_slot },
-						{ "resource_space", entry.resource_space },
-						{ "sampler_binding", entry.sampler_slot },
-						{ "sampler_space", entry.sampler_space },
-						{ "count", entry.count },
-						{ "visibility", entry.visibility }
-					}
-				);
-			}
-			for (auto const& input : interface.vertex_inputs) {
-				result["vertex_inputs"].push_back(
-					{
-						{ "name", input.name },
-						{ "location", input.location },
-						{ "semantic_name", input.semantic_name },
-						{ "semantic_index", input.semantic_index }
-					}
-				);
-			}
-			for (auto const& output : interface.fragment_outputs) {
-				result["fragment_outputs"].push_back(
-					{ { "name", output.name }, { "location", output.location } }
-				);
-			}
-			for (auto const& range : interface.push_constants) {
-				result["push_constants"].push_back(
-					{
-						{ "offset", range.offset },
-						{ "size", range.size },
-						{ "binding", range.abi_slot },
-						{ "space", range.abi_space },
-						{ "register_binding", range.register_slot },
-						{ "register_space", range.register_space },
-						{ "visibility", range.visibility }
-					}
-				);
-			}
-			return result;
+		for (auto const& input : interface.vertex_inputs) {
+			result["vertex_inputs"].push_back(
+			    {{"name", input.name},
+				 {"location", input.location},
+				 {"semantic_name", input.semantic_name},
+				 {"semantic_index", input.semantic_index}}
+			);
 		}
-
-		// Inverse of SerializeInterface; restores the interface from cache JSON.
-		static SlangPipelineInterface DeserializeInterface(nlohmann::json const& json) {
-			SlangPipelineInterface result;
-			for (auto const& item : json.at("bindings")) {
-				SlangPipelineBinding entry;
-				entry.name = item.at("name").get<std::string>();
-				auto words = entry.flags.Snapshot();
-				auto const& serialized_words = item.at("flags");
-				if (serialized_words.size() != words.size()) {
-					throw std::runtime_error("Pipeline interface flag word count mismatch");
-				}
-				for (std::size_t index = 0; index < words.size(); ++index) {
-					words[index] = serialized_words[index].get<std::size_t>();
-				}
-				entry.flags.Assign(words);
-				entry.slot = item.at("binding").get<std::uint32_t>();
-				entry.space = item.at("space").get<std::uint32_t>();
-				entry.resource_slot = item.at("resource_binding").get<std::uint32_t>();
-				entry.resource_space = item.at("resource_space").get<std::uint32_t>();
-				entry.sampler_slot = item.at("sampler_binding").get<std::uint32_t>();
-				entry.sampler_space = item.at("sampler_space").get<std::uint32_t>();
-				entry.count = item.at("count").get<std::uint32_t>();
-				entry.visibility = item.at("visibility").get<std::uint32_t>();
-				result.bindings.push_back(std::move(entry));
-			}
-			for (auto const& item : json.at("vertex_inputs")) {
-				result.vertex_inputs.push_back(
-					{
-						item.at("name").get<std::string>(),
-						item.at("location").get<std::uint32_t>(),
-						item.at("semantic_name").get<std::string>(),
-						item.at("semantic_index").get<std::uint32_t>()
-					}
-				);
-			}
-			for (auto const& item : json.at("fragment_outputs")) {
-				result.fragment_outputs.push_back(
-					{
-						item.at("name").get<std::string>(),
-						item.at("location").get<std::uint32_t>()
-					}
-				);
-			}
-			for (auto const& item : json.at("push_constants")) {
-				result.push_constants.push_back(
-					{
-						item.at("offset").get<std::uint32_t>(),
-						item.at("size").get<std::uint32_t>(),
-						item.at("binding").get<std::uint32_t>(),
-						item.at("space").get<std::uint32_t>(),
-						item.at("register_binding").get<std::uint32_t>(),
-						item.at("register_space").get<std::uint32_t>(),
-						item.at("visibility").get<std::uint32_t>()
-					}
-				);
-			}
-			return result;
+		for (auto const& output : interface.fragment_outputs) {
+			result["fragment_outputs"].push_back(
+			    {{"name", output.name}, {"location", output.location}}
+			);
 		}
-
-		// Builds a bitmask of which pipeline stages the bindings are visible to,
-		// derived from the requested entry points. Stored per binding so backends
-		// can set per-stage shader visibility (e.g. D3D12 root parameters).
-		static std::uint32_t StageVisibility(SlangPipelineProgramDescriptor const& desc) {
-			std::uint32_t result = 0;
-			for (auto const& entry : desc.entry_points) {
-				result |= 1u << static_cast<std::uint32_t>(entry.stage);
-			}
-			return result;
+		for (auto const& range : interface.push_constants) {
+			result["push_constants"].push_back(
+			    {{"offset", range.offset},
+				 {"size", range.size},
+				 {"binding", range.abi_slot},
+				 {"space", range.abi_space},
+				 {"register_binding", range.register_slot},
+				 {"register_space", range.register_space},
+				 {"visibility", range.visibility}}
+			);
 		}
+		return result;
+	}
 
-		// Slang reports unknown/unbounded sizes as sentinel values; reject those
-		// and anything that would not fit a u32 instead of truncating silently.
-		static std::uint32_t CheckedUint32(std::size_t value, std::string_view subject) {
-			if (
-				value == SLANG_UNKNOWN_SIZE ||
-				value == SLANG_UNBOUNDED_SIZE ||
-				value > std::numeric_limits<std::uint32_t>::max()
-			) {
-				throw std::runtime_error(std::format("Slang reported an unsupported {} value ({})", subject, value));
+	/** @brief Restores the current interface schema without compatibility defaults. */
+	fyuu_rhi::pipeline::SlangPipelineInterface DeserializeInterface(nlohmann::json const& json) {
+		fyuu_rhi::pipeline::SlangPipelineInterface result;
+		for (auto const& item : json.at("bindings")) {
+			fyuu_rhi::pipeline::SlangPipelineBinding entry;
+			entry.name = item.at("name").get<std::string>();
+			auto words = entry.flags.Snapshot();
+			auto const& serialized_words = item.at("flags");
+			if (serialized_words.size() != words.size()) {
+				throw std::runtime_error("Pipeline interface flag word count mismatch");
 			}
-			return static_cast<std::uint32_t>(value);
-		}
-
-		// How many descriptors a binding spans: 1 for a scalar, or the array
-		// element count for a resource array.
-		static std::uint32_t BindingCount(slang::TypeLayoutReflection* type) {
-			if (!type || !type->isArray()) {
-				return 1;
+			for (std::size_t index = 0; index < words.size(); ++index) {
+				words[index] = serialized_words[index].get<std::size_t>();
 			}
-			return CheckedUint32(type->getTotalArrayElementCount(), "resource array size");
+			entry.flags.Assign(words);
+			entry.slot = item.at("binding").get<std::uint32_t>();
+			entry.space = item.at("space").get<std::uint32_t>();
+			entry.resource_slot = item.at("resource_binding").get<std::uint32_t>();
+			entry.resource_space = item.at("resource_space").get<std::uint32_t>();
+			entry.sampler_slot = item.at("sampler_binding").get<std::uint32_t>();
+			entry.sampler_space = item.at("sampler_space").get<std::uint32_t>();
+			entry.count = item.at("count").get<std::uint32_t>();
+			entry.visibility = item.at("visibility").get<std::uint32_t>();
+			result.bindings.push_back(std::move(entry));
 		}
+		for (auto const& item : json.at("vertex_inputs")) {
+			result.vertex_inputs.push_back(
+			    {item.at("name").get<std::string>(),
+				 item.at("location").get<std::uint32_t>(),
+				 item.at("semantic_name").get<std::string>(),
+				 item.at("semantic_index").get<std::uint32_t>()}
+			);
+		}
+		for (auto const& item : json.at("fragment_outputs")) {
+			result.fragment_outputs.push_back(
+			    {item.at("name").get<std::string>(), item.at("location").get<std::uint32_t>()}
+			);
+		}
+		for (auto const& item : json.at("push_constants")) {
+			result.push_constants.push_back(
+			    {item.at("offset").get<std::uint32_t>(),
+				 item.at("size").get<std::uint32_t>(),
+				 item.at("binding").get<std::uint32_t>(),
+				 item.at("space").get<std::uint32_t>(),
+				 item.at("register_binding").get<std::uint32_t>(),
+				 item.at("register_space").get<std::uint32_t>(),
+				 item.at("visibility").get<std::uint32_t>()}
+			);
+		}
+		return result;
+	}
 
-		// Maps a Slang binding (sampler, constant buffer, texture, storage, ...)
-		// onto the engine's ResourceFlags so backends can pick the right
-		// descriptor type (CBV/SRV/UAV/sampler, texture vs buffer, ...).
-		static ResourceFlags BindingFlags(slang::ParameterCategory category, slang::TypeLayoutReflection* type) {
-			ResourceFlags flags;
-			auto leaf = type ? type->unwrapArray() : nullptr;
-			auto binding_type =
-				leaf && leaf->getBindingRangeCount() != 0
-					? leaf->getBindingRangeType(0)
-					: slang::BindingType::Unknown;
-			switch (binding_type) {
+	/** @brief Collects the requested stages used for binding visibility. */
+	std::uint32_t StageVisibility(fyuu_rhi::pipeline::SlangPipelineProgramDescriptor const& desc) {
+		std::uint32_t result = 0;
+		for (auto const& entry : desc.entry_points) {
+			result |= 1u << static_cast<std::uint32_t>(entry.stage);
+		}
+		return result;
+	}
+
+	/** @brief Rejects unknown, unbounded and overflowing reflection values. */
+	std::uint32_t CheckedUint32(std::size_t value, std::string_view subject) {
+		if (value == SLANG_UNKNOWN_SIZE || value == SLANG_UNBOUNDED_SIZE ||
+		    value > std::numeric_limits<std::uint32_t>::max()) {
+			throw std::runtime_error(
+			    std::format("Slang reported an unsupported {} value ({})", subject, value)
+			);
+		}
+		return static_cast<std::uint32_t>(value);
+	}
+
+	/** @brief Returns the finite descriptor count of a scalar or resource array. */
+	std::uint32_t BindingCount(slang::TypeLayoutReflection* type) {
+		if (!type || !type->isArray()) {
+			return 1;
+		}
+		return CheckedUint32(type->getTotalArrayElementCount(), "resource array size");
+	}
+
+	/** @brief Separates resource shape from shader read/write and sampler properties. */
+	fyuu_rhi::ResourceFlags BindingFlags(
+	    slang::ParameterCategory category,
+	    slang::TypeLayoutReflection* type
+	) {
+		fyuu_rhi::ResourceFlags flags;
+		auto leaf = type ? type->unwrapArray() : nullptr;
+		auto binding_type = leaf && leaf->getBindingRangeCount() != 0 ?
+		    leaf->getBindingRangeType(0) :
+		    slang::BindingType::Unknown;
+		switch (binding_type) {
 			case slang::BindingType::Sampler:
-				flags.Set(ResourceFlagBits::SamplerBinding);
+				flags.Set(fyuu_rhi::ResourceFlagBits::SamplerBinding);
 				return flags;
 			case slang::BindingType::ConstantBuffer:
 			case slang::BindingType::ParameterBlock:
 			case slang::BindingType::InlineUniformData:
-				flags.Set(ResourceFlagBits::UniformBuffer);
+				flags.Set(fyuu_rhi::ResourceFlagBits::UniformBuffer);
 				return flags;
 			case slang::BindingType::Texture:
 			case slang::BindingType::InputRenderTarget:
-				flags.Set(ResourceFlagBits::TextureBinding);
+				flags.Set(fyuu_rhi::ResourceFlagBits::TextureBinding);
 				return flags;
 			case slang::BindingType::MutableTexture:
-				flags.Set(ResourceFlagBits::StorageBinding);
+				flags.Set(fyuu_rhi::ResourceFlagBits::StorageBinding);
 				return flags;
 			case slang::BindingType::TypedBuffer:
 			case slang::BindingType::RawBuffer:
-				flags.Set(ResourceFlagBits::StorageBuffer);
-				flags.Set(ResourceFlagBits::TextureBinding);
+				flags.Set(fyuu_rhi::ResourceFlagBits::StorageBuffer);
+				flags.Set(fyuu_rhi::ResourceFlagBits::TextureBinding);
 				return flags;
 			case slang::BindingType::MutableTypedBuffer:
 			case slang::BindingType::MutableRawBuffer:
-				flags.Set(ResourceFlagBits::StorageBuffer);
-				flags.Set(ResourceFlagBits::StorageBinding);
+				flags.Set(fyuu_rhi::ResourceFlagBits::StorageBuffer);
+				flags.Set(fyuu_rhi::ResourceFlagBits::StorageBinding);
 				return flags;
 			case slang::BindingType::CombinedTextureSampler:
-				flags.Set(ResourceFlagBits::TextureBinding);
-				flags.Set(ResourceFlagBits::SamplerBinding);
+				flags.Set(fyuu_rhi::ResourceFlagBits::TextureBinding);
+				flags.Set(fyuu_rhi::ResourceFlagBits::SamplerBinding);
 				return flags;
 			default:
 				break;
-			}
+		}
 
-			// Some targets expose only the register category at this level.
-			switch (category) {
+		switch (category) {
 			case slang::ParameterCategory::ConstantBuffer:
-				flags.Set(ResourceFlagBits::UniformBuffer);
+				flags.Set(fyuu_rhi::ResourceFlagBits::UniformBuffer);
 				break;
 			case slang::ParameterCategory::SamplerState:
-				flags.Set(ResourceFlagBits::SamplerBinding);
+				flags.Set(fyuu_rhi::ResourceFlagBits::SamplerBinding);
 				break;
 			case slang::ParameterCategory::ShaderResource:
 			case slang::ParameterCategory::UnorderedAccess: {
-				auto shape = leaf
-					? leaf->getResourceShape() & SLANG_RESOURCE_BASE_SHAPE_MASK
-					: SLANG_RESOURCE_NONE;
+				auto shape = leaf ? leaf->getResourceShape() & SLANG_RESOURCE_BASE_SHAPE_MASK :
+				                    SLANG_RESOURCE_NONE;
 				if (shape == SLANG_STRUCTURED_BUFFER || shape == SLANG_BYTE_ADDRESS_BUFFER) {
-					flags.Set(ResourceFlagBits::StorageBuffer);
+					flags.Set(fyuu_rhi::ResourceFlagBits::StorageBuffer);
 				}
 				flags.Set(
-					category == slang::ParameterCategory::ShaderResource
-						? ResourceFlagBits::TextureBinding
-						: ResourceFlagBits::StorageBinding
+				    category == slang::ParameterCategory::ShaderResource ?
+				        fyuu_rhi::ResourceFlagBits::TextureBinding :
+				        fyuu_rhi::ResourceFlagBits::StorageBinding
 				);
 				break;
 			}
 			default:
 				break;
-			}
-			return flags;
 		}
+		return flags;
+	}
 
-		static bool HasCategory(
-			slang::VariableLayoutReflection* variable,
-			slang::ParameterCategory category
-		) {
-			for (unsigned index = 0u; index < variable->getCategoryCount(); ++index) {
-				if (variable->getCategoryByIndex(index) == category) {
-					return true;
-				}
-			}
-			return false;
-		}
-
-		static std::uint32_t BindingSlot(
-			slang::VariableLayoutReflection* variable,
-			slang::ParameterCategory category,
-			std::uint32_t fallback
-		) {
-			if (!HasCategory(variable, category)) {
-				return fallback;
-			}
-			return CheckedUint32(
-				variable->getOffset(category),
-				"resource binding"
-			);
-		}
-
-		static std::uint32_t BindingSpace(
-			slang::VariableLayoutReflection* variable,
-			slang::ParameterCategory category,
-			std::uint32_t fallback
-		) {
-			if (!HasCategory(variable, category)) {
-				return fallback;
-			}
-			return CheckedUint32(
-				variable->getBindingSpace(category),
-				"resource binding space"
-			);
-		}
-
-		/// Gives every binding a logical slot that is unique within its space.
-		///
-		/// A binding's logical slot is what a caller addresses and what a resource group is keyed by,
-		/// so two bindings may never share one. The number the reflection starts from is the
-		/// declaration's own: the register a pinned declaration asked for, or -- for a declaration
-		/// that pinned nothing -- the index Slang assigned it in its own category, where a buffer, a
-		/// texture and a sampler each start at zero. Keeping that number when it is free and handing
-		/// out the next free one otherwise leaves every pinned declaration exactly where it was, and
-		/// lands an unpinned shader on the dense sequence its SPIR-V target assigns in declaration
-		/// order, so the Vulkan and OpenGL layouts keep matching the shader's own bindings.
-		static void UniquifyLogicalSlots(std::vector<pipeline::SlangPipelineBinding>& bindings) {
-			std::vector<std::pair<std::uint32_t, std::uint32_t>> taken;
-			taken.reserve(bindings.size());
-			for (auto& entry : bindings) {
-				auto const used = [&taken](std::uint32_t space, std::uint32_t slot) {
-					return std::ranges::find(taken, std::pair{ space, slot }) != taken.end();
-				};
-				if (!used(entry.space, entry.slot)) {
-					taken.emplace_back(entry.space, entry.slot);
-					continue;
-				}
-				std::uint32_t candidate = 0u;
-				while (used(entry.space, candidate)) {
-					++candidate;
-				}
-				entry.slot = candidate;
-				taken.emplace_back(entry.space, candidate);
-			}
-		}
-
-		static slang::ParameterCategory ResourceCategory(ResourceFlags const& flags) {
-			using Bits = ResourceFlagBits;
-			if (flags.Test(Bits::UniformBuffer)) {
-				return slang::ParameterCategory::ConstantBuffer;
-			}
-			if (
-				flags.Test(Bits::StorageBuffer) ||
-				flags.Test(Bits::StorageBinding)
-			) {
-				return slang::ParameterCategory::UnorderedAccess;
-			}
-			return slang::ParameterCategory::ShaderResource;
-		}
-
-		// Reflects a varying (vertex input or fragment output): recursively
-		// descends struct fields and records the semantic name/index + location
-		// needed by backends to build the vertex input layout / render targets.
-		static void ReflectVarying(slang::VariableLayoutReflection* variable, bool input, SlangPipelineInterface& interface) {
-			if (!variable || !variable->getTypeLayout()) {
-				return;
-			}
-			auto type = variable->getTypeLayout();
-			if (type->getFieldCount() != 0) {
-				for (unsigned index = 0; index < type->getFieldCount(); ++index) {
-					ReflectVarying(type->getFieldByIndex(index), input, interface);
-				}
-				return;
-			}
-
-			auto name = variable->getName() ? variable->getName() : "";
-			auto semantic = variable->getSemanticName() ? variable->getSemanticName() : "";
-			auto location = CheckedUint32(variable->getBindingIndex(), "varying location");
-			if (input) {
-				interface.vertex_inputs.push_back(
-					{
-						name,
-						location,
-						semantic,
-						CheckedUint32(variable->getSemanticIndex(), "semantic index")
-					}
-				);
-			}
-			else {
-				interface.fragment_outputs.push_back({ name, location });
-			}
-		}
-
-		// The register the native layout assigns to one push-constant block, found
-		// by the name the reflection layout reports for it. The two layouts come
-		// from the same linked program, so a block the shader declares appears in
-		// both; matching by name keeps this correct if the target reorders
-		// parameters, and a block the native layout cannot name simply keeps the
-		// backend-neutral placeholder.
-		// The native (target-specific) layout's variable for one parameter, matched by name
-		// because the target may reorder parameters. Null when the target does not name it, or
-		// when there is no native layout at all.
-		static slang::VariableLayoutReflection* FindNativeParameter(
-			slang::ProgramLayout* native_layout,
-			char const* name
-		) {
-			if (!native_layout || !name) {
-				return nullptr;
-			}
-			for (unsigned index = 0; index < native_layout->getParameterCount(); ++index) {
-				auto candidate = native_layout->getParameterByIndex(index);
-				if (!candidate || !candidate->getName()) {
-					continue;
-				}
-				if (std::string_view(candidate->getName()) == std::string_view(name)) {
-					return candidate;
-				}
-			}
-			return nullptr;
-		}
-
-		static bool NativePushConstantRegister(
-			slang::ProgramLayout* native_layout,
-			slang::VariableLayoutReflection* variable,
-			std::uint32_t& slot,
-			std::uint32_t& space
-		) {
-			auto candidate = FindNativeParameter(native_layout, variable->getName());
-			if (!candidate) {
-				return false;
-			}
-			slot = CheckedUint32(candidate->getBindingIndex(), "pipeline-constant register");
-			space = CheckedUint32(candidate->getBindingSpace(), "pipeline-constant register space");
-			return true;
-		}
-
-		// Walks the linked program layout and turns it into the engine's
-		// SlangPipelineInterface: resource parameters (bindings with slot/space/
-		// count/flags/visibility), push-constant ranges, and per-stage varyings.
-		//
-		// `layout` is the backend-neutral SPIR-V reflection layout, which is what
-		// defines the ABI. `native_layout` is the layout of the target actually
-		// being compiled; it supplies the registers the SPIR-V layout cannot name:
-		// the register of a pipeline-constant block, and the sampler register and
-		// space of a combined binding.
-		static SlangPipelineInterface ReflectInterface(
-			slang::ProgramLayout* layout,
-			slang::ProgramLayout* native_layout,
-			SlangPipelineProgramDescriptor const& desc
-		) {
-			SlangPipelineInterface result;
-			auto visibility = StageVisibility(desc);
-
-			for (unsigned index = 0; index < layout->getParameterCount(); ++index) {
-				auto variable = layout->getParameterByIndex(index);
-				if (!variable || !variable->getTypeLayout()) {
-					continue;
-				}
-				auto category = variable->getCategory();
-				bool push_constant = std::ranges::any_of(
-					std::views::iota(0u, variable->getCategoryCount()),
-					[variable](unsigned category_index) {
-						return variable->getCategoryByIndex(category_index) ==
-							slang::ParameterCategory::PushConstantBuffer;
-					}
-				);
-				if (push_constant) {
-					// The SPIR-V layout gives the block a PushConstantBuffer
-					// binding, which is an ABI identity, not a register. Slang
-					// assigns the register separately per target: for D3D12 it is
-					// the next free CBV register, chosen so it does not overlap the
-					// other resource bindings. D3D12 emulates the block as a
-					// root-signature 32BIT_CONSTANTS range, and the range's declared
-					// register must equal the one the shader reads, so the register
-					// is taken from the target's own layout while the ABI identity
-					// stays the placeholder every backend agrees on.
-					auto binding_index = variable->getBindingIndex();
-					auto binding_space = variable->getBindingSpace();
-					auto abi_slot = binding_index == ~0u
-						? static_cast<std::uint32_t>(result.push_constants.size())
-						: binding_index;
-					auto abi_space = binding_space == ~0u ? 0u : binding_space;
-					std::uint32_t register_slot = abi_slot;
-					std::uint32_t register_space = abi_space;
-					NativePushConstantRegister(
-						native_layout,
-						variable,
-						register_slot,
-						register_space
-					);
-					auto constant_type = variable->getTypeLayout()->getElementTypeLayout();
-					if (!constant_type) {
-						constant_type = variable->getTypeLayout();
-					}
-					result.push_constants.push_back(
-						{
-							CheckedUint32(
-								variable->getOffset(
-									slang::ParameterCategory::PushConstantBuffer
-								),
-								"push constant offset"
-							),
-							CheckedUint32(
-								constant_type->getSize(slang::ParameterCategory::Uniform),
-								"push constant size"
-							),
-							abi_slot,
-							abi_space,
-							register_slot,
-							register_space,
-							visibility
-						}
-					);
-					continue;
-				}
-
-				auto flags = BindingFlags(category, variable->getTypeLayout());
-				if (flags.None()) {
-					continue;
-				}
-				auto slot = CheckedUint32(
-					variable->getBindingIndex(),
-					"resource binding"
-				);
-				auto space = CheckedUint32(
-					variable->getBindingSpace(),
-					"resource binding space"
-				);
-				auto resource_category = ResourceCategory(flags);
-				// Every register a backend places a binding at comes from the target's own layout,
-				// the same way the pipeline-constant register is resolved above. The generic layout
-				// is what the logical slot is taken from, and it numbers a declaration that pinned
-				// nothing densely across categories - the second declaration of any kind lands on
-				// index 1, whatever register class it belongs to. That is the register the shader
-				// actually reads only when the source pinned it; DXIL numbers per register class
-				// instead (b0/t0/s0), so a root signature built from the generic number would
-				// declare a register the shader never reads and the pipeline state creation would
-				// reject it. A pinned declaration resolves to the same number in both layouts.
-				auto* native_variable = FindNativeParameter(native_layout, variable->getName());
-				if (!native_variable) {
-					native_variable = variable;
-				}
-				auto resource_slot = BindingSlot(
-					native_variable,
-					resource_category,
-					slot
-				);
-				auto resource_space = BindingSpace(
-					native_variable,
-					resource_category,
-					space
-				);
-				// A combined binding is one binding in the source, so the generic layout reports
-				// the logical identity for its sampler half as well. Where the sampler actually
-				// lands is the target compiler's decision - DXIL places the implicit sampler
-				// densely from s0 in register space 0, whatever space its texture was declared in -
-				// so the combined case asks the target's own layout as well. A separate sampler is
-				// a parameter of its own, so its register answers directly there too.
-				auto sampler_slot = BindingSlot(
-					native_variable,
-					slang::ParameterCategory::SamplerState,
-					slot
-				);
-				auto sampler_space = BindingSpace(
-					native_variable,
-					slang::ParameterCategory::SamplerState,
-					space
-				);
-				result.bindings.push_back(
-					{
-						.name = variable->getName() ? variable->getName() : "",
-						.flags = std::move(flags),
-						.slot = slot,
-						.space = space,
-						.resource_slot = resource_slot,
-						.resource_space = resource_space,
-						.sampler_slot = sampler_slot,
-						.sampler_space = sampler_space,
-						.count = BindingCount(variable->getTypeLayout()),
-						.visibility = visibility
-					}
-				);
-			}
-
-			UniquifyLogicalSlots(result.bindings);
-
-			for (SlangUInt index = 0; index < layout->getEntryPointCount(); ++index) {
-				auto entry = layout->getEntryPointByIndex(index);
-				if (!entry || index >= desc.entry_points.size()) {
-					continue;
-				}
-				auto stage = desc.entry_points[index].stage;
-				if (stage == Stage::Vertex) {
-					for (unsigned parameter_index = 0; parameter_index < entry->getParameterCount(); ++parameter_index) {
-						auto parameter = entry->getParameterByIndex(parameter_index);
-						if (parameter && parameter->getCategory() == slang::ParameterCategory::VaryingInput) {
-							ReflectVarying(parameter, true, result);
-						}
-					}
-				}
-				else if (stage == Stage::Fragment) {
-					ReflectVarying(entry->getResultVarLayout(), false, result);
-				}
-			}
-			return result;
-		}
-
-		// Attempts to restore a previously compiled program from the cache
-		// directory. The manifest must match the schema/key/Slang build tag and
-		// every dependency must still hash identically; entry-point bytecode is
-		// re-verified by size + hash before it is accepted. Any inconsistency
-		// falls back to a fresh compile.
-		bool TryLoadCache(fs::path const& directory, std::string_view key) {
-			try {
-				std::ifstream manifest_file(directory / "manifest.json", std::ios::binary);
-				if (!manifest_file) {
-					return false;
-				}
-
-				nlohmann::json manifest;
-				manifest_file >> manifest;
-				if (
-					manifest.at("schema").get<std::uint32_t>() != CACHE_SCHEMA_VERSION ||
-					manifest.at("key").get<std::string>() != key ||
-					manifest.at("slang").get<std::string>() != SlangGlobalSession()->getBuildTagString() ||
-					!ValidateDependencies(manifest)
-				) {
-					return false;
-				}
-
-				std::vector<SlangCompiledEntryPoint> loaded_entries;
-				for (auto const& entry : manifest.at("entry_points")) {
-					std::vector<std::byte> code;
-					if (!ReadBinary(directory / entry.at("file").get<std::string>(), code)) {
-						return false;
-					}
-					if (
-						code.size() != entry.at("size").get<std::size_t>() ||
-						HashBytes(code) != entry.at("hash").get<std::uint64_t>()
-					) {
-						return false;
-					}
-					loaded_entries.push_back(
-						{
-							static_cast<Stage>(entry.at("stage").get<std::uint32_t>()),
-							entry.at("name").get<std::string>(),
-							std::move(code)
-						}
-					);
-				}
-
-				std::ifstream reflection_file(directory / manifest.at("reflection").get<std::string>(), std::ios::binary);
-				if (!reflection_file) {
-					return false;
-				}
-				std::string reflection{
-					std::istreambuf_iterator<char>(reflection_file),
-					std::istreambuf_iterator<char>()
-				};
-				if (
-					reflection.size() != manifest.at("reflection_size").get<std::size_t>() ||
-					HashBytes(std::as_bytes(std::span(reflection))) != manifest.at("reflection_hash").get<std::uint64_t>()
-				) {
-					return false;
-				}
-
-				std::ifstream interface_file(directory / manifest.at("interface").get<std::string>(), std::ios::binary);
-				if (!interface_file) {
-					return false;
-				}
-				nlohmann::json serialized_interface;
-				interface_file >> serialized_interface;
-
-				m_entry_points = std::move(loaded_entries);
-				m_interface = DeserializeInterface(serialized_interface);
-				m_reflection_json = std::move(reflection);
+	/** @brief Tests whether the target layout exposes the requested register category. */
+	bool HasCategory(slang::VariableLayoutReflection* variable, slang::ParameterCategory category) {
+		for (unsigned index = 0u; index < variable->getCategoryCount(); ++index) {
+			if (variable->getCategoryByIndex(index) == category) {
 				return true;
 			}
-			catch (std::exception const& error) {
-				log::Warning(
-					std::format(
-						"Ignoring invalid Slang cache '{}': {}",
-						directory.string(),
-						error.what()
-					)
+		}
+		return false;
+	}
+
+	/** @brief Uses a target register offset when that category is available. */
+	std::uint32_t BindingSlot(
+	    slang::VariableLayoutReflection* variable,
+	    slang::ParameterCategory category,
+	    std::uint32_t fallback
+	) {
+		if (!HasCategory(variable, category)) {
+			return fallback;
+		}
+		return CheckedUint32(variable->getOffset(category), "resource binding");
+	}
+
+	/** @brief Uses a target register space when that category is available. */
+	std::uint32_t BindingSpace(
+	    slang::VariableLayoutReflection* variable,
+	    slang::ParameterCategory category,
+	    std::uint32_t fallback
+	) {
+		if (!HasCategory(variable, category)) {
+			return fallback;
+		}
+		return CheckedUint32(variable->getBindingSpace(category), "resource binding space");
+	}
+
+	/** @brief Assigns unique logical slots without conflating native register classes. */
+	void UniquifyLogicalSlots(std::vector<fyuu_rhi::pipeline::SlangPipelineBinding>& bindings) {
+		std::vector<std::pair<std::uint32_t, std::uint32_t>> taken;
+		taken.reserve(bindings.size());
+		for (auto& entry : bindings) {
+			auto const Used = [&taken](std::uint32_t space, std::uint32_t slot) {
+				return std::ranges::find(taken, std::pair{space, slot}) != taken.end();
+			};
+			if (!Used(entry.space, entry.slot)) {
+				taken.emplace_back(entry.space, entry.slot);
+				continue;
+			}
+			std::uint32_t candidate = 0u;
+			while (Used(entry.space, candidate)) {
+				++candidate;
+			}
+			entry.slot = candidate;
+			taken.emplace_back(entry.space, candidate);
+		}
+	}
+
+	/** @brief Selects the native register class from reflected access properties. */
+	slang::ParameterCategory ResourceCategory(fyuu_rhi::ResourceFlags const& flags) {
+		using Bits = fyuu_rhi::ResourceFlagBits;
+		if (flags.Test(Bits::UniformBuffer)) {
+			return slang::ParameterCategory::ConstantBuffer;
+		}
+		if (flags.Test(Bits::StorageBuffer) || flags.Test(Bits::StorageBinding)) {
+			return slang::ParameterCategory::UnorderedAccess;
+		}
+		return slang::ParameterCategory::ShaderResource;
+	}
+
+	/** @brief Recursively records vertex inputs and fragment outputs. */
+	void ReflectVarying(
+	    slang::VariableLayoutReflection* variable,
+	    bool input,
+	    fyuu_rhi::pipeline::SlangPipelineInterface& interface
+	) {
+		if (!variable || !variable->getTypeLayout()) {
+			return;
+		}
+		auto type = variable->getTypeLayout();
+		if (type->getFieldCount() != 0) {
+			for (unsigned index = 0; index < type->getFieldCount(); ++index) {
+				ReflectVarying(type->getFieldByIndex(index), input, interface);
+			}
+			return;
+		}
+
+		auto name = variable->getName() ? variable->getName() : "";
+		auto semantic = variable->getSemanticName() ? variable->getSemanticName() : "";
+		auto location = CheckedUint32(variable->getBindingIndex(), "varying location");
+		if (input) {
+			interface.vertex_inputs.push_back(
+			    {name,
+				 location,
+				 semantic,
+				 CheckedUint32(variable->getSemanticIndex(), "semantic index")}
+			);
+		} else {
+			interface.fragment_outputs.push_back({name, location});
+		}
+	}
+
+	/** @brief Matches neutral and native layouts by parameter name. */
+	slang::VariableLayoutReflection* FindNativeParameter(
+	    slang::ProgramLayout* native_layout,
+	    char const* name
+	) {
+		if (!native_layout || !name) {
+			return nullptr;
+		}
+		for (unsigned index = 0; index < native_layout->getParameterCount(); ++index) {
+			auto candidate = native_layout->getParameterByIndex(index);
+			if (!candidate || !candidate->getName()) {
+				continue;
+			}
+			if (std::string_view(candidate->getName()) == std::string_view(name)) {
+				return candidate;
+			}
+		}
+		return nullptr;
+	}
+
+	/** @brief Resolves the register read by the target's pipeline-constant emulation. */
+	bool NativePushConstantRegister(
+	    slang::ProgramLayout* native_layout,
+	    slang::VariableLayoutReflection* variable,
+	    std::uint32_t& slot,
+	    std::uint32_t& space
+	) {
+		auto candidate = FindNativeParameter(native_layout, variable->getName());
+		if (!candidate) {
+			return false;
+		}
+		slot = CheckedUint32(candidate->getBindingIndex(), "pipeline-constant register");
+		space = CheckedUint32(candidate->getBindingSpace(), "pipeline-constant register space");
+		return true;
+	}
+
+	/** @brief Combines neutral SPIR-V binding identities with native target registers. */
+	fyuu_rhi::pipeline::SlangPipelineInterface ReflectInterface(
+	    slang::ProgramLayout* layout,
+	    slang::ProgramLayout* native_layout,
+	    fyuu_rhi::pipeline::SlangPipelineProgramDescriptor const& desc
+	) {
+		fyuu_rhi::pipeline::SlangPipelineInterface result;
+		auto visibility = StageVisibility(desc);
+
+		for (unsigned index = 0; index < layout->getParameterCount(); ++index) {
+			auto variable = layout->getParameterByIndex(index);
+			if (!variable || !variable->getTypeLayout()) {
+				continue;
+			}
+			auto category = variable->getCategory();
+			bool push_constant = std::ranges::any_of(
+			    std::views::iota(0u, variable->getCategoryCount()),
+			    [variable](unsigned category_index) {
+				    return variable->getCategoryByIndex(category_index) ==
+				        slang::ParameterCategory::PushConstantBuffer;
+			    }
+			);
+			if (push_constant) {
+
+				auto binding_index = variable->getBindingIndex();
+				auto binding_space = variable->getBindingSpace();
+				auto abi_slot = binding_index == ~0u ?
+				    static_cast<std::uint32_t>(result.push_constants.size()) :
+				    binding_index;
+				auto abi_space = binding_space == ~0u ? 0u : binding_space;
+				std::uint32_t register_slot = abi_slot;
+				std::uint32_t register_space = abi_space;
+				NativePushConstantRegister(native_layout, variable, register_slot, register_space);
+				auto constant_type = variable->getTypeLayout()->getElementTypeLayout();
+				if (!constant_type) {
+					constant_type = variable->getTypeLayout();
+				}
+				result.push_constants.push_back(
+				    {CheckedUint32(
+				         variable->getOffset(slang::ParameterCategory::PushConstantBuffer),
+				         "push constant offset"
+				     ),
+					 CheckedUint32(
+				         constant_type->getSize(slang::ParameterCategory::Uniform),
+				         "push constant size"
+				     ),
+					 abi_slot,
+					 abi_space,
+					 register_slot,
+					 register_space,
+					 visibility}
 				);
+				continue;
+			}
+
+			auto flags = BindingFlags(category, variable->getTypeLayout());
+			if (flags.None()) {
+				continue;
+			}
+			auto slot = CheckedUint32(variable->getBindingIndex(), "resource binding");
+			auto space = CheckedUint32(variable->getBindingSpace(), "resource binding space");
+			auto resource_category = ResourceCategory(flags);
+
+			auto* native_variable = FindNativeParameter(native_layout, variable->getName());
+			if (!native_variable) {
+				native_variable = variable;
+			}
+			auto resource_slot = BindingSlot(native_variable, resource_category, slot);
+			auto resource_space = BindingSpace(native_variable, resource_category, space);
+
+			auto sampler_slot =
+			    BindingSlot(native_variable, slang::ParameterCategory::SamplerState, slot);
+			auto sampler_space =
+			    BindingSpace(native_variable, slang::ParameterCategory::SamplerState, space);
+			result.bindings.push_back(
+			    {.name = variable->getName() ? variable->getName() : "",
+				 .flags = std::move(flags),
+				 .slot = slot,
+				 .space = space,
+				 .resource_slot = resource_slot,
+				 .resource_space = resource_space,
+				 .sampler_slot = sampler_slot,
+				 .sampler_space = sampler_space,
+				 .count = BindingCount(variable->getTypeLayout()),
+				 .visibility = visibility}
+			);
+		}
+
+		UniquifyLogicalSlots(result.bindings);
+
+		for (SlangUInt index = 0; index < layout->getEntryPointCount(); ++index) {
+			auto entry = layout->getEntryPointByIndex(index);
+			if (!entry || index >= desc.entry_points.size()) {
+				continue;
+			}
+			auto stage = desc.entry_points[index].stage;
+			if (stage == fyuu_rhi::pipeline::Stage::Vertex) {
+				for (
+				    unsigned parameter_index = 0; parameter_index < entry->getParameterCount();
+				    ++parameter_index
+				) {
+					auto parameter = entry->getParameterByIndex(parameter_index);
+					if (parameter &&
+					    parameter->getCategory() == slang::ParameterCategory::VaryingInput) {
+						ReflectVarying(parameter, true, result);
+					}
+				}
+			} else if (stage == fyuu_rhi::pipeline::Stage::Fragment) {
+				ReflectVarying(entry->getResultVarLayout(), false, result);
+			}
+		}
+		return result;
+	}
+
+	/** @brief Accepts only complete payloads matching schema, build, key and dependencies. */
+	bool TryLoadCache(
+	    fs::path const& directory,
+	    std::string_view key,
+	    fyuu_rhi::shader::SlangProgramData& program
+	) {
+		try {
+			std::ifstream manifest_file(directory / "manifest.json", std::ios::binary);
+			if (!manifest_file) {
 				return false;
 			}
-		}
 
-		// Writes to a per-thread temporary file then renames it into place, so a
-		// concurrent reader never observes a partially written cache entry.
-		static void WriteFileAtomically(fs::path const& path, std::span<std::byte const> bytes) {
-			auto temporary = path;
-			temporary += std::format(".tmp-{:x}", std::hash<std::thread::id>{}(std::this_thread::get_id()));
-			{
-				std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
-				if (!output) {
-					throw std::runtime_error(std::format("Cannot create cache file '{}'", temporary.string()));
-				}
-				if (!bytes.empty()) {
-					output.write(reinterpret_cast<char const*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-				}
-				output.flush();
-				if (!output) {
-					throw std::runtime_error(std::format("Failed to write cache file '{}'", temporary.string()));
-				}
+			nlohmann::json manifest;
+			manifest_file >> manifest;
+			if (manifest.at("schema").get<std::uint32_t>() != CACHE_SCHEMA_VERSION ||
+			    manifest.at("key").get<std::string>() != key ||
+			    manifest.at("slang").get<std::string>() != spGetBuildTagString() ||
+			    !ValidateDependencies(manifest)) {
+				return false;
 			}
 
-			std::error_code error;
-			fs::remove(path, error);
-			error.clear();
-			fs::rename(temporary, path, error);
-			if (error) {
-				fs::remove(temporary);
-				throw std::runtime_error(std::format("Cannot publish cache file '{}': {}", path.string(), error.message()));
+			std::vector<fyuu_rhi::shader::SlangCompiledEntryPoint> loaded_entries;
+			for (auto const& entry : manifest.at("entry_points")) {
+				std::vector<std::byte> code;
+				if (!ReadBinary(directory / entry.at("file").get<std::string>(), code)) {
+					return false;
+				}
+				if (code.size() != entry.at("size").get<std::size_t>() ||
+				    HashBytes(code) != entry.at("hash").get<std::uint64_t>()) {
+					return false;
+				}
+				loaded_entries.push_back(
+				    {static_cast<fyuu_rhi::pipeline::Stage>(entry.at("stage").get<std::uint32_t>()),
+					 entry.at("name").get<std::string>(),
+					 std::move(code)}
+				);
 			}
+
+			std::ifstream reflection_file(
+			    directory / manifest.at("reflection").get<std::string>(),
+			    std::ios::binary
+			);
+			if (!reflection_file) {
+				return false;
+			}
+			std::string reflection{
+			    std::istreambuf_iterator<char>(reflection_file),
+			    std::istreambuf_iterator<char>()
+			};
+			if (reflection.size() != manifest.at("reflection_size").get<std::size_t>() ||
+			    HashBytes(std::as_bytes(std::span(reflection))) !=
+			        manifest.at("reflection_hash").get<std::uint64_t>()) {
+				return false;
+			}
+
+			std::ifstream interface_file(
+			    directory / manifest.at("interface").get<std::string>(),
+			    std::ios::binary
+			);
+			if (!interface_file) {
+				return false;
+			}
+			nlohmann::json serialized_interface;
+			interface_file >> serialized_interface;
+
+			auto interface = DeserializeInterface(serialized_interface);
+			program = {std::move(loaded_entries), std::move(interface), std::move(reflection)};
+			return true;
+		} catch (std::exception const& error) {
+			fyuu_rhi::log::Warning(
+			    std::format(
+			        "Ignoring invalid Slang cache '{}': {}",
+			        directory.string(),
+			        error.what()
+			    )
+			);
+			return false;
 		}
+	}
 
-		// Persists the compiled result: one .bin per entry point, interface.json,
-		// reflection.json, the dependency file hashes, and finally manifest.json
-		// (published last so its presence marks a complete, usable entry).
-		void WriteCache(
-			fs::path const& directory,
-			std::string_view key,
-			std::span<Slang::ComPtr<slang::IModule> const> modules,
-			SlangPipelineProgramDescriptor const& descriptor,
-			std::string_view cache_tag
-		) const {
-			try {
-				nlohmann::json manifest{
-					{ "schema", CACHE_SCHEMA_VERSION },
-					{ "key", key },
-					{ "slang", SlangGlobalSession()->getBuildTagString() },
-					{ "cache_tag", cache_tag },
-					{ "modules", nlohmann::json::array() },
-					{ "interface", "interface.json" },
-					{ "reflection", "reflection.json" },
-					{ "reflection_size", m_reflection_json.size() },
-					{ "reflection_hash", HashBytes(std::as_bytes(std::span(m_reflection_json))) },
-					{ "entry_points", nlohmann::json::array() },
-					{ "dependencies", nlohmann::json::array() }
-				};
+	/** @brief Converts cache publication failure into one program-level cache diagnostic. */
+	void WriteFileAtomically(fs::path const& path, std::span<std::byte const> bytes) {
+		if (!fyuu_rhi::cache::WriteFileAtomically(path, bytes)) {
+			throw std::runtime_error(
+			    std::format("Cannot publish Slang cache file '{}'", path.string())
+			);
+		}
+	}
 
-				for (auto const& module : descriptor.modules) {
-					manifest["modules"].push_back(module.name);
-				}
-				for (std::size_t index = 0; index < m_entry_points.size(); ++index) {
-					auto const& entry = m_entry_points[index];
-					auto filename = std::format("entry-{}-{}.bin", index, cache::PathName(entry.name));
-					WriteFileAtomically(directory / filename, entry.code);
-					manifest["entry_points"].push_back(
-						{
-							{ "name", entry.name },
-							{ "stage", static_cast<std::uint32_t>(entry.stage) },
-							{ "file", filename },
-							{ "size", entry.code.size() },
-							{ "hash", HashBytes(entry.code) }
-						}
-					);
-				}
+	/** @brief Writes owned output and dependencies; manifest publication marks completion. */
+	void WriteCache(
+	    fs::path const& directory,
+	    std::string_view key,
+	    std::span<Slang::ComPtr<slang::IModule> const> modules,
+	    fyuu_rhi::pipeline::SlangPipelineProgramDescriptor const& descriptor,
+	    std::string_view cache_tag,
+	    fyuu_rhi::shader::SlangProgramData const& program
+	) {
+		try {
+			nlohmann::json manifest{
+			    {"schema", CACHE_SCHEMA_VERSION},
+			    {"key", key},
+			    {"slang", spGetBuildTagString()},
+			    {"cache_tag", cache_tag},
+			    {"modules", nlohmann::json::array()},
+			    {"interface", "interface.json"},
+			    {"reflection", "reflection.json"},
+			    {"reflection_size", program.reflection_json.size()},
+			    {"reflection_hash", HashBytes(std::as_bytes(std::span(program.reflection_json)))},
+			    {"entry_points", nlohmann::json::array()},
+			    {"dependencies", nlohmann::json::array()}
+			};
 
-				std::unordered_map<std::string, std::uint64_t> dependencies;
-				for (auto const& module : modules) {
-					for (SlangInt32 index = 0; index < module->getDependencyFileCount(); ++index) {
-						auto dependency_path = module->getDependencyFilePath(index);
-						if (!dependency_path || !*dependency_path) {
-							continue;
-						}
-						std::error_code error;
-						auto path = fs::weakly_canonical(dependency_path, error);
-						if (error || !fs::is_regular_file(path, error) || error) {
-							continue;
-						}
-						dependencies.try_emplace(path.generic_string(), HashFile(path));
+			for (auto const& module : descriptor.modules) {
+				manifest["modules"].push_back(module.name);
+			}
+			for (std::size_t index = 0; index < program.entry_points.size(); ++index) {
+				auto const& entry = program.entry_points[index];
+				auto filename =
+				    std::format("entry-{}-{}.bin", index, fyuu_rhi::cache::PathName(entry.name));
+				WriteFileAtomically(directory / filename, entry.code);
+				manifest["entry_points"].push_back(
+				    {{"name", entry.name},
+					 {"stage", static_cast<std::uint32_t>(entry.stage)},
+					 {"file", filename},
+					 {"size", entry.code.size()},
+					 {"hash", HashBytes(entry.code)}}
+				);
+			}
+
+			std::unordered_map<std::string, std::uint64_t> dependencies;
+			for (auto const& module : modules) {
+				for (SlangInt32 index = 0; index < module->getDependencyFileCount(); ++index) {
+					auto dependency_path = module->getDependencyFilePath(index);
+					if (!dependency_path || !*dependency_path) {
+						continue;
 					}
+					std::error_code error;
+					auto path = fs::weakly_canonical(dependency_path, error);
+					if (error || !fs::is_regular_file(path, error) || error) {
+						continue;
+					}
+					dependencies.try_emplace(path.generic_string(), HashFile(path));
 				}
-				for (auto const& [path, hash] : dependencies) {
-					manifest["dependencies"].push_back({ { "path", path }, { "hash", hash } });
-				}
-
-				auto serialized_interface = SerializeInterface(m_interface).dump(2);
-				WriteFileAtomically(
-					directory / "interface.json",
-					std::as_bytes(std::span(serialized_interface))
-				);
-				WriteFileAtomically(
-					directory / "reflection.json",
-					std::as_bytes(std::span(m_reflection_json))
-				);
-				// Publish the manifest last. Its presence marks a complete cache entry.
-				auto serialized_manifest = manifest.dump(2);
-				WriteFileAtomically(
-					directory / "manifest.json",
-					std::as_bytes(std::span(serialized_manifest))
-				);
 			}
-			catch (std::exception const& error) {
-				log::Warning(
-					std::format(
-						"Failed to write Slang cache '{}': {}",
-						directory.string(),
-						error.what()
-					)
+			for (auto const& [path, hash] : dependencies) {
+				manifest["dependencies"].push_back({{"path", path}, {"hash", hash}});
+			}
+
+			auto serialized_interface = SerializeInterface(program.interface).dump(2);
+			WriteFileAtomically(
+			    directory / "interface.json",
+			    std::as_bytes(std::span(serialized_interface))
+			);
+			WriteFileAtomically(
+			    directory / "reflection.json",
+			    std::as_bytes(std::span(program.reflection_json))
+			);
+
+			auto serialized_manifest = manifest.dump(2);
+			WriteFileAtomically(
+			    directory / "manifest.json",
+			    std::as_bytes(std::span(serialized_manifest))
+			);
+		} catch (std::exception const& error) {
+			fyuu_rhi::log::Warning(
+			    std::format(
+			        "Failed to write Slang cache '{}': {}",
+			        directory.string(),
+			        error.what()
+			    )
+			);
+		}
+	}
+
+	/** @brief Compiles and copies every SDK-derived output while the lifetime guard is held. */
+	fyuu_rhi::shader::SlangProgramData CompileProgram(
+	    slang::TargetDesc const& target,
+	    fyuu_rhi::pipeline::SlangPipelineProgramDescriptor const& desc,
+	    char const* profile_name,
+	    fs::path const& cache_directory,
+	    std::string_view cache_key,
+	    std::string_view cache_tag
+	) {
+		fyuu_rhi::shader::SlangProgramData program;
+		auto resolved_target = target;
+		if (profile_name && *profile_name != '\0') {
+			resolved_target.profile = SlangGlobalUnderLock()->findProfile(profile_name);
+			if (resolved_target.profile == SLANG_PROFILE_UNKNOWN) {
+				throw std::invalid_argument(
+				    std::format("Unknown Slang profile '{}'", profile_name)
 				);
 			}
 		}
+		auto session = CreateSession(resolved_target, desc);
+		Slang::ComPtr<slang::IBlob> diagnostics;
+		std::vector<Slang::ComPtr<slang::IModule>> modules;
+		std::vector<Slang::ComPtr<slang::IEntryPoint>> entries;
+		std::vector<slang::IComponentType*> components;
+
+		for (auto const& module_desc : desc.modules) {
+			auto path = module_desc.name + ".slang";
+			Slang::ComPtr<slang::IModule> module(session->loadModuleFromSourceString(
+			    module_desc.name.c_str(),
+			    path.c_str(),
+			    module_desc.source.c_str(),
+			    diagnostics.writeRef()
+			));
+			if (!module) {
+				Check(SLANG_FAIL, diagnostics, "Loading Slang module");
+			}
+			Check(SLANG_OK, diagnostics, "Loading Slang module");
+			components.push_back(module);
+			modules.push_back(std::move(module));
+		}
+
+		for (auto const& entry_desc : desc.entry_points) {
+			Slang::ComPtr<slang::IEntryPoint> entry;
+			SlangResult result = SLANG_E_NOT_FOUND;
+			for (auto const& module : modules) {
+				result = module->findEntryPointByName(entry_desc.name.c_str(), entry.writeRef());
+				if (SLANG_SUCCEEDED(result) && entry) {
+					break;
+				}
+			}
+			Check(result, diagnostics, std::format("Finding entry point '{}'", entry_desc.name));
+			components.push_back(entry);
+			entries.push_back(std::move(entry));
+		}
+
+		Slang::ComPtr<slang::IComponentType> composed;
+		auto result = session->createCompositeComponentType(
+		    components.data(),
+		    static_cast<SlangInt>(components.size()),
+		    composed.writeRef(),
+		    diagnostics.writeRef()
+		);
+		Check(result, diagnostics, "Composing Slang program");
+
+		Slang::ComPtr<slang::IComponentType> linked_program;
+		result = composed->link(linked_program.writeRef(), diagnostics.writeRef());
+		Check(result, diagnostics, "Linking Slang program");
+
+		program.entry_points.reserve(desc.entry_points.size());
+		for (std::size_t index = 0; index < desc.entry_points.size(); ++index) {
+			Slang::ComPtr<slang::IBlob> code;
+			result = linked_program->getEntryPointCode(
+			    static_cast<SlangInt>(index),
+			    0,
+			    code.writeRef(),
+			    diagnostics.writeRef()
+			);
+			Check(
+			    result,
+			    diagnostics,
+			    std::format("Generating '{}'", desc.entry_points[index].name)
+			);
+			auto begin = static_cast<std::byte const*>(code->getBufferPointer());
+			program.entry_points.push_back(
+			    {desc.entry_points[index].stage,
+				 desc.entry_points[index].name,
+				 {begin, begin + code->getBufferSize()}}
+			);
+		}
+
+		auto reflection = linked_program->getLayout(1, diagnostics.writeRef());
+		if (!reflection) {
+			Check(SLANG_FAIL, diagnostics, "Reflecting Slang program");
+		}
+		Slang::ComPtr<slang::IBlob> native_diagnostics;
+		auto native_layout = linked_program->getLayout(0, native_diagnostics.writeRef());
+		program.interface = ReflectInterface(reflection, native_layout, desc);
+		Slang::ComPtr<ISlangBlob> reflection_blob;
+		result = reflection->toJson(reflection_blob.writeRef());
+		Check(result, nullptr, "Serializing Slang reflection");
+		program.reflection_json.assign(
+		    static_cast<char const*>(reflection_blob->getBufferPointer()),
+		    reflection_blob->getBufferSize()
+		);
+
+		WriteCache(cache_directory, cache_key, modules, desc, cache_tag, program);
+		return program;
+	}
+
+	/** @brief Validates a request, attempts a session-free cache hit, then compiles on a miss. */
+	fyuu_rhi::shader::SlangProgramData BuildProgram(
+	    slang::TargetDesc const& target,
+	    fyuu_rhi::pipeline::SlangPipelineProgramDescriptor const& descriptor,
+	    std::string_view cache_tag,
+	    char const* profile_name
+	) {
+		if (descriptor.modules.empty() || descriptor.entry_points.empty()) {
+			throw std::invalid_argument("Slang program requires modules and entry points");
+		}
+		if (std::ranges::any_of(descriptor.modules, [](auto const& module) {
+			    return module.name.empty();
+		    })) {
+			throw std::invalid_argument("Slang module has no name");
+		}
+		auto key = BuildCacheKey(
+		    target,
+		    descriptor,
+		    cache_tag,
+		    profile_name ? std::string_view(profile_name) : std::string_view{}
+		);
+		auto backend = cache_tag.starts_with("opengl-") ? "opengl" :
+		    target.format == SLANG_DXIL                 ? "d3d12" :
+		    target.format == SLANG_SPIRV                ? "vulkan" :
+		    target.format == SLANG_WGSL                 ? "webgpu" :
+		    target.format == SLANG_METAL                ? "metal" :
+		                                                  "other";
+		auto directory =
+		    fyuu_rhi::cache::GetCacheDirectory(key, backend, descriptor.modules.front().name);
+		std::unique_lock lock(CompilerState().mutex);
+		fyuu_rhi::shader::SlangProgramData program;
+		if (TryLoadCache(directory, key, program)) {
+			TraceSlangEvent("cache-hit", key);
+			return program;
+		}
+		TraceSlangEvent("cache-miss", key);
+		TraceSlangEvent("compile-begin", key);
+		program = CompileProgram(target, descriptor, profile_name, directory, key, cache_tag);
+		TraceSlangEvent("compile-end", key);
+		return program;
+	}
+} // namespace
+
+namespace fyuu_rhi::shader {
+
+	/** @brief Drains compilation and retires sessions before their global owner; reconstruction is lazy. */
+	void RefreshSlang() {
+		{
+			auto& cache = CompilerState();
+			std::unique_lock lock(cache.mutex);
+			cache.global.setNull();
+		}
+		TraceSlangEvent("compiler-cache-refreshed");
+	}
+
+	/** @brief Immutable owned compilation output, restored from validated disk cache when possible. */
+	class SlangProgram {
+		/// @brief Independent bytecode and reflection; never contains SDK pointers.
+		SlangProgramData m_data;
 
 	public:
-		SlangProgram(slang::TargetDesc const& target, SlangPipelineProgramDescriptor const& desc, std::string_view cache_tag) {
-			if (desc.modules.empty()) {
-				throw std::invalid_argument("Slang program has no modules");
-			}
-			if (desc.entry_points.empty()) {
-				throw std::invalid_argument("Slang program has no entry points");
-			}
-
-			// Fast path: a valid cache entry for this key skips the compiler
-			// entirely. The lock serializes construction so concurrent pipeline
-			// creation cannot read while another thread is writing the cache.
-			auto cache_key = BuildCacheKey(target, desc, cache_tag);
-			// OpenGL also compiles SPIR-V, so identify it by its explicit cache tag
-			// rather than treating every SPIR-V target as Vulkan.
-			auto const backend = cache_tag.starts_with("opengl-") ? "opengl" :
-				target.format == SLANG_DXIL ? "d3d12" :
-				target.format == SLANG_SPIRV ? "vulkan" :
-				target.format == SLANG_WGSL ? "webgpu" :
-				target.format == SLANG_METAL ? "metal" : "other";
-			auto cache_directory = cache::GetCacheDirectory(
-				cache_key,
-				backend,
-				desc.modules.front().name
-			);
-			static std::mutex cache_mutex;
-			std::unique_lock cache_lock(cache_mutex);
-			if (TryLoadCache(cache_directory, cache_key)) {
-				return;
-			}
-
-			// Compile path. Grab (or reuse) a Slang session configured for this
-			// target and load each module from its source string.
-			auto session = RequestSession(target, desc);
-			Slang::ComPtr<slang::IBlob> diagnostics;
-			std::vector<Slang::ComPtr<slang::IModule>> modules;
-			std::vector<Slang::ComPtr<slang::IEntryPoint>> entries;
-			std::vector<slang::IComponentType*> components;
-
-			for (auto const& module_desc : desc.modules) {
-				if (module_desc.name.empty()) {
-					throw std::invalid_argument("Slang module has no name");
-				}
-				auto path = module_desc.name + ".slang";
-				Slang::ComPtr<slang::IModule> module(
-					session->loadModuleFromSourceString(
-						module_desc.name.c_str(),
-						path.c_str(),
-						module_desc.source.c_str(),
-						diagnostics.writeRef()
-					)
-				);
-				if (!module) {
-					Check(SLANG_FAIL, diagnostics, "Loading Slang module");
-				}
-				Check(SLANG_OK, diagnostics, "Loading Slang module");
-				components.push_back(module);
-				modules.push_back(std::move(module));
-			}
-
-			// Locate each requested entry point by name in the loaded modules.
-			for (auto const& entry_desc : desc.entry_points) {
-				Slang::ComPtr<slang::IEntryPoint> entry;
-				SlangResult result = SLANG_E_NOT_FOUND;
-				for (auto const& module : modules) {
-					result = module->findEntryPointByName(entry_desc.name.c_str(), entry.writeRef());
-					if (SLANG_SUCCEEDED(result) && entry) {
-						break;
-					}
-				}
-				Check(result, diagnostics, std::format("Finding entry point '{}'", entry_desc.name));
-				components.push_back(entry);
-				entries.push_back(std::move(entry));
-			}
-
-			// Combine modules + entry points into one component type and link it.
-			Slang::ComPtr<slang::IComponentType> composed;
-			auto result = session->createCompositeComponentType(
-				components.data(),
-				static_cast<SlangInt>(components.size()),
-				composed.writeRef(),
-				diagnostics.writeRef()
-			);
-			Check(result, diagnostics, "Composing Slang program");
-
-			Slang::ComPtr<slang::IComponentType> linked_program;
-			result = composed->link(linked_program.writeRef(), diagnostics.writeRef());
-			Check(result, diagnostics, "Linking Slang program");
-
-			// Emit backend bytecode (DXIL / SPIR-V / WGSL / MSL) per entry point.
-			m_entry_points.reserve(desc.entry_points.size());
-			for (std::size_t index = 0; index < desc.entry_points.size(); ++index) {
-				Slang::ComPtr<slang::IBlob> code;
-				result = linked_program->getEntryPointCode(
-					static_cast<SlangInt>(index),
-					0,
-					code.writeRef(),
-					diagnostics.writeRef()
-				);
-				Check(result, diagnostics, std::format("Generating '{}'", desc.entry_points[index].name));
-				auto begin = static_cast<std::byte const*>(code->getBufferPointer());
-				m_entry_points.push_back(
-					{
-						desc.entry_points[index].stage,
-						desc.entry_points[index].name,
-						{ begin, begin + code->getBufferSize() }
-					}
-				);
-			}
-
-			// Reflect the linked program: the engine-facing interface plus the
-			// raw JSON dump preserved for tooling/debugging.
-			// Interface reflection always uses the auxiliary SPIR-V layout. Slang's
-			// DXIL, GLSL, WGSL, and MSL layouts erase Vulkan push-constant categories,
-			// while SPIR-V preserves the backend-independent pipeline-constant intent.
-			// The native layout of the compiled target is consulted in addition, for
-			// the register a pipeline-constant block is actually read from.
-			auto reflection = linked_program->getLayout(1, diagnostics.writeRef());
-			if (!reflection) {
-				Check(SLANG_FAIL, diagnostics, "Reflecting Slang program");
-			}
-			Slang::ComPtr<slang::IBlob> native_diagnostics;
-			auto native_layout = linked_program->getLayout(0, native_diagnostics.writeRef());
-			m_interface = ReflectInterface(reflection, native_layout, desc);
-			Slang::ComPtr<ISlangBlob> reflection_blob;
-			result = reflection->toJson(reflection_blob.writeRef());
-			Check(result, nullptr, "Serializing Slang reflection");
-			m_reflection_json.assign(
-				static_cast<char const*>(reflection_blob->getBufferPointer()),
-				reflection_blob->getBufferSize()
-			);
-
-			// Persist the compiled result so a later construction with the same
-			// key returns from the disk cache instead of recompiling.
-			WriteCache(cache_directory, cache_key, modules, desc, cache_tag);
+		/** @brief Loads or compiles a program without retaining compiler or reflection handles. */
+		SlangProgram(
+		    slang::TargetDesc const& target,
+		    fyuu_rhi::pipeline::SlangPipelineProgramDescriptor const& descriptor,
+		    std::string_view cache_tag,
+		    char const* profile_name = nullptr
+		) : m_data(BuildProgram(target, descriptor, cache_tag, profile_name)) {
 		}
 
-		/// Compiled backend bytecode, one element per entry point, in program order.
+		/// @brief Returns independent bytecode in requested entry-point order.
 		std::span<SlangCompiledEntryPoint const> GetEntryPoints() const noexcept {
-			return m_entry_points;
+			return m_data.entry_points;
 		}
 
-		/// Reflected pipeline interface (bindings / varyings / push constants);
-		/// backends build their root signatures / layouts from this.
-		SlangPipelineInterface const& GetInterface() const noexcept {
-			return m_interface;
+		/// @brief Returns the backend-neutral ABI and native register assignments.
+		fyuu_rhi::pipeline::SlangPipelineInterface const& GetInterface() const noexcept {
+			return m_data.interface;
 		}
 
-		/// Raw Slang reflection dump (JSON), preserved for tooling/debugging.
+		/// @brief Returns the owned reflection JSON used by diagnostics and tooling.
 		std::string_view GetReflectionJSON() const noexcept {
-			return m_reflection_json;
+			return m_data.reflection_json;
 		}
 	};
-
-}
+} // namespace fyuu_rhi::shader

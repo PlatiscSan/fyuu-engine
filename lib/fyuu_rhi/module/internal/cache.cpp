@@ -3,6 +3,7 @@ module;
 #if !defined(__cpp_lib_modules)
 #include <cstddef>
 #include <cstdlib>
+#include <utility>
 #include <vector>
 #include <algorithm>
 #include <functional>
@@ -47,7 +48,6 @@ namespace {
 	};
 
 	fs::path s_cache_root;
-	std::once_flag s_cache_init_flag;
 	
 	std::atomic_size_t s_max_cache_size_bytes{ 500u * 1024 * 1024 };
 	std::mutex s_cleanup_mutex;
@@ -255,118 +255,129 @@ namespace fyuu_rhi::cache {
 		, android_app* android_app
 #endif // defined(__ANDROID__)
 	) {
-		std::call_once(
-			s_cache_init_flag,
-			[app_name, &app_ver, engine_name, &engine_ver 
-#if defined(__ANDROID__)
-			, android_app
-#endif // defined(__ANDROID__)
-			]() {
-#if defined(_WIN32)
+		fs::path cache_root;
+#if defined(__EMSCRIPTEN__)
+		/** @brief Use the browser virtual filesystem, without native environment paths.
+		 * @note Persistence requires the host to mount and synchronize IDBFS.
+		 */
+		cache_root = "/cache";
+#elif defined(_WIN32)
 #if defined(__STDC_LIB_EXT1__)
-				std::size_t required_size = 0u;
-				std::string local_appdata;
-				errno_t err = getenv_s(&required_size, nullptr, 0, "LOCALAPPDATA");
-				if (err == 0 && required_size > 0u) {
-					local_appdata.resize(required_size);
-					err = getenv_s(&required_size, local_appdata.data(), required_size, "LOCALAPPDATA");
-					s_cache_root = local_appdata;
-				}
-				else {
-					s_cache_root = "./cache";
-					log::Warning("cache::Initialize(): Failed to get LOCALAPPDATA environment variable, using current directory as cache root");
-				}
+		std::size_t required_size = 0u;
+		std::string local_appdata;
+		errno_t err = getenv_s(&required_size, nullptr, 0, "LOCALAPPDATA");
+		if (err == 0 && required_size > 0u) {
+			local_appdata.resize(required_size);
+			err = getenv_s(&required_size, local_appdata.data(), required_size, "LOCALAPPDATA");
+			cache_root = local_appdata;
+		}
+		else {
+			cache_root = "./cache";
+			log::Warning("cache::Initialize(): Failed to get LOCALAPPDATA environment variable, using current directory as cache root");
+		}
 #else
-				char const* local_appdata = std::getenv("LOCALAPPDATA");
-				if (local_appdata) {
-					s_cache_root = local_appdata;
-				}
-				else {
-					s_cache_root = "./cache";
-					log::Warning("cache::Initialize(): Failed to get LOCALAPPDATA environment variable, using current directory as cache root");
-				}
+		char const* local_appdata = std::getenv("LOCALAPPDATA");
+		if (local_appdata) {
+			cache_root = local_appdata;
+		}
+		else {
+			cache_root = "./cache";
+			log::Warning("cache::Initialize(): Failed to get LOCALAPPDATA environment variable, using current directory as cache root");
+		}
 #endif // defined(__STDC_LIB_EXT1__)
 #elif defined(__linux__)
 #if defined(__STDC_LIB_EXT1__)
-				std::size_t required_size = 0u;
-				std::string xdg_cache_home;
-				errno_t err = getenv_s(&required_size, nullptr, 0, "XDG_CACHE_HOME");
-				if (err == 0 && required_size > 0u) {
-					xdg_cache_home.resize(required_size);
-					err = getenv_s(&required_size, xdg_cache_home.data(), required_size, "XDG_CACHE_HOME");
-					s_cache_root = xdg_cache_home;
-				}
-				else {
-					errno_t err = getenv_s(&required_size, nullptr, 0, "HOME");
-					if (err == 0 && required_size > 0u) {
-						std::string home;
-						home.resize(required_size);
-						err = getenv_s(&required_size, home.data(), required_size, "HOME");
-						s_cache_root = home / ".cache";
-					}
-					else {
-						s_cache_root = "./cache";
-						log::Warning("cache::Initialize(): Failed to get HOME environment variable, using current directory as cache root");
-					}
-				}
+		std::size_t required_size = 0u;
+		std::string xdg_cache_home;
+		errno_t err = getenv_s(&required_size, nullptr, 0, "XDG_CACHE_HOME");
+		if (err == 0 && required_size > 0u) {
+			xdg_cache_home.resize(required_size);
+			err = getenv_s(&required_size, xdg_cache_home.data(), required_size, "XDG_CACHE_HOME");
+			cache_root = xdg_cache_home;
+		}
+		else {
+			errno_t err = getenv_s(&required_size, nullptr, 0, "HOME");
+			if (err == 0 && required_size > 0u) {
+				std::string home;
+				home.resize(required_size);
+				err = getenv_s(&required_size, home.data(), required_size, "HOME");
+				cache_root = home / ".cache";
+			}
+			else {
+				cache_root = "./cache";
+				log::Warning("cache::Initialize(): Failed to get HOME environment variable, using current directory as cache root");
+			}
+		}
 #else
-				char const* xdg_cache_home = std::getenv("XDG_CACHE_HOME");
-				if (xdg_cache_home) {
-					s_cache_root = xdg_cache_home;
-				}
-				else {
-					char const* home = std::getenv("HOME");
-					if (home) {
-						s_cache_root = home;
-						s_cache_root /= ".cache";
-					}
-					else {
-						s_cache_root = "./cache";
-						log::Warning("cache::Initialize(): Failed to get HOME environment variable, using current directory as cache root");
-					}
-				}
+		char const* xdg_cache_home = std::getenv("XDG_CACHE_HOME");
+		if (xdg_cache_home) {
+			cache_root = xdg_cache_home;
+		}
+		else {
+			char const* home = std::getenv("HOME");
+			if (home) {
+				cache_root = home;
+				cache_root /= ".cache";
+			}
+			else {
+				cache_root = "./cache";
+				log::Warning("cache::Initialize(): Failed to get HOME environment variable, using current directory as cache root");
+			}
+		}
 #endif // defined(__STDC_LIB_EXT1__)
 #elif defined(__ANDROID__)
-				if (android_app && android_app->activity && android_app->activity->internalDataPath) {
-					fs::path data_path(android_app->activity->internalDataPath);
-					s_cache_root = data_path.parent_path() / "cache";
-				}
-				else {
-					s_cache_root = "./cache";
-					log::Warning("cache::Initialize(): Failed to get Android internal data path, using current directory as cache root");
-				}
+		if (android_app && android_app->activity && android_app->activity->internalDataPath) {
+			fs::path data_path(android_app->activity->internalDataPath);
+			cache_root = data_path.parent_path() / "cache";
+		}
+		else {
+			cache_root = "./cache";
+			log::Warning("cache::Initialize(): Failed to get Android internal data path, using current directory as cache root");
+		}
 #elif defined(__APPLE__)
 #if defined(__STDC_LIB_EXT1__)
-				std::size_t required_size = 0u;
-				std::string home;
-				errno_t err = getenv_s(&required_size, nullptr, 0, "HOME");
-				if (err == 0 && required_size > 0u) {
-					std::string home;
-					home.resize(required_size);
-					err = getenv_s(&required_size, home.data(), required_size, "HOME");
-					s_cache_root = home;
-					s_cache_root /= "Library/Caches";
-				}
-				else {
-					s_cache_root = "./cache";
-					log::Warning("cache::Initialize(): Failed to get HOME environment variable, using current directory as cache root");
-				}
+		std::size_t required_size = 0u;
+		std::string home;
+		errno_t err = getenv_s(&required_size, nullptr, 0, "HOME");
+		if (err == 0 && required_size > 0u) {
+			std::string home;
+			home.resize(required_size);
+			err = getenv_s(&required_size, home.data(), required_size, "HOME");
+			cache_root = home;
+			cache_root /= "Library/Caches";
+		}
+		else {
+			cache_root = "./cache";
+			log::Warning("cache::Initialize(): Failed to get HOME environment variable, using current directory as cache root");
+		}
 #else
-				char const* home = std::getenv("HOME");
-				if (home) {
-					s_cache_root = home;
-					s_cache_root /= "Library/Caches";
-				}
-				else {
-					s_cache_root = "./cache";
-					log::Warning("cache::Initialize(): Failed to get HOME environment variable, using current directory as cache root");
-				}
+		char const* home = std::getenv("HOME");
+		if (home) {
+			cache_root = home;
+			cache_root /= "Library/Caches";
+		}
+		else {
+			cache_root = "./cache";
+			log::Warning("cache::Initialize(): Failed to get HOME environment variable, using current directory as cache root");
+		}
 #endif // defined(__STDC_LIB_EXT1__)
 #endif // defined(_WIN32)
-				s_cache_root /= BuildSubdirectory(app_name, app_ver, engine_name, engine_ver);
-				fs::create_directories(s_cache_root);
-			}
-		);
+		cache_root /= BuildSubdirectory(app_name, app_ver, engine_name, engine_ver);
+#if defined(_WIN32)
+		/**
+		 * @brief Preserve the cache layout while allowing paths beyond MAX_PATH.
+		 * @note Extended paths must be absolute and normalized; UNC roots use the UNC prefix.
+		 */
+		auto native_root = fs::absolute(cache_root).lexically_normal().native();
+		if (!native_root.starts_with(L"\\\\?\\")) {
+			cache_root = native_root.starts_with(L"\\\\") ?
+				fs::path(L"\\\\?\\UNC\\" + native_root.substr(2u)) :
+				fs::path(L"\\\\?\\" + native_root);
+		}
+#endif // defined(_WIN32)
+		fs::create_directories(cache_root);
+		s_cache_root = std::move(cache_root);
+		s_last_check_time = {};
 	}
 
 	std::string PathName(std::string_view name);

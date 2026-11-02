@@ -15,20 +15,19 @@ import :command_scheduler_dispatch;
 import :command_scheduler_factory;
 import :execution;
 import :webgpu_command_scheduler;
-#if defined(__APPLE__)
+#if defined(__APPLE__) && !defined(__EMSCRIPTEN__)
 import :metal_command_scheduler;
 #endif // defined(__APPLE__)
-#if defined(_WIN32)
+#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
 import :d3d12_command_scheduler;
 #endif // defined(_WIN32)
-#if !defined(__APPLE__)
+#if !defined(__APPLE__) && !defined(__EMSCRIPTEN__)
 import :opengl_command_scheduler;
 import :vulkan_data;
 import :vulkan_command_scheduler;
 #endif // !defined(__APPLE__)
 
 namespace fyuu_rhi::execution {
-
 	CompletionToken CommandScheduler::Execute(
 		ExecutionPlan const& plan,
 		std::span<PlatformHandle const> presentation_targets,
@@ -46,7 +45,7 @@ namespace fyuu_rhi::execution {
 			[&]<class NativeCommandSchedulerContext>(
 				NativeCommandSchedulerContext& native
 			) {
-#if !defined(__APPLE__)
+#if !defined(__APPLE__) && !defined(__EMSCRIPTEN__)
 				if constexpr (std::same_as<
 					NativeCommandSchedulerContext,
 					vulkan::CommandSchedulerContext
@@ -77,7 +76,7 @@ namespace fyuu_rhi::execution {
 					resource_groups,
 					stop_token
 					);
-#if !defined(__APPLE__)
+#if !defined(__APPLE__) && !defined(__EMSCRIPTEN__)
 				}
 #endif // !defined(__APPLE__)
 			},

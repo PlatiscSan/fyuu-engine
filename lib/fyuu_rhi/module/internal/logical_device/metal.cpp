@@ -1,4 +1,5 @@
 module;
+#if !defined(__EMSCRIPTEN__)
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <cstddef>
@@ -21,12 +22,16 @@ module;
 #include <slang.h>
 #endif // defined(__APPLE__)
 
+#endif // !defined(__EMSCRIPTEN__)
+
 module fyuu_rhi:metal_logical_device;
+#if !defined(__EMSCRIPTEN__)
 #if defined(__APPLE__)
 #if defined(__cpp_lib_modules)
 import std;
 #endif // defined(__cpp_lib_modules)
 import :logical_device_dispatch;
+import :memory_pressure;
 import :metal_data;
 import :metal_utility;
 import :pipeline;
@@ -319,8 +324,10 @@ namespace fyuu_rhi {
 			std::size_t height,
 			std::size_t depth_or_array_layers,
 			std::size_t mip_levels,
-			ResourceFlags const& flags
+			ResourceFlags const& flags,
+			TextureClearValue const& clear_value
 		) const {
+			auto default_clear_value = ResolveTextureClearValue(flags, clear_value);
 			auto sample_count = metal::SampleCount(flags);
 			if (sample_count > 1u && mip_levels != 1u) {
 				throw std::invalid_argument(
@@ -360,7 +367,8 @@ namespace fyuu_rhi {
 					.depth_or_array_layers = static_cast<std::uint32_t>(depth_or_array_layers),
 					.mip_levels = static_cast<std::uint32_t>(mip_levels)
 				},
-				flags
+				flags,
+				default_clear_value
 			);
 		}
 	};
@@ -659,3 +667,4 @@ namespace fyuu_rhi {
 
 } // namespace fyuu_rhi
 #endif // defined(__APPLE__)
+#endif // !defined(__EMSCRIPTEN__)

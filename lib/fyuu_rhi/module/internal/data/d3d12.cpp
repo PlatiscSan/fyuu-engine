@@ -1,4 +1,5 @@
 module;
+#if !defined(__EMSCRIPTEN__)
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <deque>
@@ -19,7 +20,10 @@ module;
 #include <wrl.h>
 #endif // defined(_WIN32)
 
+#endif // !defined(__EMSCRIPTEN__)
+
 module fyuu_rhi:d3d12_data;
+#if !defined(__EMSCRIPTEN__)
 #if defined(_WIN32)
 #if defined(__cpp_lib_modules)
 import std;
@@ -53,6 +57,10 @@ namespace fyuu_rhi::d3d12 {
 		Microsoft::WRL::ComPtr<ID3D12CommandSignature> multidraw;
 		Microsoft::WRL::ComPtr<ID3D12CommandSignature> multidraw_indexed;
 		Microsoft::WRL::ComPtr<ID3D12CommandSignature> dispatch_indirect;
+		/// @brief Non-shader-visible storage for View descriptors copied into GPU tables.
+		DescriptorAllocator resource_descriptor_storage;
+		/// @brief Non-shader-visible storage for Sampler descriptors copied into GPU tables.
+		DescriptorAllocator sampler_descriptor_storage;
 	};
 
 	struct PresentationContext {
@@ -127,12 +135,8 @@ namespace fyuu_rhi::d3d12 {
 		std::deque<Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList>> command_lists;
 		std::mutex command_lists_mutex;
 		std::mutex submission_mutex;
-		/// The removal reporter of the logical device this queue came from. That device
-		/// is required to outlive its schedulers; a queue without one reports nothing.
-		DeviceRemovalTracker* removal_tracker = nullptr;
 
-		/// Reports a removal the caller already detected. One tracker serves every queue
-		/// of a device, so several tokens observing the same removal report it once.
+		/** @brief Reports a detected removal once per native device across all its queues. */
 		void ReportRemoval() noexcept;
 	};
 
@@ -156,6 +160,8 @@ namespace fyuu_rhi::d3d12 {
 		DescriptorAllocator render_target_descriptors;
 		DescriptorAllocator depth_stencil_descriptors;
 		Microsoft::WRL::ComPtr<D3D12MA::Allocation> allocation;
+		/// @brief Creation default used only by attachment ClearDefault operations.
+		TextureClearValue default_clear_value{};
 	};
 
 	struct View {
@@ -220,10 +226,12 @@ namespace fyuu_rhi::d3d12 {
 	};
 
 	void QueueContext::ReportRemoval() noexcept {
-		if (removal_tracker) {
-			removal_tracker->ReportRemoval();
+		Microsoft::WRL::ComPtr<ID3D12Device> device;
+		if (SUCCEEDED(impl->GetDevice(IID_PPV_ARGS(&device)))) {
+			d3d12::ReportDeviceRemoval(device.Get());
 		}
 	}
 
 } // namespace fyuu_rhi::d3d12::data
 #endif // defined(_WIN32)
+#endif // !defined(__EMSCRIPTEN__)

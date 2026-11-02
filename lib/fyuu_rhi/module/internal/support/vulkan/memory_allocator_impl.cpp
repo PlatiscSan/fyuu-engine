@@ -1,4 +1,5 @@
 module;
+#if !defined(__EMSCRIPTEN__)
 // This dedicated implementation partition works around an IFC import bug in
 // MSVC 14.51.36231 (CL 19.51.36231). Keeping VMA_IMPLEMENTATION and the
 // MemoryAllocator function bodies in vulkan_memory_allocator made MSVC fail
@@ -7,13 +8,16 @@ module;
 // part of the vulkan_memory_allocator interface.
 #include <version>
 #if !defined(__cpp_lib_modules)
-#include <cstring>
-
 #include <memory>
 #include <stdexcept>
 #include <utility>
 
+#include <cstring>
+
 #include <variant>
+#include <string_view>
+
+#include <format>
 
 #endif // !defined(__cpp_lib_modules)
 #if !defined(__APPLE__)
@@ -25,7 +29,10 @@ module;
 #include <vma/vk_mem_alloc.h>
 #endif // !defined(__APPLE__)
 
+#endif // !defined(__EMSCRIPTEN__)
+
 module fyuu_rhi;
+#if !defined(__EMSCRIPTEN__)
 #if !defined(__APPLE__)
 #if defined(__cpp_lib_modules)
 import std;
@@ -34,31 +41,63 @@ import std;
 import vulkan;
 #endif // !defined(FYUU_RHI_USE_VULKAN_HEADER)
 import :vulkan_memory_allocator;
+import :log;
+import :memory_pressure;
 
 namespace {
+
+	/** @brief Emits native block accounting in Debug; Release performs no statistics query or logging. */
+	void TraceAllocation(VmaAllocator allocator, std::string_view event) noexcept {
+#if !defined(NDEBUG)
+		static fyuu_rhi::details::MemoryDiagnosticLimiter limiter;
+		/// @note Keep the final allocator balance visible; ordinary allocation events are sampled.
+		if (event != "allocator_destroy" && !limiter.TryAcquire()) {
+			return;
+		}
+		try {
+			VmaTotalStatistics statistics{};
+			vmaCalculateStatistics(allocator, &statistics);
+			auto const& total = statistics.total.statistics;
+			fyuu_rhi::log::Debug(
+			    std::format(
+			        "VMA {}: allocations={} allocation_bytes={} blocks={} block_bytes={}",
+			        event,
+			        total.allocationCount,
+			        total.allocationBytes,
+			        total.blockCount,
+			        total.blockBytes
+			    )
+			);
+		} catch (...) {
+			/// @brief Diagnostics must not make a successful allocation or noexcept destruction fail.
+		}
+#else
+		(void)allocator;
+		(void)event;
+#endif // !defined(NDEBUG)
+	}
 
 	VmaAllocationCreateInfo AllocationInfo(fyuu_rhi::ResourceFlags const& flags) {
 		using Bits = fyuu_rhi::ResourceFlagBits;
 		if (flags.TestMultipleInRange(Bits::UndedicatedAllocation, Bits::DedicatedAllocation)) {
 			throw std::invalid_argument(
-				"A Vulkan allocation cannot be both undedicated and dedicated"
+			    "A Vulkan allocation cannot be both undedicated and dedicated"
 			);
 		}
 		if (flags.TestMultipleInRange(Bits::MinOffsetAllocation, Bits::FirstFitAllocation)) {
 			throw std::invalid_argument(
-				"A Vulkan allocation requires at most one placement strategy"
+			    "A Vulkan allocation requires at most one placement strategy"
 			);
 		}
 		if (flags.TestMultipleInRange(Bits::DeviceLocal, Bits::DeviceReadback)) {
 			throw std::invalid_argument(
-				"A Vulkan allocation requires at most one memory access policy"
+			    "A Vulkan allocation requires at most one memory access policy"
 			);
 		}
 
 		VmaAllocationCreateInfo result{};
-		result.usage = flags.Test(Bits::DeviceLocal) ?
-			VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE :
-			VMA_MEMORY_USAGE_AUTO;
+		result.usage = flags.Test(Bits::DeviceLocal) ? VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE :
+		                                               VMA_MEMORY_USAGE_AUTO;
 		if (flags.Test(Bits::UndedicatedAllocation)) {
 			result.flags |= VMA_ALLOCATION_CREATE_NEVER_ALLOCATE_BIT;
 		}
@@ -92,7 +131,6 @@ namespace {
 		return result;
 	}
 
-
 } // namespace
 
 namespace fyuu_rhi::vulkan {
@@ -103,29 +141,24 @@ namespace fyuu_rhi::vulkan {
 
 		~MemoryAllocatorState() noexcept {
 			if (impl) {
+				TraceAllocation(impl, "allocator_destroy");
 				vmaDestroyAllocator(impl);
 			}
 		}
 	};
 
 	ManagedAllocation::ManagedAllocation(
-		std::shared_ptr<MemoryAllocatorState> const& allocator,
-		VkBuffer resource,
-		VmaAllocation allocation
-	) noexcept
-		: m_allocator(allocator),
-		m_resource(resource),
-		m_allocation(allocation) {
+	    std::shared_ptr<MemoryAllocatorState> const& allocator,
+	    VkBuffer resource,
+	    VmaAllocation allocation
+	) noexcept : m_allocator(allocator), m_resource(resource), m_allocation(allocation) {
 	}
 
 	ManagedAllocation::ManagedAllocation(
-		std::shared_ptr<MemoryAllocatorState> const& allocator,
-		VkImage resource,
-		VmaAllocation allocation
-	) noexcept
-		: m_allocator(allocator),
-		m_resource(resource),
-		m_allocation(allocation) {
+	    std::shared_ptr<MemoryAllocatorState> const& allocator,
+	    VkImage resource,
+	    VmaAllocation allocation
+	) noexcept : m_allocator(allocator), m_resource(resource), m_allocation(allocation) {
 	}
 
 	void ManagedAllocation::Destroy() noexcept {
@@ -134,30 +167,20 @@ namespace fyuu_rhi::vulkan {
 		}
 		if (auto buffer = std::get_if<VkBuffer>(&m_resource)) {
 			if (*buffer) {
-				vmaDestroyBuffer(
-					m_allocator->impl,
-					*buffer,
-					m_allocation
-				);
+				vmaDestroyBuffer(m_allocator->impl, *buffer, m_allocation);
 			}
-		}
-		else {
+		} else {
 			auto image = std::get<VkImage>(m_resource);
 			if (image) {
-				vmaDestroyImage(
-					m_allocator->impl,
-					image,
-					m_allocation
-				);
+				vmaDestroyImage(m_allocator->impl, image, m_allocation);
 			}
 		}
 		m_allocation = nullptr;
 	}
 
-	ManagedAllocation::ManagedAllocation(ManagedAllocation&& other) noexcept
-		: m_allocator(std::move(other.m_allocator)),
-		m_resource(std::move(other.m_resource)),
-		m_allocation(std::exchange(other.m_allocation, nullptr)) {
+	ManagedAllocation::ManagedAllocation(ManagedAllocation&& other) noexcept :
+	    m_allocator(std::move(other.m_allocator)), m_resource(std::move(other.m_resource)),
+	    m_allocation(std::exchange(other.m_allocation, nullptr)) {
 	}
 
 	ManagedAllocation& ManagedAllocation::operator=(ManagedAllocation&& other) noexcept {
@@ -192,38 +215,22 @@ namespace fyuu_rhi::vulkan {
 		return m_allocator->logical_device;
 	}
 
-	std::byte* ManagedAllocation::Map(
-		std::size_t offset,
-		std::size_t size,
-		bool writable
-	) const {
+	std::byte* ManagedAllocation::Map(std::size_t offset, std::size_t size, bool writable) const {
 		void* data = nullptr;
-		auto result = vmaMapMemory(
-			m_allocator->impl,
-			m_allocation,
-			&data
-		);
+		auto result = vmaMapMemory(m_allocator->impl, m_allocation, &data);
 		if (result != VK_SUCCESS) {
 			throw vk::SystemError(
-				static_cast<vk::Result>(result),
-				"Failed to map a Vulkan allocation"
+			    static_cast<vk::Result>(result),
+			    "Failed to map a Vulkan allocation"
 			);
 		}
 		if (!writable) {
-			result = vmaInvalidateAllocation(
-				m_allocator->impl,
-				m_allocation,
-				offset,
-				size
-			);
+			result = vmaInvalidateAllocation(m_allocator->impl, m_allocation, offset, size);
 			if (result != VK_SUCCESS) {
-				vmaUnmapMemory(
-					m_allocator->impl,
-					m_allocation
-				);
+				vmaUnmapMemory(m_allocator->impl, m_allocation);
 				throw vk::SystemError(
-					static_cast<vk::Result>(result),
-					"Failed to invalidate a Vulkan readback allocation"
+				    static_cast<vk::Result>(result),
+				    "Failed to invalidate a Vulkan readback allocation"
 				);
 			}
 		}
@@ -231,110 +238,120 @@ namespace fyuu_rhi::vulkan {
 	}
 
 	void ManagedAllocation::Unmap(
-		std::size_t offset,
-		std::size_t size,
-		bool writable
+	    std::size_t offset,
+	    std::size_t size,
+	    bool writable
 	) const noexcept {
 		if (writable) {
-			(void)vmaFlushAllocation(
-				m_allocator->impl,
-				m_allocation,
-				offset,
-				size
-			);
+			(void)vmaFlushAllocation(m_allocator->impl, m_allocation, offset, size);
 		}
-		vmaUnmapMemory(
-			m_allocator->impl,
-			m_allocation
-		);
+		vmaUnmapMemory(m_allocator->impl, m_allocation);
 	}
 
 	void ManagedAllocation::Write(std::size_t offset, std::span<std::byte const> data) const {
 		void* destination = nullptr;
-		auto result = vmaMapMemory(
-			m_allocator->impl,
-			m_allocation,
-			&destination
-		);
+		auto result = vmaMapMemory(m_allocator->impl, m_allocation, &destination);
 		if (result != VK_SUCCESS) {
 			throw vk::SystemError(
-				static_cast<vk::Result>(result),
-				"Failed to map a Vulkan allocation"
+			    static_cast<vk::Result>(result),
+			    "Failed to map a Vulkan allocation"
 			);
 		}
 		try {
-			std::memcpy(
-				static_cast<std::byte*>(destination) + offset,
-				data.data(),
-				data.size()
-			);
-			vmaFlushAllocation(
-				m_allocator->impl,
-				m_allocation,
-				offset,
-				data.size()
-			);
-		}
-		catch (...) {
-			vmaUnmapMemory(
-				m_allocator->impl,
-				m_allocation
-			);
+			std::memcpy(static_cast<std::byte*>(destination) + offset, data.data(), data.size());
+			vmaFlushAllocation(m_allocator->impl, m_allocation, offset, data.size());
+		} catch (...) {
+			vmaUnmapMemory(m_allocator->impl, m_allocation);
 			throw;
 		}
-		vmaUnmapMemory(
-			m_allocator->impl,
-			m_allocation
-		);
+		vmaUnmapMemory(m_allocator->impl, m_allocation);
 	}
 
-	MemoryAllocator::MemoryAllocator(vk::SharedDevice const& logical_device, VmaAllocator impl)
-		: m_impl(std::make_shared<MemoryAllocatorState>(logical_device, impl)) {
+	MemoryAllocator::MemoryAllocator(vk::SharedDevice const& logical_device, VmaAllocator impl) :
+	    m_impl(std::make_shared<MemoryAllocatorState>(logical_device, impl)) {
 	}
 
-	ManagedAllocation MemoryAllocator::AllocateBuffer(vk::BufferCreateInfo const& resource_info, ResourceFlags const& flags) const {
+	ManagedAllocation MemoryAllocator::AllocateBuffer(
+	    vk::BufferCreateInfo const& resource_info,
+	    ResourceFlags const& flags
+	) const {
 		auto native_resource_info = VkBufferCreateInfo(resource_info);
 		auto allocation_info = AllocationInfo(flags);
+		/**
+		 * @brief Large pure upload buffers retire without leaving reusable blocks behind.
+		 * @note The 16 MiB cutoff is one quarter of the default 64 MiB large-heap target.
+		 * Explicit placement/alias policies are preserved. Other buffers remain suballocated.
+		 */
+		auto dedicated_upload = resource_info.size >= 16ull * 1024ull * 1024ull &&
+		    resource_info.usage == vk::BufferUsageFlagBits::eTransferSrc &&
+		    flags.Test(ResourceFlagBits::HostVisible) &&
+		    !(allocation_info.flags &
+			  (VMA_ALLOCATION_CREATE_NEVER_ALLOCATE_BIT |
+			   VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT | VMA_ALLOCATION_CREATE_CAN_ALIAS_BIT |
+			   VMA_ALLOCATION_CREATE_UPPER_ADDRESS_BIT));
+		if (dedicated_upload) {
+			allocation_info.flags |= VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+		}
 		VkBuffer resource = nullptr;
 		VmaAllocation allocation = nullptr;
 		auto result = vmaCreateBuffer(
-			m_impl->impl,
-			&native_resource_info,
-			&allocation_info,
-			&resource,
-			&allocation,
-			nullptr
+		    m_impl->impl,
+		    &native_resource_info,
+		    &allocation_info,
+		    &resource,
+		    &allocation,
+		    nullptr
 		);
-		if (result != VK_SUCCESS) {
-			throw vk::SystemError(
-				static_cast<vk::Result>(result),
-				"Failed to allocate a Vulkan buffer"
+		if (dedicated_upload &&
+		    (result == VK_ERROR_OUT_OF_DEVICE_MEMORY || result == VK_ERROR_OUT_OF_HOST_MEMORY ||
+		     result == VK_ERROR_TOO_MANY_OBJECTS)) {
+			/// @brief Retry normal suballocation when a dedicated allocation cannot be afforded.
+			allocation_info.flags &= ~VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+			result = vmaCreateBuffer(
+			    m_impl->impl,
+			    &native_resource_info,
+			    &allocation_info,
+			    &resource,
+			    &allocation,
+			    nullptr
 			);
 		}
+		if (result != VK_SUCCESS) {
+			throw vk::SystemError(
+			    static_cast<vk::Result>(result),
+			    "Failed to allocate a Vulkan buffer"
+			);
+		}
+		TraceAllocation(m_impl->impl, "buffer_create");
 		return ManagedAllocation(m_impl, resource, allocation);
 	}
 
-	ManagedAllocation MemoryAllocator::AllocateImage(vk::ImageCreateInfo const& resource_info, ResourceFlags const& flags) const {
+	ManagedAllocation MemoryAllocator::AllocateImage(
+	    vk::ImageCreateInfo const& resource_info,
+	    ResourceFlags const& flags
+	) const {
 		auto native_resource_info = VkImageCreateInfo(resource_info);
 		auto allocation_info = AllocationInfo(flags);
 		VkImage resource = nullptr;
 		VmaAllocation allocation = nullptr;
 		auto result = vmaCreateImage(
-			m_impl->impl,
-			&native_resource_info,
-			&allocation_info,
-			&resource,
-			&allocation,
-			nullptr
+		    m_impl->impl,
+		    &native_resource_info,
+		    &allocation_info,
+		    &resource,
+		    &allocation,
+		    nullptr
 		);
 		if (result != VK_SUCCESS) {
 			throw vk::SystemError(
-				static_cast<vk::Result>(result),
-				"Failed to allocate a Vulkan image"
+			    static_cast<vk::Result>(result),
+			    "Failed to allocate a Vulkan image"
 			);
 		}
+		TraceAllocation(m_impl->impl, "image_create");
 		return ManagedAllocation(m_impl, resource, allocation);
 	}
 
 } // namespace fyuu_rhi::vulkan
 #endif // !defined(__APPLE__)
+#endif // !defined(__EMSCRIPTEN__)

@@ -1,10 +1,12 @@
 module;
+#if !defined(__EMSCRIPTEN__)
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <cstddef>
 #include <exception>
 #include <memory>
 #include <stdexcept>
+#include <utility>
 
 #include <deque>
 #include <vector>
@@ -43,11 +45,15 @@ module;
 #include <glad/glad_egl.h>
 #endif
 
+#endif // !defined(__EMSCRIPTEN__)
+
 module fyuu_rhi:opengl_data;
+#if !defined(__EMSCRIPTEN__)
 #if defined(__cpp_lib_modules)
 import std;
 #endif // defined(__cpp_lib_modules)
 import :execution;
+import :memory_pressure;
 import :pipeline;
 
 namespace fyuu_rhi::opengl {
@@ -75,6 +81,15 @@ namespace {
 		static std::mutex mutex;
 		return mutex;
 	}
+
+	/** @brief Lets the busy-polling consumer skip the retirement lock when empty.
+	 * @note The queue remains protected by its mutex. Producers publish only after
+	 * insertion succeeds, and consumers clear the hint while holding that mutex.
+	 */
+	std::atomic_bool& HasRetiredObjects() {
+		static std::atomic_bool pending = false;
+		return pending;
+	}
 } // namespace
 
 namespace fyuu_rhi::opengl {
@@ -85,6 +100,7 @@ namespace fyuu_rhi::opengl {
 		try {
 			std::unique_lock lock(RetiredObjectsMutex());
 			RetiredObjects().emplace_back(type, impl, nullptr);
+			HasRetiredObjects().store(true, std::memory_order_release);
 		}
 		catch (...) {
 			// Leaking a native name during allocation failure is safer than entering
@@ -103,6 +119,7 @@ namespace fyuu_rhi::opengl {
 				0u,
 				sync
 			);
+			HasRetiredObjects().store(true, std::memory_order_release);
 		}
 		catch (...) {
 			// See RetireObject(): failure must not call GL from the wrong thread.
@@ -110,24 +127,37 @@ namespace fyuu_rhi::opengl {
 	}
 
 	void CollectRetiredObjects() noexcept {
-		std::deque<RetiredObject> objects;
-		{
-			std::unique_lock lock(RetiredObjectsMutex());
-			objects = std::move(RetiredObjects());
-			RetiredObjects().clear();
+		if (!HasRetiredObjects().load(std::memory_order_acquire)) {
+			return;
 		}
+		std::unique_lock lock(RetiredObjectsMutex());
+		/** @brief Skip temporary deque construction on the fence-polling empty path.
+		 * @note The emptiness check shares the producer lock, so retirement cannot
+		 * race with draining. Native deletion remains outside that lock.
+		 * Debug iterator proxies may allocate even for an empty container.
+		 */
+		if (RetiredObjects().empty()) {
+			HasRetiredObjects().store(false, std::memory_order_release);
+			return;
+		}
+		auto objects = std::move(RetiredObjects());
+		RetiredObjects().clear();
+		HasRetiredObjects().store(false, std::memory_order_release);
+		lock.unlock();
 		for (auto const& object : objects) {
 			if (object.sync) {
 				glDeleteSync(object.sync);
 				continue;
 			}
 			switch (object.type) {
-			case RetiredObjectType::Buffer:
+			case RetiredObjectType::Buffer: {
 				glDeleteBuffers(1, &object.impl);
 				break;
-			case RetiredObjectType::Texture:
+			}
+			case RetiredObjectType::Texture: {
 				glDeleteTextures(1, &object.impl);
 				break;
+			}
 			case RetiredObjectType::Sampler:
 				glDeleteSamplers(1, &object.impl);
 				break;
@@ -288,8 +318,6 @@ namespace fyuu_rhi::opengl {
 		struct PendingSync {
 			GLsync sync;
 			std::shared_ptr<CompletionState> state;
-			/// Populated only by opt-in scheduler diagnostics; never a GPU timestamp.
-			std::chrono::steady_clock::time_point issued_at{};
 		};
 
 		struct PresentTarget {
@@ -337,10 +365,14 @@ namespace fyuu_rhi::opengl {
 		Texture
 	};
 
-	struct ResourceDeleter {
-		ResourceType type;
-		void operator()(GLuint impl) const noexcept;
+	/** @brief Retire a native name after its last resource, view or descriptor owner releases it. */
+	struct ObjectDeleter {
+		RetiredObjectType type;
+		void operator()(GLuint impl) const noexcept {
+			RetireObject(type, impl);
+		}
 	};
+	using ManagedObject = boost::scope::unique_resource<GLuint, ObjectDeleter>;
 
 	struct SyncDeleter {
 		void operator()(GLsync sync) const noexcept;
@@ -349,28 +381,45 @@ namespace fyuu_rhi::opengl {
 	using ManagedSync = boost::scope::unique_resource<GLsync, SyncDeleter>;
 
 	struct Resource {
-		boost::scope::unique_resource<GLuint, ResourceDeleter> impl;
+		std::shared_ptr<ManagedObject> impl;
 		ManagedSync creation_sync;
 		GLenum target;
 		GLenum format;
 		ResourceType type;
+		/// @brief Creation default used only by attachment ClearDefault operations.
+		TextureClearValue default_clear_value{};
 
-		Resource(GLuint buffer, GLsync creation_sync) noexcept;
+		Resource(GLuint buffer, GLsync creation_sync_) try
+			: impl(std::make_shared<ManagedObject>(ManagedObject(buffer, ObjectDeleter{ RetiredObjectType::Buffer }))),
+			creation_sync(creation_sync_, SyncDeleter{}),
+			target(0u),
+			format(0u),
+			type(ResourceType::Buffer) {
+		}
+		catch (...) {
+			RetireSync(creation_sync_);
+			throw;
+		}
 
 		Resource(
 			GLuint texture,
-			GLsync creation_sync,
-			GLenum target,
-			GLenum format
-		) noexcept;
+			GLsync creation_sync_,
+			GLenum target_,
+			GLenum format_
+		) try
+			: impl(std::make_shared<ManagedObject>(ManagedObject(texture, ObjectDeleter{ RetiredObjectType::Texture }))),
+			creation_sync(creation_sync_, SyncDeleter{}),
+			target(target_),
+			format(format_),
+			type(ResourceType::Texture) {
+		}
+		catch (...) {
+			RetireSync(creation_sync_);
+			throw;
+		}
 
 		Resource(Resource&&) noexcept = default;
 		Resource& operator=(Resource&&) noexcept = default;
-	};
-
-	struct ViewDeleter {
-		bool owned;
-		void operator()(GLuint impl) const noexcept;
 	};
 
 	struct View {
@@ -379,31 +428,42 @@ namespace fyuu_rhi::opengl {
 			std::size_t size;
 		};
 
-		boost::scope::unique_resource<GLuint, ViewDeleter> impl;
+		std::shared_ptr<ManagedObject> impl;
 		std::optional<BufferRange> buffer_range;
 		GLenum target;
 		GLenum format;
 
 		View(
+			std::shared_ptr<ManagedObject> const& impl_,
+			std::optional<BufferRange> buffer_range_,
+			GLenum target_,
+			GLenum format_
+		) noexcept
+			: impl(impl_),
+			buffer_range(buffer_range_),
+			target(target_),
+			format(format_) {
+		}
+
+		View(
 			GLuint impl_,
 			std::optional<BufferRange> buffer_range_,
 			GLenum target_,
-			GLenum format_,
-			bool owned_
-		) noexcept;
+			GLenum format_
+		)
+			: View(std::make_shared<ManagedObject>(ManagedObject(impl_, ObjectDeleter{ RetiredObjectType::Texture })), buffer_range_, target_, format_) {
+		}
 
 		View(View&&) noexcept = default;
 		View& operator=(View&&) noexcept = default;
 	};
 
-	struct SamplerDeleter {
-		void operator()(GLuint impl) const noexcept;
-	};
-
 	struct Sampler {
-		boost::scope::unique_resource<GLuint, SamplerDeleter> impl;
+		std::shared_ptr<ManagedObject> impl;
 
-		explicit Sampler(GLuint impl_) noexcept;
+		explicit Sampler(GLuint impl_)
+			: impl(std::make_shared<ManagedObject>(ManagedObject(impl_, ObjectDeleter{ RetiredObjectType::Sampler }))) {
+		}
 
 		Sampler(Sampler&&) noexcept = default;
 		Sampler& operator=(Sampler&&) noexcept = default;
@@ -576,18 +636,19 @@ namespace fyuu_rhi::opengl {
 	};
 
 	struct PipelineResourceGroup {
+		/** @brief Own native binding objects independently of the borrowed public wrappers. */
 		struct Binding {
 			std::uint32_t slot;
 			std::uint32_t array_element;
-			GLuint buffer;
+			std::shared_ptr<ManagedObject> buffer;
 			std::size_t buffer_offset;
 			std::size_t buffer_size;
 			std::size_t buffer_capacity;
 			bool dynamic_buffer;
-			GLuint view;
+			std::shared_ptr<ManagedObject> view;
 			GLenum view_target;
 			GLenum view_format;
-			GLuint sampler;
+			std::shared_ptr<ManagedObject> sampler;
 		};
 
 		std::uint32_t space;
@@ -607,6 +668,8 @@ namespace fyuu_rhi::opengl {
 				Buffer,
 				Texture
 			} type;
+			/// @brief Snapshot of immutable attachment defaults for asynchronous replay.
+			TextureClearValue default_clear_value{};
 		};
 
 		struct ViewSnapshot {
@@ -674,3 +737,4 @@ namespace fyuu_rhi::opengl {
 	};
 
 } // namespace fyuu_rhi::opengl::data
+#endif // !defined(__EMSCRIPTEN__)

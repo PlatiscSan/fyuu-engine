@@ -2,21 +2,29 @@ module;
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <memory>
+#include <utility>
 #include <variant>
 #endif // !defined(__cpp_lib_modules)
+
+#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
+#include <D3D12MemAlloc.h>
+#include <d3d12.h>
+#include <dxgi1_6.h>
+#include <wrl.h>
+#endif // defined(_WIN32) && !defined(__EMSCRIPTEN__)
 
 module fyuu_rhi:physical_device_factory;
 #if defined(__cpp_lib_modules)
 import std;
 #endif // defined(__cpp_lib_modules)
 import :physical_device;
-#if defined(__APPLE__)
+#if defined(__APPLE__) && !defined(__EMSCRIPTEN__)
 import :metal_data;
 #endif // defined(__APPLE__)
-#if defined(_WIN32)
+#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
 import :d3d12_data;
 #endif // defined(_WIN32)
-#if !defined(__APPLE__)
+#if !defined(__APPLE__) && !defined(__EMSCRIPTEN__)
 import :opengl_data;
 import :vulkan_data;
 #endif // !defined(__APPLE__)
@@ -27,12 +35,12 @@ namespace fyuu_rhi {
 	struct PhysicalDeviceImplementation {
 		std::variant<
 			std::monostate,
-#if defined(_WIN32)
+#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
 			d3d12::PhysicalDevice,
 #endif // defined(_WIN32)
-#if defined(__APPLE__)
+#if defined(__APPLE__) && !defined(__EMSCRIPTEN__)
 			metal::PhysicalDevice,
-#else
+#elif !defined(__EMSCRIPTEN__)
 			vulkan::PhysicalDevice,
 			opengl::PhysicalDevice,
 #endif // defined(__APPLE__)
@@ -40,38 +48,16 @@ namespace fyuu_rhi {
 		> native;
 	};
 
-	namespace {
-#if !defined(__APPLE__)
-		PhysicalDeviceImplementation s_opengl_physical_device;
-#endif // !defined(__APPLE__)
-	} // namespace
+	/** @brief Emits inline-storage lifecycle operations where native template definitions are available. */
+	template class details::FastPimpl<PhysicalDeviceImplementation, 96u>;
 
 	template <class NativePhysicalDevice>
 	PhysicalDevice MakePhysicalDevice(NativePhysicalDevice&& native) {
 		return PhysicalDevice(
-			PhysicalDevice::UniqueHandle(
-				new PhysicalDeviceImplementation{ std::forward<NativePhysicalDevice>(native) },
-				[](PhysicalDeviceImplementation* implementation) noexcept {
-					delete implementation;
-				}
+			PhysicalDevice::ImplementationStorage(
+				std::in_place, std::forward<NativePhysicalDevice>(native)
 			)
 		);
 	}
-
-#if !defined(__APPLE__)
-	template <>
-	PhysicalDevice MakePhysicalDevice(opengl::PhysicalDevice&& native) {
-		if (std::holds_alternative<std::monostate>(s_opengl_physical_device.native)) {
-			s_opengl_physical_device.native.emplace<opengl::PhysicalDevice>(std::move(native));
-		}
-		return PhysicalDevice(
-			PhysicalDevice::UniqueHandle(
-				&s_opengl_physical_device,
-				[](PhysicalDeviceImplementation*) noexcept {
-				}
-			)
-		);
-	}
-#endif // !defined(__APPLE__)
 
 } // namespace fyuu_rhi

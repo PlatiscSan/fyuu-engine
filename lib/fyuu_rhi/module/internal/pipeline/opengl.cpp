@@ -1,8 +1,11 @@
 module;
+#if !defined(__EMSCRIPTEN__)
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <cstddef>
+#include <memory>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 #include <algorithm>
@@ -19,7 +22,10 @@ module;
 #include <glad/glad.h>
 #endif // !defined(__APPLE__)
 
+#endif // !defined(__EMSCRIPTEN__)
+
 module fyuu_rhi:opengl_pipeline;
+#if !defined(__EMSCRIPTEN__)
 #if !defined(__APPLE__)
 #if defined(__cpp_lib_modules)
 import std;
@@ -27,6 +33,7 @@ import std;
 import :opengl_data;
 import :pipeline;
 import :pipeline_dispatch;
+import :memory_pressure;
 import :pipeline_resource_group_factory;
 import :resource_factory;
 import :sampler_factory;
@@ -131,11 +138,13 @@ namespace fyuu_rhi {
 					bool expects_buffer =
 						declaration->flags.Test(Bits::UniformBuffer) ||
 						declaration->flags.Test(Bits::StorageBuffer);
-					bool expects_view =
+					/// @brief StorageBinding describes access, not a texture shape, for storage buffers.
+					bool expects_view = !expects_buffer && (
 						declaration->flags.Test(Bits::UniformTexelBuffer) ||
 						declaration->flags.Test(Bits::StorageTexelBuffer) ||
 						declaration->flags.Test(Bits::TextureBinding) ||
-						declaration->flags.Test(Bits::StorageBinding);
+						declaration->flags.Test(Bits::StorageBinding)
+					);
 					bool expects_sampler = declaration->flags.Test(
 						Bits::SamplerBinding
 					);
@@ -179,15 +188,15 @@ namespace fyuu_rhi {
 					opengl::PipelineResourceGroup::Binding result{
 						.slot = binding.slot,
 						.array_element = binding.array_element,
-						.buffer = 0u,
+						.buffer = {},
 						.buffer_offset = 0u,
 						.buffer_size = pipeline::PipelineWholeBuffer,
 						.buffer_capacity = 0u,
 						.dynamic_buffer = false,
-						.view = 0u,
+						.view = {},
 						.view_target = 0u,
 						.view_format = 0u,
-						.sampler = 0u
+						.sampler = {}
 					};
 					if (auto resource = binding.value.Buffer()) {
 						auto const& native_resource = NativeResource(resource);
@@ -196,7 +205,7 @@ namespace fyuu_rhi {
 								"An OpenGL buffer binding requires a buffer resource"
 							);
 						}
-						result.buffer = native_resource.impl.get();
+						result.buffer = native_resource.impl;
 						result.buffer_offset = binding.value.Offset();
 						result.buffer_capacity = resource->GetBufferSize();
 						if (result.buffer_offset > result.buffer_capacity) {
@@ -217,15 +226,15 @@ namespace fyuu_rhi {
 					}
 					else if (auto view = binding.value.BoundView()) {
 						auto const& native_view = NativeView(view);
-						result.view = native_view.impl.get();
+						result.view = native_view.impl;
 						result.view_target = native_view.target;
 						result.view_format = native_view.format;
 						if (auto sampler = binding.value.BoundSampler()) {
-							result.sampler = NativeSampler(sampler).impl.get();
+							result.sampler = NativeSampler(sampler).impl;
 						}
 					}
 					else if (auto sampler = binding.value.BoundSampler()) {
-						result.sampler = NativeSampler(sampler).impl.get();
+						result.sampler = NativeSampler(sampler).impl;
 					}
 					else {
 						throw std::invalid_argument(
@@ -266,3 +275,4 @@ namespace fyuu_rhi {
 
 } // namespace fyuu_rhi
 #endif // !defined(__APPLE__)
+#endif // !defined(__EMSCRIPTEN__)

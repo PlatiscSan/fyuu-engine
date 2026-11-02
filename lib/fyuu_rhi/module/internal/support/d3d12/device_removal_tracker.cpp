@@ -1,10 +1,11 @@
 module;
+#if !defined(__EMSCRIPTEN__)
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <limits>
 #include <cstdint>
 
-#include <atomic>
+#include <mutex>
 
 #include <string_view>
 
@@ -15,7 +16,10 @@ module;
 #include <wrl.h>
 #endif // defined(_WIN32)
 
+#endif // !defined(__EMSCRIPTEN__)
+
 module fyuu_rhi:d3d12_device_removal_tracker;
+#if !defined(__EMSCRIPTEN__)
 #if defined(_WIN32)
 #if defined(__cpp_lib_modules)
 import std;
@@ -119,7 +123,7 @@ namespace {
 	/// Called by whichever path detected the removal, in the order the D3D12
 	/// documentation prescribes: detection first, diagnosis second. DRED reports
 	/// nothing on its own, so nothing here participates in detecting a removal.
-	void ReportDeviceRemoval(ID3D12Device* device) noexcept {
+	void LogDeviceRemoval(ID3D12Device* device) noexcept {
 		auto reason = device->GetDeviceRemovedReason();
 		if (reason == S_OK) {
 			return;
@@ -175,18 +179,39 @@ namespace {
 
 namespace fyuu_rhi::d3d12 {
 
+	/**
+	 * @brief Reports device removal once across queues using native device-owned metadata.
+	 * @note No pointer into a movable LogicalDevice is retained. The mutex serializes
+	 * the native metadata update; diagnosis and logging happen after releasing it.
+	 */
+	void ReportDeviceRemoval(ID3D12Device* device) noexcept {
+		static constexpr GUID reported_key{0x76bcb59e, 0xec38, 0x4d60, {0xa2, 0x6a, 0xa5, 0xa8, 0xb2, 0x68, 0xb3, 0x04}};
+		static std::mutex mutex;
+		HRESULT saved;
+		{
+			std::lock_guard lock(mutex);
+			BOOL reported = FALSE;
+			UINT size = sizeof(reported);
+			if (SUCCEEDED(device->GetPrivateData(reported_key, &size, &reported)) && reported) {
+				return;
+			}
+			reported = TRUE;
+			saved = device->SetPrivateData(reported_key, sizeof(reported), &reported);
+		}
+		if (FAILED(saved)) {
+			fyuu_rhi::log::Warning("D3D12 could not retain the device-removal diagnosis marker");
+		}
+		LogDeviceRemoval(device);
+	}
+
 	class DeviceRemovalTracker {
 	private:
 		Microsoft::WRL::ComPtr<ID3D12Device> m_device;
 		DWORD m_callback_cookie;
-		/// Set by the first report, so several in-flight submissions that all observe
-		/// the same removal produce one diagnosis instead of one each.
-		std::atomic_bool m_reported;
 
 	public:
 		explicit DeviceRemovalTracker(Microsoft::WRL::ComPtr<ID3D12Device> const& device) :
-		    m_device(device), m_callback_cookie(RegisterMessageCallback(AsInfoQueue(m_device))),
-		    m_reported(false) {
+		    m_device(device), m_callback_cookie(RegisterMessageCallback(AsInfoQueue(m_device))) {
 		}
 
 		DeviceRemovalTracker(DeviceRemovalTracker const&) = delete;
@@ -194,18 +219,16 @@ namespace fyuu_rhi::d3d12 {
 
 		DeviceRemovalTracker(DeviceRemovalTracker&& other) noexcept :
 		    m_device(std::move(other.m_device)),
-		    m_callback_cookie(std::exchange(other.m_callback_cookie, 0u)),
-		    m_reported(other.m_reported.exchange(false, std::memory_order_relaxed)) {
+		    m_callback_cookie(std::exchange(other.m_callback_cookie, 0u)) {
 		}
 
 		DeviceRemovalTracker& operator=(DeviceRemovalTracker&& other) noexcept {
 			if (this != &other) {
+				if (m_callback_cookie != 0u) {
+					AsInfoQueue(m_device, false)->UnregisterMessageCallback(m_callback_cookie);
+				}
 				m_device = std::move(other.m_device);
 				m_callback_cookie = std::exchange(other.m_callback_cookie, 0u);
-				m_reported.store(
-				    other.m_reported.exchange(false, std::memory_order_relaxed),
-				    std::memory_order_relaxed
-				);
 			}
 			return *this;
 		}
@@ -220,15 +243,8 @@ namespace fyuu_rhi::d3d12 {
 			return m_device;
 		}
 
-		/// Diagnoses one removal of this device, at most once for this tracker's life.
-		/// Detection stays with the caller; this only reports what was detected.
-		void ReportRemoval() noexcept {
-			if (m_reported.exchange(true, std::memory_order_acq_rel)) {
-				return;
-			}
-			ReportDeviceRemoval(m_device.Get());
-		}
 	};
 
 } // namespace fyuu_rhi::d3d12
 #endif // defined(_WIN32)
+#endif // !defined(__EMSCRIPTEN__)

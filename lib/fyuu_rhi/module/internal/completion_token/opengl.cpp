@@ -1,4 +1,5 @@
 module;
+#if !defined(__EMSCRIPTEN__)
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <exception>
@@ -10,7 +11,10 @@ module;
 #include <mutex>
 #endif // !defined(__cpp_lib_modules)
 
+#endif // !defined(__EMSCRIPTEN__)
+
 module fyuu_rhi:opengl_completion_token;
+#if !defined(__EMSCRIPTEN__)
 #if !defined(__APPLE__)
 #if defined(__cpp_lib_modules)
 import std;
@@ -96,3 +100,4 @@ namespace fyuu_rhi::execution {
 
 } // namespace fyuu_rhi::execution
 #endif // !defined(__APPLE__)
+#endif // !defined(__EMSCRIPTEN__)

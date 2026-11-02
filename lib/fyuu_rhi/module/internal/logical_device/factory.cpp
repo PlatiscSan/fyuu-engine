@@ -6,18 +6,25 @@ module;
 #include <variant>
 #endif // !defined(__cpp_lib_modules)
 
+#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
+#include <D3D12MemAlloc.h>
+#include <d3d12.h>
+#include <dxgi1_6.h>
+#include <wrl.h>
+#endif // defined(_WIN32) && !defined(__EMSCRIPTEN__)
+
 module fyuu_rhi:logical_device_factory;
 #if defined(__cpp_lib_modules)
 import std;
 #endif // defined(__cpp_lib_modules)
 import :logical_device;
-#if defined(__APPLE__)
+#if defined(__APPLE__) && !defined(__EMSCRIPTEN__)
 import :metal_data;
 #endif // defined(__APPLE__)
-#if defined(_WIN32)
+#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
 import :d3d12_data;
 #endif // defined(_WIN32)
-#if !defined(__APPLE__)
+#if !defined(__APPLE__) && !defined(__EMSCRIPTEN__)
 import :opengl_data;
 import :vulkan_data;
 #endif // !defined(__APPLE__)
@@ -28,12 +35,12 @@ namespace fyuu_rhi {
 	struct LogicalDeviceImplementation {
 		std::variant<
 			std::monostate,
-#if defined(_WIN32)
+#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
 			d3d12::LogicalDevice,
 #endif // defined(_WIN32)
-#if defined(__APPLE__)
+#if defined(__APPLE__) && !defined(__EMSCRIPTEN__)
 			metal::LogicalDevice,
-#else
+#elif !defined(__EMSCRIPTEN__)
 			vulkan::LogicalDevice,
 			opengl::LogicalDevice,
 #endif // !defined(__APPLE__)
@@ -41,38 +48,16 @@ namespace fyuu_rhi {
 		> native;
 	};
 
-	namespace {
-#if !defined(__APPLE__)
-		LogicalDeviceImplementation s_opengl_logical_device;
-#endif // !defined(__APPLE__)
-	} // namespace
+	/** @brief Emits inline-storage lifecycle operations where native template definitions are available. */
+	template class details::FastPimpl<LogicalDeviceImplementation, 384u>;
 
 	template <class NativeLogicalDevice>
 	LogicalDevice MakeLogicalDevice(NativeLogicalDevice&& native) {
 		return LogicalDevice(
-			LogicalDevice::UniqueHandle(
-				new LogicalDeviceImplementation{ std::forward<NativeLogicalDevice>(native) },
-				[](LogicalDeviceImplementation* implementation) noexcept {
-					delete implementation;
-				}
+			LogicalDevice::ImplementationStorage(
+				std::in_place, std::forward<NativeLogicalDevice>(native)
 			)
 		);
 	}
-
-#if !defined(__APPLE__)
-	template <>
-	LogicalDevice MakeLogicalDevice(opengl::LogicalDevice&& native) {
-		if (std::holds_alternative<std::monostate>(s_opengl_logical_device.native)) {
-			s_opengl_logical_device.native.emplace<opengl::LogicalDevice>(std::move(native));
-		}
-		return LogicalDevice(
-			LogicalDevice::UniqueHandle(
-				&s_opengl_logical_device,
-				[](LogicalDeviceImplementation*) noexcept {
-				}
-			)
-		);
-	}
-#endif // !defined(__APPLE__)
 
 } // namespace fyuu_rhi

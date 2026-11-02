@@ -1,10 +1,8 @@
 module;
 #include <version>
 #if !defined(__cpp_lib_modules)
-#include <memory>
 #include <vector>
-#include <cstdint>
-#include <variant>
+
 #include <span>
 #endif // !defined(__cpp_lib_modules)
 #if defined(__ANDROID__)
@@ -28,16 +26,16 @@ export namespace fyuu_rhi {
 	 */
 	class Instance {
 	private:
-		struct InstanceImplementation* m_impl;
+		/// @brief Identifies the internal static backend slot without borrowing a wrapper pointer.
+		Backend m_backend;
 
 	public:
-		Instance(struct InstanceImplementation* impl) noexcept
-			: m_impl(impl) {
-
+		explicit Instance(Backend backend) noexcept
+			: m_backend(backend) {
 		}
 		
 		explicit operator bool() const noexcept {
-			return static_cast<bool>(m_impl);
+			return m_backend != Backend::Unknown;
 		}
 
 		/**

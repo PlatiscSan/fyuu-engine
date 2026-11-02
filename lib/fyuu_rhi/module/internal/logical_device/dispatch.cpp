@@ -31,7 +31,8 @@ namespace fyuu_rhi {
 			std::size_t,
 			std::size_t,
 			std::size_t,
-			ResourceFlags const&
+			ResourceFlags const&,
+			TextureClearValue const&
 		) const {
 			throw std::runtime_error("Texture creation is not implemented for this backend");
 		}

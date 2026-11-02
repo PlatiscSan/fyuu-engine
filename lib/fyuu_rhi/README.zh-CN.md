@@ -61,11 +61,25 @@ for (auto backend : fyuu_rhi::EnumerateBackends()) {
 
 原生对象不会暴露到公开接口中。不同后端或不同逻辑设备创建的对象不能混用。
 
+物理设备、逻辑设备、资源、View、采样器、管线、资源组和完成令牌使用 fast pimpl 内嵌缓冲区，
+不再单独分配不透明实现对象。缓冲区大小与对齐在编译时检查，移动后源对象为空。
+
 大多数 GPU 对象采用独占所有权，只能移动；`CommandScheduler` 可以复制，副本共享同一个调度上下文。命令图启动后，operation 会接管所有绑定对象；执行成功、失败或取消时，这些对象都会交还给 receiver。
 
 ## 初始化与选择设备
 
-请求后端实例前，必须先初始化进程级 RHI 上下文。RHI 会同步地向日志 Sink 写入消息，因此 Sink 必须存活到最后一次 RHI 调用结束。
+请求后端实例前，必须先初始化进程级 RHI 上下文。RHI 会同步地向日志 Sink 写入消息。
+`InitializeRHIContext()` 允许重复调用：每次更新名称、版本、缓存路径及平台配置，并同步更换
+Sink，传 `nullptr` 则停用日志。初始化不得与其他 RHI 操作并发；此前借用的名称字符串视图
+可能失效。重新初始化前必须释放旧 Vulkan 派生对象；Vulkan Instance 会被清空，并在下次请求时
+按新配置创建，其他后端实例保留。该函数不增加 Runtime 生命周期引用计数。
+每次初始化还会等待活动编译完成并释放 Slang global session。每次缓存未命中的编译使用
+局部 session，避免已加载模块名保留旧源码。磁盘缓存命中仍不创建 session，已有管线产物不受影响。
+使用 `fyuu_rhi::RebindRHISink(new_sink)` 更换日志目标；无需新目标时传 `nullptr`，
+并在返回后销毁旧 Sink。重绑会阻止新调用，等待已进入的旧 `Write()` 全部返回，
+再发布新的借用指针。新目标为空时丢弃日志，GPU 工作不受影响。
+初始化尚未完成时调用会抛出 `std::logic_error`。不得从 `Write()` 内部调用，
+也不得持有 `Write()` 需要的锁；并发重绑的调用方必须协调各 Sink 的生命周期。
 
 ```cpp
 fyuu_rhi::InitializeRHIContext(
@@ -112,7 +126,33 @@ auto texture = device.CreateTexture(width, height, 1u, 1u, flags);
 auto view = texture.CreateTextureView(0u, 1u, 0u, 1u, flags);
 ```
 
+附件纹理可向 `CreateTexture` 的最后一个参数传入 `TextureClearValue`：
+颜色使用 `ColorClearValue{r, g, b, a}`，深度/模板使用
+`DepthStencilClearValue{depth, stencil}`。这是默认清除值，不会在创建时初始化纹理。
+附件设置 `LoadOperation::ClearDefault` 时使用纹理默认值；`LoadOperation::Clear`
+仍使用附件中显式指定的值。深度和模板可以分别选择。
+
+省略该参数时，颜色附件默认透明黑，深度/模板附件默认深度 1、模板 0。
+非附件纹理不允许指定清除值。所有后端都会在渲染时使用这些默认值；D3D12
+还会将其作为资源创建时的优化提示。显式覆盖始终有效，但不同的值仍可能触发
+D3D12 的快速清除性能警告。
+
 View 由资源自身创建，使实现能够在不暴露原生句柄的情况下检查后端和设备归属。缓冲区 View 使用 `CreateBufferView()` 创建。例如，经 `WriteBuffer` 写入的缓冲区必须包含 `CopyDST`；只有 `VertexBuffer` 标志并不足以允许上传。
+
+### 可移植上传对齐
+
+所有后端统一使用以下公开对齐契约，不需要上层按后端硬编码：
+
+| 操作 | 公开常量 | 字节数 |
+| --- | --- | --- |
+| 纹理拷贝行距 | `TextureDataLayout::RowPitchAlignment` | 256 |
+| 缓冲区内纹理拷贝起始偏移 | `TextureDataLayout::OffsetAlignment` | 512 |
+| 映射起始偏移 | `Resource::MapOffsetAlignment` | 8 |
+| 映射有效长度 | `Resource::MapSizeAlignment` | 4 |
+
+`bytes_per_row` 必须非零且满足行距对齐；`rows_per_image` 必须非零。行距和分层间隔仍须满足格式区块及拷贝区域要求。纹理拷贝布局在命令图连接时校验，违规抛出 `std::invalid_argument`。
+
+`Map` 的 `size == 0` 表示映射偏移之后的剩余字节；解析后的长度必须非零且满足长度对齐。映射范围在公共入口校验，违规不会提交原生映射请求。对齐值是统一的可移植要求，不是各后端的最小限制。
 
 ### 映射缓冲区
 
@@ -120,6 +160,8 @@ View 由资源自身创建，使实现能够在不暴露原生句柄的情况下
 `ResourceMapScope`。带有 `HostVisible` 标志的缓冲区可以写入，调用
 `ResourceMapScope::Write()` 复制数据即可，不需要持有后端映射指针。带有
 `DeviceReadback` 标志的缓冲区通过 `ResourceMapScope::Read()` 读取。
+
+WebGPU 的 `HostVisible` 缓冲区只允许附加 `CopySRC` 用途，`DeviceReadback` 缓冲区只允许附加 `CopyDST` 用途；两者均不能附加顶点、索引、Uniform、Storage、Texel 或 Indirect 用途。不支持的组合在创建时抛出 `std::invalid_argument`，不会静默取消可映射性。GPU 顶点等数据使用独立上传缓冲区复制。
 
 ```cpp
 fyuu_rhi::ResourceFlags upload_flags;
@@ -146,7 +188,7 @@ mapping.Reset(); // 可以提前解除映射；不调用时由析构函数自动
 
 `Write()` 会拒绝只读映射以及大于映射区间的数据。`Reset()` 可以重复调用；
 已经移动或已经重置的 Scope 不再持有映射。映射有效期间，对应的 `Resource`
-必须保持存活。
+必须保持存活，且不得移动，直到映射解除。
 
 ## Shader、Pipeline 与资源组
 
@@ -259,6 +301,16 @@ present
 
 使用 `SetPresentationTarget()` 绑定原生窗口。窗口及其事件循环仍由应用负责管理；应用需要处理平台事件和尺寸变化，并在窗口关闭前持续提交帧。
 
+窗口关闭或切换后端前，先等待该逻辑设备上的所有命令图完成，再销毁旧调度器及相关后端资源。
+
+原生 WebGPU 后端在 `vertical_sync=true` 时使用 FIFO；为 `false` 时按 Surface 能力优先选择 Immediate，其次 Mailbox，均不支持时使用 FIFO。同步设置变化会重新配置已有 Surface。浏览器 Canvas 的呈现时机由浏览器控制，不能通过此参数关闭垂直同步。
+
+WebGPU 按 Surface 支持格式选择呈现格式。RGBA8/BGRA8 sRGB 源优先复制到对应的 UNORM Surface，保留已编码像素，不再执行 sRGB 转换。只有另一种通道布局可用时，RHI 通过内部 UNORM 中间纹理和呈现绘制完成 RGBA/BGRA 转换，不要求源纹理增加采样用途。
+
+释放呈现对象不会重置原生窗口状态。Windows 的窗口像素格式一旦设置就不能更改，
+不兼容的 OpenGL 目标会明确报错；跨后端复用同一个 HWND 不属于保证。
+需要任意切换后端时，由宿主为新后端创建新的原生呈现窗口。
+
 ## 启动任务与接收完成结果
 
 命令图构建完成后，将它连接到 receiver，为所有已注册槽位绑定对象，然后启动 operation：
@@ -279,6 +331,8 @@ Receiver 提供 `get_env()`，并且只接收一次终止信号：
 - 取消时调用 `set_stopped() &&`。
 
 发送 error 或 stopped 信号前，`RecoverBindings(CommandGraphResources&&)` 会先归还 operation 持有的对象；执行成功时，这些对象直接随 `set_value` 返回。使用 `TakeResource`、`TakeView`、`TakeSampler`、`TakePipeline` 或 `TakeResourceGroup` 取回对应对象，每个槽位只能取出一次。
+
+回读与绘制统一通过 `start()` 异步提交。完成回调可以继续提交命令图，但不得阻塞等待完成线程派发另一个 receiver；GPU 数据依赖通过命令图表达，回读缓冲区在图完成后读取。
 
 完成回调可能在内部工作线程上执行。Receiver 必须自行同步与该线程共享的应用状态。Stop 请求只在原生提交前有效；工作一旦提交到 GPU，通常就无法取消。
 
@@ -304,8 +358,7 @@ Windows 的系统缓存目录是 `%LOCALAPPDATA%`；Linux 使用 `$XDG_CACHE_HOM
 或 `~/.cache`；macOS 使用 `~/Library/Caches`。请先关闭使用 RHI 的应用，再清理。
 可以删除单个变体、整个着色器目录或整个后端目录；下次创建对应管线时会重新编译。
 
-旧的 `bundles/` 不因这次目录调整而自动迁移或删除，可以手动清理。
-旧缓存仍计入容量限制，自动清理以完整变体为单位，不会单独删除 manifest 或入口文件。
+自动清理以完整变体为单位，不会单独删除 manifest 或入口文件。
 
 原生管线缓存放在相邻的 `pipelines/` 中：
 
@@ -325,7 +378,6 @@ D3D12 root signature 按布局共享，Vulkan pipeline cache 按设备和驱动�
 因此不伪装成某个着色器的独立缓存。删除 `device-shared/` 会清理 Vulkan 原生共享缓存。
 WebGPU、Metal 目前没有 RHI 管理的原生管线磁盘缓存，驱动或运行库自行管理的缓存不在此处。
 关闭使用 RHI 的应用后，可删除单个文件或整个目录，缺失的缓存会重新生成。
-这次调整不删除旧的根目录散列缓存文件，可手动清理。
 
 ## WebGPU 的进度推进与 CPU 占用
 
@@ -345,7 +397,7 @@ Receiver 调用和资源回收仍由完成执行器处理，不在 Dawn 回调�
 缺少 `TextureCompressionBC` 时，NVIDIA、Intel 和 AMD 路径自动启用 BC1–BC7 的
 GPU 软件解码，不需要额外开关。BC6H/BC7 另有不依赖厂商的规范精确解码器。
 AMD 的 BC1–BC5 尚待原生硬件验证；未知厂商的 BC1–BC5
-会明确拒绝，不以近似值代替。详细覆盖范围见 [BC 验证结果](test/WEBGPU_FALLBACK_RESULTS.md)。
+会明确拒绝，不以近似值代替。
 
 sRGB 保留 sRGB 语义。NVIDIA/Intel 的 BC4/BC5 使用有符号或无符号 normalized16
 采样存储，BC6H 使用 RGBA16Float，BC1–BC3 和 BC7 使用 RGBA8。
@@ -366,7 +418,7 @@ Vulkan 资源组共享描述符池页。新页容量随需求增长，并在内�
 D3D12 描述符堆在首次使用时才建立。
 
 OpenGL 的提交快照仍独立持有数据，但管线元数据集中存储，并缩减闲置 VAO 与
-呈现目标缓存。Slang 最多保留八种近期会话配置，压力下进一步减少。
+呈现目标缓存。Slang 仅保留惰性创建的 global session，编译 session 随本次编译结束而释放。
 WebGPU 在同一设备、同一解码格式的存活纹理之间共享 BC 解码管线；
 fallback 常量使用录制期对齐分页，每次更新占用独立切片。
 这些调整不改变资源所有权与绑定语义。

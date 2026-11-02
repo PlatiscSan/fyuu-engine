@@ -5,7 +5,6 @@ module;
 #include <utility>
 #include <string>
 #include <limits>
-
 #include <cstdint>
 #include <array>
 
@@ -15,7 +14,11 @@ module;
 #include <Windows.h>
 #include <VersionHelpers.h>
 #endif // defined(_WIN32)
+#if defined(__EMSCRIPTEN__)
+#include <webgpu/webgpu_cpp.h>
+#else
 #include <dawn/webgpu_cpp.h>
+#endif // defined(__EMSCRIPTEN__)
 #if defined(_WIN32)
 #include <dawn/native/DawnNative.h>
 #endif // defined(_WIN32)
@@ -64,7 +67,8 @@ namespace fyuu_rhi {
 			    .requiredFeatureCount = std::size(RequiredFeatures),
 			    .requiredFeatures = RequiredFeatures
 			};
-			return {wgpu::CreateInstance(&desc)};
+			auto instance = wgpu::CreateInstance(&desc);
+			return {std::move(instance)};
 		}
 	};
 
@@ -97,7 +101,11 @@ namespace fyuu_rhi {
 				    [&adapter](
 				        wgpu::RequestAdapterStatus status,
 				        wgpu::Adapter result,
+#if defined(__EMSCRIPTEN__)
+				        wgpu::StringView message
+#else
 				        char const* message
+#endif // defined(__EMSCRIPTEN__)
 				    ) noexcept {
 					    if (status == wgpu::RequestAdapterStatus::Success) {
 						    adapter = std::move(result);
@@ -108,7 +116,12 @@ namespace fyuu_rhi {
 						        std::format(
 						            "WebGPU adapter request failed with status {}: {}",
 						            static_cast<std::uint32_t>(status),
+#if defined(__EMSCRIPTEN__)
+						            message.data ? std::string_view(message.data, message.length) :
+						                           "No diagnostic message"
+#else
 						            message ? message : "No diagnostic message"
+#endif // defined(__EMSCRIPTEN__)
 						        )
 						    );
 					    } catch (...) {

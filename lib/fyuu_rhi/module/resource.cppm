@@ -2,15 +2,16 @@ module;
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <cstddef>
-#include <memory>
 #include <type_traits>
-#include <utility>
 
 #include <cstdint>
+
+#include <variant>
 
 #include <span>
 #endif // !defined(__cpp_lib_modules)
 export module fyuu_rhi:resource;
+import :fast_pimpl;
 #if defined(__cpp_lib_modules)
 import std;
 #endif // defined(__cpp_lib_modules)
@@ -186,6 +187,29 @@ export namespace fyuu_rhi {
 	/// Thread-safe flag set used to assemble ResourceFlagBits creation contracts.
 	using ResourceFlags = plastic::concurrency::AtomicFlags<ResourceFlagBits>;
 
+	/** @brief Linear color used for attachment clearing, not creation-time initialization. */
+	struct ColorClearValue {
+		float red = 0.0f;
+		float green = 0.0f;
+		float blue = 0.0f;
+		float alpha = 0.0f;
+	};
+
+	/** @brief Default depth and stencil values; depth lies in [0, 1], stencil in [0, 255]. */
+	struct DepthStencilClearValue {
+		float depth = 1.0f;
+		std::uint32_t stencil = 0u;
+	};
+
+	/**
+	 * @brief Attachment default clear value shared by every backend.
+	 * @note Monostate selects transparent black for color attachments or depth 1,
+	 * stencil 0 for depth attachments. Non-attachments must use monostate.
+	 * Creation does not initialize contents. Actual clearing occurs only when
+	 * a rendering command requests it; native fast-clear hints are optional.
+	 */
+	using TextureClearValue = std::variant<std::monostate, ColorClearValue, DepthStencilClearValue>;
+
 	/// Byte interval within a buffer.
 	struct ResourceDataRange {
 		std::size_t offset = 0u;
@@ -200,6 +224,7 @@ export namespace fyuu_rhi {
 		std::uint32_t mip_levels = 0u;
 	};
 
+	/** @brief Scoped buffer mapping; its Resource must remain alive and unmoved until unmapping. */
 	class ResourceMapScope {
 	private:
 		void* m_context = nullptr;
@@ -254,8 +279,16 @@ export namespace fyuu_rhi {
 		void Write(std::span<std::byte const> data);
 	};
 
-	/// Host/buffer layout used by buffer-to-texture and texture-to-buffer copies.
+	/** @brief Buffer layout used by buffer-to-texture and texture-to-buffer copies.
+	 * @note offset must be a multiple of OffsetAlignment; non-zero bytes_per_row must
+	 * be a multiple of RowPitchAlignment. Format block size and copy bounds still apply.
+	 */
 	struct TextureDataLayout {
+		/// @brief Portable byte alignment required for each buffer-to-texture or texture-to-buffer row pitch.
+		static constexpr std::uint32_t RowPitchAlignment = 256u;
+		/// @brief Portable byte alignment required for the start of a texture copy footprint in a buffer.
+		static constexpr std::size_t OffsetAlignment = 512u;
+
 		std::size_t offset = 0u;
 		std::uint32_t bytes_per_row = 0u;
 		std::uint32_t rows_per_image = 0u;
@@ -283,10 +316,11 @@ export namespace fyuu_rhi {
 	 */
 	class Resource {
 	public:
-		using UniqueHandle = std::unique_ptr<
-			struct ResourceImplementation,
-			void(*)(struct ResourceImplementation*)
-		>;
+		using ImplementationStorage = details::FastPimpl<struct ResourceImplementation, 192u>;
+		/// @brief Portable byte alignment required for Map offsets on every backend.
+		static constexpr std::size_t MapOffsetAlignment = 8u;
+		/// @brief Portable byte alignment required for resolved non-empty Map lengths on every backend.
+		static constexpr std::size_t MapSizeAlignment = 4u;
 
 	private:
 		template <class Native>
@@ -294,16 +328,18 @@ export namespace fyuu_rhi {
 		template <class Native>
 		friend struct execution::ExecuteCommands;
 
-		UniqueHandle m_impl;
+		ImplementationStorage m_impl;
 
 	public:
-		Resource() noexcept
-			: m_impl(nullptr, nullptr) {
-		}
+		Resource() noexcept;
 
-		explicit Resource(UniqueHandle&& impl) noexcept
-			: m_impl(std::move(impl)) {
-		}
+		explicit Resource(ImplementationStorage&& impl) noexcept;
+
+		Resource(Resource const&) = delete;
+		Resource& operator=(Resource const&) = delete;
+		Resource(Resource&& other) noexcept;
+		Resource& operator=(Resource&& other) noexcept;
+		~Resource() noexcept;
 
 		explicit operator bool() const noexcept {
 			return static_cast<bool>(m_impl);
@@ -341,6 +377,10 @@ export namespace fyuu_rhi {
 		 * Write(). GPU work using the interval must already be complete. Textures
 		 * must first be copied into a buffer. The returned scope owns the mapping
 		 * and automatically unmaps it on destruction.
+		 * @note offset must be a multiple of MapOffsetAlignment. A zero size selects the
+		 * remaining bytes; the resolved size must be non-zero and a multiple of MapSizeAlignment.
+		 * @throws std::invalid_argument if the interval violates these portable alignment requirements.
+		 * @note Keep this Resource alive and do not move it while the mapping is active.
 		 */
 		ResourceMapScope Map(ResourceDataRange range);
 

@@ -15,6 +15,11 @@ module;
 
 #include <algorithm>
 #include <functional>
+#if defined(__EMSCRIPTEN__)
+
+#include <string>
+#endif // defined(__EMSCRIPTEN__)
+
 #include <limits>
 
 #include <cstdint>
@@ -42,6 +47,7 @@ module;
 
 #endif // !defined(__cpp_lib_modules)
 
+#if !defined(__EMSCRIPTEN__)
 #if defined(_WIN32)
 #include <Windows.h>
 #elif defined(__ANDROID__)
@@ -52,8 +58,10 @@ module;
 #elif defined(__APPLE__)
 #include <QuartzCore/CAMetalLayer.hpp>
 #endif // defined(_WIN32)
+#endif // !defined(__EMSCRIPTEN__)
 
 export module fyuu_rhi:execution;
+import :fast_pimpl;
 #if defined(__cpp_lib_modules)
 import std;
 #endif // defined(__cpp_lib_modules)
@@ -177,23 +185,20 @@ export namespace fyuu_rhi::execution {
 		ResourceRange range;
 	};
 
-	enum class LoadOperation : std::uint8_t { Load, Clear, Discard };
+	/** @brief Clear uses explicit attachment values; ClearDefault uses the texture's creation defaults. */
+	enum class LoadOperation : std::uint8_t { Load, Clear, Discard, ClearDefault };
 
 	enum class StoreOperation : std::uint8_t { Store, Discard };
 
-	struct ColorClearValue {
-		float red = 0.0f;
-		float green = 0.0f;
-		float blue = 0.0f;
-		float alpha = 0.0f;
-	};
+	using fyuu_rhi::ColorClearValue;
 
 	struct ColorAttachment {
 		std::size_t resource;
 		std::size_t view;
 		LoadOperation load = LoadOperation::Clear;
 		StoreOperation store = StoreOperation::Store;
-		ColorClearValue clear;
+		ColorClearValue
+		    clear; ///< Explicit Clear value; ClearDefault reads the bound texture's default instead.
 		std::optional<std::size_t> resolve_resource;
 		std::optional<std::size_t> resolve_view;
 	};
@@ -205,8 +210,10 @@ export namespace fyuu_rhi::execution {
 		StoreOperation depth_store = StoreOperation::Store;
 		LoadOperation stencil_load = LoadOperation::Discard;
 		StoreOperation stencil_store = StoreOperation::Discard;
-		float clear_depth = 1.0f;
-		std::uint32_t clear_stencil = 0u;
+		float clear_depth =
+		    1.0f; ///< Explicit depth Clear value; depth_load can select the texture default instead.
+		std::uint32_t clear_stencil =
+		    0u; ///< Explicit stencil Clear value; stencil_load independently selects its default.
 	};
 
 	struct RenderArea {
@@ -482,7 +489,9 @@ export namespace fyuu_rhi::execution {
 		}
 
 		void ValidateTextureLayout(TextureDataLayout const& layout, char const* message) {
-			if (layout.bytes_per_row == 0u || layout.rows_per_image == 0u) {
+			if (layout.bytes_per_row == 0u || layout.rows_per_image == 0u ||
+			    layout.bytes_per_row % TextureDataLayout::RowPitchAlignment != 0u ||
+			    layout.offset % TextureDataLayout::OffsetAlignment != 0u) {
 				throw std::invalid_argument(message);
 			}
 		}
@@ -813,7 +822,12 @@ export namespace fyuu_rhi::execution {
 			}
 
 			void ValidateCopy(std::size_t source, std::size_t destination) const {
-				RequireQueue(QueueType::Transfer, "Copy command requires a transfer node");
+				/// @note Graphics queues also support copies, including depth readback that may require graphics capability.
+				if (node.queue != QueueType::Transfer && node.queue != QueueType::Graphics) {
+					throw std::invalid_argument(
+					    "Copy command requires a transfer or graphics node"
+					);
+				}
 				ValidateIndex(
 				    source,
 				    graph.bindings.resource_count,
@@ -919,6 +933,8 @@ export namespace fyuu_rhi::execution {
 					    command.depth_stencil->stencil_load == LoadOperation::Load;
 					bool write = command.depth_stencil->depth_load == LoadOperation::Clear ||
 					    command.depth_stencil->stencil_load == LoadOperation::Clear ||
+					    command.depth_stencil->depth_load == LoadOperation::ClearDefault ||
+					    command.depth_stencil->stencil_load == LoadOperation::ClearDefault ||
 					    command.depth_stencil->depth_store == StoreOperation::Store ||
 					    command.depth_stencil->stencil_store == StoreOperation::Store;
 					ValidateAccess(
@@ -1214,7 +1230,7 @@ export namespace fyuu_rhi::execution {
 					) {
 						throw std::invalid_argument(
 						    "Dispatch, copy, and presentation commands cannot execute in a "
-							"rendering scope"
+						    "rendering scope"
 						);
 					}
 					std::visit(CommandValidator{graph, node}, command);
@@ -1429,13 +1445,15 @@ export namespace fyuu_rhi::execution {
 			/// How one stored callable is reached, destroyed and relocated.
 			struct Dispatch {
 				void (*invoke)(void* storage, std::stop_token stop);
+#if defined(__EMSCRIPTEN__)
+				bool (*TryInvoke)(void* storage);
+#endif // defined(__EMSCRIPTEN__)
 				void (*destroy)(void* storage) noexcept;
 				void (*move)(void* from, void* to) noexcept;
 			};
 
-			/// Three pointers, which is what the receivers here need: one unique_ptr and one
-			/// CompletionToken.
-			static constexpr std::size_t kInlineSize = 3 * sizeof(void*);
+			/** @brief Holds an inline completion token plus its engagement flag and operation pointer. */
+			static constexpr std::size_t kInlineSize = fyuu_rhi::details::CompletionTokenStorageSize + 2u * sizeof(void*);
 			static constexpr std::size_t kInlineAlignment = alignof(void*);
 
 			/// Dispatch for the callable type @p Function, choosing where it is stored.
@@ -1466,6 +1484,18 @@ export namespace fyuu_rhi::execution {
 					(*Target(storage))(stop);
 				}
 
+#if defined(__EMSCRIPTEN__)
+				/** @brief Deliver only a terminal GPU result, without suspending a browser callback. */
+				static bool TryInvoke(void* storage) {
+					if constexpr (requires(Function& FunctionObject) { FunctionObject(std::stop_token{}, true); }) {
+						return (*Target(storage))(std::stop_token{}, true);
+					} else {
+						(*Target(storage))(std::stop_token{});
+						return true;
+					}
+				}
+#endif // defined(__EMSCRIPTEN__)
+
 				static void Destroy(void* storage) noexcept {
 					if constexpr (inline_stored) {
 						std::destroy_at(Target(storage));
@@ -1482,6 +1512,7 @@ export namespace fyuu_rhi::execution {
 						    reinterpret_cast<Function*>(Bytes(to)),
 						    std::move(*Target(from))
 						);
+						std::destroy_at(Target(from));
 					} else {
 						*reinterpret_cast<Function**>(Bytes(to)) =
 						    std::exchange(*reinterpret_cast<Function**>(Bytes(from)), nullptr);
@@ -1489,7 +1520,14 @@ export namespace fyuu_rhi::execution {
 				}
 
 			public:
-				static constexpr Dispatch value{&Invoke, &Destroy, &Move};
+				static constexpr Dispatch value{
+					&Invoke,
+#if defined(__EMSCRIPTEN__)
+					&TryInvoke,
+#endif // defined(__EMSCRIPTEN__)
+					&Destroy,
+					&Move
+				};
 			};
 
 			/// Null for an empty task, which is the only state whose call is undefined.
@@ -1559,6 +1597,13 @@ export namespace fyuu_rhi::execution {
 				m_table->invoke(m_storage, stop);
 			}
 
+#if defined(__EMSCRIPTEN__)
+			/** @brief Return false while pending; true after delivering one completion. */
+			bool TryInvoke() {
+				return m_table->TryInvoke(m_storage);
+			}
+#endif // defined(__EMSCRIPTEN__)
+
 			/// Whether @p Function is stored inline rather than in one heap allocation.
 			template <class Function>
 			static constexpr bool FitsInline = Table<Function>::inline_stored;
@@ -1582,7 +1627,14 @@ export namespace fyuu_rhi::execution {
 
 	} // namespace details
 
-#if defined(_WIN32)
+#if defined(__EMSCRIPTEN__)
+	/**
+	 * @brief Owned CSS selector identifying an HTML canvas, for example "#canvas".
+	 * @note The host keeps the selected canvas alive while presentation uses it.
+	 * The selector is owned so deferred command graphs do not borrow host text.
+	 */
+	using PlatformHandle = std::string;
+#elif defined(_WIN32)
 	using PlatformHandle = HWND;
 #elif defined(__ANDROID__)
 	using PlatformHandle = ANativeWindow*;
@@ -1610,19 +1662,21 @@ export namespace fyuu_rhi::execution {
 	 */
 	class CompletionToken {
 	public:
-		using UniqueHandle = std::unique_ptr<
-		    struct CompletionTokenImplementation,
-		    void (*)(struct CompletionTokenImplementation*)>;
+		using ImplementationStorage = fyuu_rhi::details::FastPimpl<struct CompletionTokenImplementation, fyuu_rhi::details::CompletionTokenStorageSize>;
 
 	private:
-		UniqueHandle m_impl;
+		ImplementationStorage m_impl;
 
 	public:
-		CompletionToken() noexcept : m_impl(nullptr, nullptr) {
-		}
+		CompletionToken() noexcept;
 
-		explicit CompletionToken(UniqueHandle&& impl) noexcept : m_impl(std::move(impl)) {
-		}
+		explicit CompletionToken(ImplementationStorage&& impl) noexcept;
+
+		CompletionToken(CompletionToken const&) = delete;
+		CompletionToken& operator=(CompletionToken const&) = delete;
+		CompletionToken(CompletionToken&& other) noexcept;
+		CompletionToken& operator=(CompletionToken&& other) noexcept;
+		~CompletionToken() noexcept;
 
 		bool Poll() noexcept;
 
@@ -2093,6 +2147,7 @@ export namespace fyuu_rhi::execution {
 			return *this;
 		}
 
+		/** @brief Submits GPU work and queues terminal receiver delivery without blocking the caller. */
 		void start() & noexcept {
 			if (!m_context) {
 				return;
@@ -2124,18 +2179,19 @@ export namespace fyuu_rhi::execution {
 						SetStopped(std::move(m_context));
 						return;
 					}
-					// Holds one unique_ptr and one CompletionToken, which is exactly the inline
-					// size of a CompletionTask, so enqueueing this receiver allocates nothing.
-					details::EnqueueCompletionTask(
-					    details::MakeCompletionTask(
-					        [operation = std::move(m_context),
-							 token = std::move(token)](std::stop_token pool_stop) mutable noexcept {
+					/** @brief Captures the inline token without another completion-task allocation. */
+					auto Complete = [operation = std::move(m_context),
+							 token = std::move(token)](std::stop_token pool_stop, bool poll_only = false) mutable noexcept -> bool {
+								/** @brief Browser delivery checks readiness before entering the native wait. */
+								if (poll_only && !token.Poll()) {
+									return false;
+								}
 						        // false means the wait observed a stop request. Anything else
 						        // is a terminal state whose result is safe to deliver, so a
 						        // bounded wait must never report false on its own.
 						        if (!token.Wait(pool_stop)) {
 							        SetStopped(std::move(operation));
-							        return;
+							        return true;
 						        }
 						        if (auto error = token.Error()) {
 							        SetError(std::move(operation), std::move(error));
@@ -2144,9 +2200,10 @@ export namespace fyuu_rhi::execution {
 						        } else {
 							        SetValue(std::move(operation));
 						        }
-					        }
-					    )
-					);
+								return true;
+					        };
+					static_assert(details::CompletionTask::FitsInline<decltype(Complete)>);
+					details::EnqueueCompletionTask(details::MakeCompletionTask(std::move(Complete)));
 				};
 #if defined(__cpp_lib_senders) && __cpp_lib_senders >= 202406L
 				auto env = std::execution::get_env(m_context->receiver);

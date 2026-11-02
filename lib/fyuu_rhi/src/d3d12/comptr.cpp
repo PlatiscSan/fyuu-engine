@@ -1,3 +1,4 @@
+#if !defined(__EMSCRIPTEN__)
 // Force emission of the Microsoft::WRL::ComPtr destructor symbols that FyuuRHI
 // module partitions reference across the module boundary.
 //
@@ -44,3 +45,4 @@ template void Microsoft::WRL::ComPtr<IDXGIFactory2>::~ComPtr();
 template void Microsoft::WRL::ComPtr<IDXGIFactory5>::~ComPtr();
 #pragma clang diagnostic pop
 #endif // defined(_WIN32) && defined(__clang__)
+#endif // !defined(__EMSCRIPTEN__)

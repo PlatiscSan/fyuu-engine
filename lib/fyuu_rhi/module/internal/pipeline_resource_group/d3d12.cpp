@@ -1,10 +1,14 @@
 module;
+#if !defined(__EMSCRIPTEN__)
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <cstdint>
 #endif // !defined(__cpp_lib_modules)
 
+#endif // !defined(__EMSCRIPTEN__)
+
 module fyuu_rhi:d3d12_pipeline_resource_group_dispatch;
+#if !defined(__EMSCRIPTEN__)
 #if defined(__cpp_lib_modules)
 import std;
 #endif // defined(__cpp_lib_modules)
@@ -23,3 +27,4 @@ namespace fyuu_rhi {
 	};
 
 } // namespace fyuu_rhi
+#endif // !defined(__EMSCRIPTEN__)

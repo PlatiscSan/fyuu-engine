@@ -1,4 +1,5 @@
 module;
+#if !defined(__EMSCRIPTEN__)
 #include <version>
 #if !defined(__cpp_lib_modules)
 
@@ -14,7 +15,10 @@ module;
 #include <glad/glad_egl.h>
 #endif // defined(__linux__) || defined(__ANDROID__)
 
+#endif // !defined(__EMSCRIPTEN__)
+
 module fyuu_rhi:opengl_instance_egl;
+#if !defined(__EMSCRIPTEN__)
 #if defined(__linux__) || defined(__ANDROID__)
 #if defined(__cpp_lib_modules)
 import std;
@@ -383,3 +387,4 @@ namespace fyuu_rhi {
 
 } // namespace fyuu_rhi
 #endif // defined(__linux__) || defined(__ANDROID__)
+#endif // !defined(__EMSCRIPTEN__)

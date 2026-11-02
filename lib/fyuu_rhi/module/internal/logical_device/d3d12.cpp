@@ -1,9 +1,12 @@
 module;
+#if !defined(__EMSCRIPTEN__)
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <cstddef>
 #include <stdexcept>
 #include <utility>
+
+#include <deque>
 #include <vector>
 #include <algorithm>
 #include <iterator>
@@ -16,6 +19,7 @@ module;
 
 #include <mutex>
 
+#include <variant>
 #include <string_view>
 #include <filesystem>
 
@@ -34,16 +38,21 @@ module;
 #include <slang.h>
 #include <boost/hash2/xxhash.hpp>
 
+#endif // !defined(__EMSCRIPTEN__)
+
 module fyuu_rhi:d3d12_logical_device;
+#if !defined(__EMSCRIPTEN__)
 #if defined(_WIN32)
 #if defined(__cpp_lib_modules)
 import std;
 #endif // defined(__cpp_lib_modules)
 import :cache;
+import :log;
 import :command_scheduler_factory;
 import :d3d12_data;
 import :d3d12_utility;
 import :logical_device_dispatch;
+import :memory_pressure;
 import :pipeline;
 import :pipeline_factory;
 import :resource_factory;
@@ -58,6 +67,37 @@ namespace {
 
 	using namespace fyuu_rhi;
 	using namespace fyuu_rhi::pipeline;
+
+	/** @brief Emits Debug-only heap accounting without retaining allocator or resource references. */
+	void TraceAllocation(Microsoft::WRL::ComPtr<D3D12MA::Allocator> const& allocator) noexcept {
+#if !defined(NDEBUG)
+		static fyuu_rhi::details::MemoryDiagnosticLimiter limiter;
+		if (!limiter.TryAcquire()) {
+			return;
+		}
+		try {
+			D3D12MA::TotalStatistics statistics{};
+			allocator->CalculateStatistics(&statistics);
+			auto const& total = statistics.Total.Stats;
+			log::Debug(
+				std::format(
+					"D3D12MA: allocations={} allocation_bytes={} blocks={} block_bytes={} default_bytes={} upload_bytes={} readback_bytes={}",
+					total.AllocationCount,
+					total.AllocationBytes,
+					total.BlockCount,
+					total.BlockBytes,
+					statistics.HeapType[0].Stats.BlockBytes,
+					statistics.HeapType[1].Stats.BlockBytes,
+					statistics.HeapType[2].Stats.BlockBytes
+				)
+			);
+		} catch (...) {
+			/// @brief Diagnostic failures must not change successful resource creation.
+		}
+#else
+		(void)allocator;
+#endif // !defined(NDEBUG)
+	}
 
 	D3D12MA::ALLOCATION_FLAGS AllocationFlags(ResourceFlags const& flags) {
 		using Bits = ResourceFlagBits;
@@ -131,7 +171,7 @@ namespace {
 		if (is_unordered_access) {
 			result |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 		}
-		if (flags.Test(Bits::RenderAttachment)) {
+		if (flags.Test(Bits::RenderAttachment) || flags.Test(Bits::TransientAttachment)) {
 			bool is_depth_stencil = flags.Test(Bits::D16Unorm) ||
 			    flags.Test(Bits::D24UnormS8Uint) || flags.Test(Bits::D32Float) ||
 			    flags.Test(Bits::D32FloatS8X24Uint);
@@ -175,16 +215,6 @@ namespace {
 			);
 		}
 		return 0u;
-	}
-
-	D3D12_CLEAR_VALUE ClearValue(DXGI_FORMAT format) noexcept {
-		D3D12_CLEAR_VALUE result{.Format = format};
-		if (fyuu_rhi::d3d12::IsDepthStencil(format)) {
-			result.DepthStencil = {.Depth = 1.0f, .Stencil = 0u};
-		} else {
-			result.Color[3u] = 1.0f;
-		}
-		return result;
 	}
 
 	// ---------------------------------------------------------------------------
@@ -570,8 +600,8 @@ namespace {
 		}
 	}
 
-	slang::TargetDesc MakeDXILTarget(Microsoft::WRL::ComPtr<ID3D12Device> const& logical_device) {
-		auto global_session = shader::SlangGlobalSession();
+	/** @brief Selects a stable profile name without initializing the compiler on a disk-cache hit. */
+	char const* DXILProfile(Microsoft::WRL::ComPtr<ID3D12Device> const& logical_device) {
 		char const* profile = "sm_5_1";
 		D3D12_FEATURE_DATA_SHADER_MODEL sm_feature = {
 		    .HighestShaderModel = D3D_SHADER_MODEL::D3D_SHADER_MODEL_6_7
@@ -614,7 +644,7 @@ namespace {
 					break;
 			}
 		}
-		return {.format = SLANG_DXIL, .profile = global_session->findProfile(profile)};
+		return profile;
 	}
 
 	std::array<std::uint16_t, 4u> QueryDXDriverVersion(DXGI_ADAPTER_DESC1 const& desc) {
@@ -768,9 +798,10 @@ namespace fyuu_rhi {
 			    IID_NULL,
 			    nullptr
 			));
+			TraceAllocation(logical_device->memory_allocator);
 			return MakeResource(
 			    d3d12::Resource{
-			        logical_device->resource_descriptors,
+			        logical_device->resource_descriptor_storage,
 			        logical_device->render_target_descriptors,
 			        logical_device->depth_stencil_descriptors,
 			        std::move(allocation)
@@ -789,8 +820,10 @@ namespace fyuu_rhi {
 		    std::size_t height,
 		    std::size_t depth_or_array_layers,
 		    std::size_t mip_levels,
-		    ResourceFlags const& flags
+		    ResourceFlags const& flags,
+			TextureClearValue const& clear_value
 		) const {
+			auto default_clear_value = ResolveTextureClearValue(flags, clear_value);
 			using Bits = ResourceFlagBits;
 			if (flags.TestMultipleInRange(Bits::Texture1D, Bits::Texture3D)) {
 				throw std::invalid_argument("A D3D12 texture must have one dimension");
@@ -839,22 +872,35 @@ namespace fyuu_rhi {
 				);
 			}
 
-			auto clear_value = ClearValue(format);
-			auto optimized_clear_value =
-			    flags.Test(Bits::RenderAttachment) ? &clear_value : nullptr;
+			/// @brief Matching defaults enable fast clears without initializing texture contents.
+			D3D12_CLEAR_VALUE optimized_clear{ .Format = format };
+			D3D12_CLEAR_VALUE const* optimized_clear_pointer = nullptr;
+			if (auto color = std::get_if<ColorClearValue>(&default_clear_value)) {
+				optimized_clear.Color[0] = color->red;
+				optimized_clear.Color[1] = color->green;
+				optimized_clear.Color[2] = color->blue;
+				optimized_clear.Color[3] = color->alpha;
+				optimized_clear_pointer = &optimized_clear;
+			} else if (auto depth = std::get_if<DepthStencilClearValue>(&default_clear_value)) {
+				optimized_clear.DepthStencil = { depth->depth, static_cast<UINT8>(depth->stencil) };
+				optimized_clear_pointer = &optimized_clear;
+			}
 			Microsoft::WRL::ComPtr<D3D12MA::Allocation> allocation;
-			d3d12::ThrowIfFailed(logical_device->memory_allocator->CreateResource(
-			    &allocation_descriptor,
-			    &resource_descriptor,
-			    InitialState(flags),
-			    optimized_clear_value,
-			    &allocation,
-			    IID_NULL,
-			    nullptr
-			));
+			d3d12::ThrowIfFailed(
+				logical_device->memory_allocator->CreateResource(
+					&allocation_descriptor,
+					&resource_descriptor,
+					InitialState(flags),
+					optimized_clear_pointer,
+					&allocation,
+					IID_NULL,
+					nullptr
+				)
+			);
+			TraceAllocation(logical_device->memory_allocator);
 			return MakeResource(
 			    d3d12::Resource{
-			        logical_device->resource_descriptors,
+			        logical_device->resource_descriptor_storage,
 			        logical_device->render_target_descriptors,
 			        logical_device->depth_stencil_descriptors,
 			        std::move(allocation)
@@ -865,7 +911,8 @@ namespace fyuu_rhi {
 			        .depth_or_array_layers = static_cast<std::uint32_t>(depth_or_array_layers),
 			        .mip_levels = static_cast<std::uint32_t>(mip_levels)
 			    },
-			    flags
+			    flags,
+				default_clear_value
 			);
 		}
 	};
@@ -894,7 +941,7 @@ namespace fyuu_rhi {
 			    .MinLOD = descriptor.min_lod,
 			    .MaxLOD = descriptor.max_lod
 			};
-			auto handle = logical_device->sampler_descriptors.Allocate();
+			auto handle = logical_device->sampler_descriptor_storage.Allocate();
 			logical_device->rm_tracker.GetDevice()->CreateSampler(&sampler_desc, handle.CPU());
 			return MakeSampler(d3d12::Sampler{std::move(handle)});
 		}
@@ -905,7 +952,7 @@ namespace fyuu_rhi {
 
 		Pipeline operator()(pipeline::GraphicsPipelineDescriptor const& descriptor) const {
 			auto device = logical_device->rm_tracker.GetDevice();
-			auto target = MakeDXILTarget(device);
+			slang::TargetDesc target{.format = SLANG_DXIL};
 			auto adapter = d3d12::GetPhysicalDevice(device);
 			DXGI_ADAPTER_DESC1 adapter_desc{};
 			d3d12::ThrowIfFailed(adapter->GetDesc1(&adapter_desc));
@@ -919,7 +966,7 @@ namespace fyuu_rhi {
 			    driver[2],
 			    driver[3]
 			);
-			shader::SlangProgram program(target, descriptor.program, cache_tag);
+			shader::SlangProgram program(target, descriptor.program, cache_tag, DXILProfile(device));
 
 			auto bindings = pipeline::MakePipelineBindingMetadata(program.GetInterface());
 			auto constant_ranges = MakeConstantRanges(program.GetInterface());
@@ -1210,7 +1257,7 @@ namespace fyuu_rhi {
 
 		Pipeline operator()(pipeline::ComputePipelineDescriptor const& descriptor) const {
 			auto device = logical_device->rm_tracker.GetDevice();
-			auto target = MakeDXILTarget(device);
+			slang::TargetDesc target{.format = SLANG_DXIL};
 			auto adapter = d3d12::GetPhysicalDevice(device);
 			DXGI_ADAPTER_DESC1 adapter_desc{};
 			d3d12::ThrowIfFailed(adapter->GetDesc1(&adapter_desc));
@@ -1224,7 +1271,7 @@ namespace fyuu_rhi {
 			    driver[2],
 			    driver[3]
 			);
-			shader::SlangProgram program(target, descriptor.program, cache_tag);
+			shader::SlangProgram program(target, descriptor.program, cache_tag, DXILProfile(device));
 
 			auto bindings = pipeline::MakePipelineBindingMetadata(program.GetInterface());
 			auto constant_ranges = MakeConstantRanges(program.GetInterface());
@@ -1312,7 +1359,6 @@ namespace fyuu_rhi {
 			d3d12::CommandSchedulerContext::Queues queues;
 			auto CreateQueue = [&](D3D12_COMMAND_LIST_TYPE type) {
 				auto context = std::make_shared<d3d12::QueueContext>();
-				context->removal_tracker = &logical_device->rm_tracker;
 				auto device = logical_device->rm_tracker.GetDevice();
 				D3D12_COMMAND_QUEUE_DESC descriptor{.Type = type};
 				d3d12::ThrowIfFailed(
@@ -1347,3 +1393,4 @@ namespace fyuu_rhi {
 
 } // namespace fyuu_rhi
 #endif // defined(_WIN32)
+#endif // !defined(__EMSCRIPTEN__)

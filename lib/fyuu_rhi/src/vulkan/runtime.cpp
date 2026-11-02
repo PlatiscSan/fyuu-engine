@@ -1,3 +1,4 @@
+#if !defined(__EMSCRIPTEN__)
 #include <version>
 
 #if defined(__clang__) && defined(_MSVC_STL_VERSION)
@@ -46,3 +47,4 @@ FYUU_RHI_INSTANTIATE_SHARED_HANDLE(SurfaceKHR);
 
 #undef FYUU_RHI_INSTANTIATE_SHARED_HANDLE
 #endif // defined(__clang__) && defined(_MSVC_STL_VERSION)
+#endif // !defined(__EMSCRIPTEN__)

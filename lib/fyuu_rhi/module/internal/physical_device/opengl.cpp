@@ -1,4 +1,5 @@
 module;
+#if !defined(__EMSCRIPTEN__)
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <memory>
@@ -30,7 +31,10 @@ module;
 #include <glad/glad_egl.h>
 #endif // defined(_WIN32)
 
+#endif // !defined(__EMSCRIPTEN__)
+
 module fyuu_rhi:opengl_physical_device;
+#if !defined(__EMSCRIPTEN__)
 #if !defined(__APPLE__)
 #if defined(__cpp_lib_modules)
 import std;
@@ -38,6 +42,7 @@ import std;
 import :logical_device_factory;
 import :opengl_data;
 import :physical_device_dispatch;
+import :memory_pressure;
 import :physical_device_factory;
 import :physical_device;
 #endif // !defined(__APPLE__)
@@ -107,3 +112,4 @@ namespace fyuu_rhi {
 		}
 	};
 }
+#endif // !defined(__EMSCRIPTEN__)

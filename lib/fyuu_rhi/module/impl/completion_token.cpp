@@ -1,6 +1,7 @@
 module;
 #include <version>
 #if !defined(__cpp_lib_modules)
+#include <stdexcept>
 #include <utility>
 
 #include <deque>
@@ -14,6 +15,9 @@ module;
 
 #include <stop_token>
 #endif // !defined(__cpp_lib_modules)
+#if defined(__EMSCRIPTEN__)
+#include <emscripten/emscripten.h>
+#endif // defined(__EMSCRIPTEN__)
 
 module fyuu_rhi;
 #if defined(__cpp_lib_modules)
@@ -23,18 +27,25 @@ import :completion_token_dispatch;
 import :completion_token_factory;
 import :execution;
 import :webgpu_completion_token;
-#if defined(__APPLE__)
+#if defined(__APPLE__) && !defined(__EMSCRIPTEN__)
 import :metal_completion_token;
 #endif // defined(__APPLE__)
-#if defined(_WIN32)
+#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
 import :d3d12_completion_token;
 #endif // defined(_WIN32)
-#if !defined(__APPLE__)
+#if !defined(__APPLE__) && !defined(__EMSCRIPTEN__)
 import :opengl_completion_token;
 import :vulkan_completion_token;
 #endif // !defined(__APPLE__)
 
 namespace fyuu_rhi::execution {
+
+	CompletionToken::CompletionToken() noexcept = default;
+	CompletionToken::CompletionToken(ImplementationStorage&& impl) noexcept : m_impl(std::move(impl)) {
+	}
+	CompletionToken::CompletionToken(CompletionToken&& other) noexcept = default;
+	CompletionToken& CompletionToken::operator=(CompletionToken&& other) noexcept = default;
+	CompletionToken::~CompletionToken() noexcept = default;
 
 	bool CompletionToken::Poll() noexcept {
 		if (!m_impl) {
@@ -86,6 +97,70 @@ namespace fyuu_rhi::execution {
 
 	namespace details {
 
+#if defined(__EMSCRIPTEN__)
+		namespace {
+			/** @brief Browser-thread queue; owns operations until their terminal delivery. */
+			struct BrowserCompletionDriver {
+				std::deque<CompletionTask> tasks;
+				bool scheduled = false;
+				bool delivering = false;
+				bool shutting_down = false;
+			};
+
+			BrowserCompletionDriver& BrowserDriver() {
+				static BrowserCompletionDriver driver;
+				return driver;
+			}
+
+			/** @brief Poll CPU completion state from a timer, never from the GPU callback.
+			 * @note Never suspend this callback: another frame may need Asyncify for Map.
+			 * FIFO delivery matches the native driver and bounds each turn to 32 tasks.
+			 */
+			void PumpBrowserCompletions(void*) {
+				auto& driver = BrowserDriver();
+				driver.scheduled = false;
+				driver.delivering = true;
+				for (std::size_t delivered = 0u; delivered < 32u && !driver.tasks.empty(); ++delivered) {
+					if (!driver.tasks.front().TryInvoke()) {
+						break;
+					}
+					driver.tasks.pop_front();
+				}
+				driver.delivering = false;
+				if (!driver.tasks.empty() && !driver.scheduled) {
+					driver.scheduled = true;
+					emscripten_async_call(PumpBrowserCompletions, nullptr, 1);
+				}
+			}
+		} // namespace
+
+		void EnqueueCompletionTask(CompletionTask&& task) {
+			auto& driver = BrowserDriver();
+			/** @note Reentrant submissions during draining remain queued: synchronous
+			 * waiting here would suspend the driver callback and contend with shutdown.
+			 */
+			if (driver.shutting_down && !driver.delivering) {
+				task(std::stop_token{});
+				return;
+			}
+			driver.tasks.emplace_back(std::move(task));
+			if (!driver.scheduled && !driver.delivering) {
+				driver.scheduled = true;
+				emscripten_async_call(PumpBrowserCompletions, nullptr, 0);
+			}
+		}
+
+		void ShutdownCompletionDriver() {
+			auto& driver = BrowserDriver();
+			if (driver.delivering) {
+				throw std::logic_error("Cannot drain browser completions from a receiver callback");
+			}
+			driver.shutting_down = true;
+			while (!driver.tasks.empty()) {
+				emscripten_sleep(1u);
+			}
+		}
+#else
 		namespace {
 
 			/**
@@ -221,6 +296,7 @@ namespace fyuu_rhi::execution {
 			});
 		}
 
+#endif // defined(__EMSCRIPTEN__)
 	} // namespace details
 
 } // namespace fyuu_rhi::execution

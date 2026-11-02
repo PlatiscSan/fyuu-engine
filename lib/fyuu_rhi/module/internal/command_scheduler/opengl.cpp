@@ -1,4 +1,5 @@
 module;
+#if !defined(__EMSCRIPTEN__)
 #include <version>
 #if !defined(__cpp_lib_modules)
 #include <cstddef>
@@ -18,6 +19,8 @@ module;
 
 #include <cstdint>
 #include <type_traits>
+
+#include <array>
 #include <unordered_map>
 
 #include <chrono>
@@ -41,6 +44,7 @@ module;
 #include <glad/glad.h>
 #if defined(_WIN32)
 #include <Windows.h>
+#include <boost/scope/defer.hpp>
 #include <glad/glad_wgl.h>
 #elif defined(__linux__) && !defined(__ANDROID__)
 #include <glad/glad_egl.h>
@@ -50,7 +54,10 @@ module;
 #endif
 #endif
 
+#endif // !defined(__EMSCRIPTEN__)
+
 module fyuu_rhi:opengl_command_scheduler;
+#if !defined(__EMSCRIPTEN__)
 import :memory_pressure;
 #if !defined(__APPLE__)
 #if defined(__cpp_lib_modules)
@@ -723,16 +730,41 @@ namespace {
 		target.handle = handle;
 #if defined(_WIN32)
 		auto const& instance = *std::get<opengl::Instance const*>(scheduler->instance);
+		if (!handle || !IsWindow(handle)) {
+			throw std::invalid_argument("OpenGL presentation target must be a live HWND");
+		}
 		target.device_context = GetDC(handle);
 		if (!target.device_context) {
 			throw std::runtime_error("OpenGL present: GetDC failed for the target window");
 		}
-		// Match the render context's pixel format so wglMakeCurrent accepts the HDC.
+		/** @brief Keep the uncached HDC scoped through validation and cache insertion. */
+		auto ReleaseUncachedDC = [&]() noexcept {
+			if (target.device_context) {
+				(void)ReleaseDC(handle, target.device_context);
+			}
+		};
+		boost::scope::defer_guard cleanup(ReleaseUncachedDC);
+		/** @brief WGL requires matching formats; an existing window format is immutable. */
 		int pixel_format = GetPixelFormat(instance.device_context);
-		PIXELFORMATDESCRIPTOR descriptor{};
-		descriptor.nSize = sizeof(descriptor);
-		DescribePixelFormat(instance.device_context, pixel_format, sizeof(descriptor), &descriptor);
-		SetPixelFormat(target.device_context, pixel_format, &descriptor);
+		if (!pixel_format) {
+			throw std::runtime_error("OpenGL present: the instance has no pixel format");
+		}
+		int existing_format = GetPixelFormat(target.device_context);
+		if (existing_format && existing_format != pixel_format) {
+			throw std::invalid_argument(std::format(
+				"OpenGL present: window pixel format {} is incompatible with context format {}; a new native window is required",
+				existing_format, pixel_format));
+		}
+		if (!existing_format) {
+			PIXELFORMATDESCRIPTOR descriptor{};
+			descriptor.nSize = sizeof(descriptor);
+			if (!DescribePixelFormat(instance.device_context, pixel_format, sizeof(descriptor), &descriptor)) {
+				throw std::runtime_error(std::format("OpenGL present: DescribePixelFormat failed ({})", GetLastError()));
+			}
+			if (!SetPixelFormat(target.device_context, pixel_format, &descriptor)) {
+				throw std::runtime_error(std::format("OpenGL present: SetPixelFormat failed ({})", GetLastError()));
+			}
+		}
 #elif defined(__ANDROID__)
 		auto const& instance = *std::get<opengl::Instance const*>(scheduler->instance);
 		target.surface = eglCreateWindowSurface(
@@ -763,6 +795,9 @@ namespace {
 		// GLX presents directly on the X11 window drawable; nothing to create.
 #endif
 		scheduler->present_targets.emplace_back(std::move(target));
+#if defined(_WIN32)
+		target.device_context = nullptr;
+#endif // defined(_WIN32)
 		return scheduler->present_targets.back();
 	}
 
@@ -894,7 +929,7 @@ namespace {
 		if (!scheduler->pending.empty()) {
 			return;
 		}
-		auto limit = fyuu_rhi::details::IdleRetentionLimit(scheduler->present_target_demand);
+		auto limit = fyuu_rhi::details::WorkingSetRetentionLimit(scheduler->present_target_demand);
 		while (scheduler->present_targets.size() > limit) {
 			DestroyPresentTarget(scheduler, &scheduler->present_targets.front());
 			scheduler->present_targets.erase(scheduler->present_targets.begin());
@@ -948,24 +983,8 @@ namespace fyuu_rhi::opengl {
 			}
 			current = std::move(pending.front());
 			pending.pop_front();
-			auto const observed = current.issued_at == std::chrono::steady_clock::time_point{} ?
-				std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
 			PublishCompletion(current.state, false);
-			auto const published = observed == std::chrono::steady_clock::time_point{} ?
-				std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
 			glDeleteSync(current.sync);
-			if (observed != std::chrono::steady_clock::time_point{}) {
-				// Observation is an upper bound on GPU completion. Publication is not
-				// receiver delivery: the completion worker wakes separately afterwards.
-				fyuu_rhi::log::Info(
-					std::format(
-						"GL scheduler fence: observed_us={}, issued_to_observed_us={}, published_us={}",
-						std::chrono::duration_cast<std::chrono::microseconds>(observed.time_since_epoch()).count(),
-						std::chrono::duration_cast<std::chrono::microseconds>(observed - current.issued_at).count(),
-						std::chrono::duration_cast<std::chrono::microseconds>(published.time_since_epoch()).count()
-					)
-				);
-			}
 		}
 	}
 
@@ -995,6 +1014,11 @@ namespace fyuu_rhi::opengl {
 		/// @brief Logical buffer bindings survive pipeline/VAO switches within this submission.
 		std::vector<BindVertexBuffer> vertex_bindings;
 		std::optional<BindIndexBuffer> index_binding;
+		/** @brief Context-invariant UBO/SSBO alignments queried lazily once per replay.
+		 * @note Zero denotes an unqueried limit. This stack-local cache preserves
+		 * validation for every binding without repeating driver queries per draw.
+		 */
+		std::array<GLint, 2u> buffer_alignments{};
 		bool rendering = false;
 		ClipSpace clip_space = ClipSpace::YUp;
 		/// Color attachments of the active render pass, for MSAA resolve at EndRendering.
@@ -1075,6 +1099,15 @@ namespace fyuu_rhi::opengl {
 		/// Binds the pipeline's program, rasterization and depth state, and ensures
 		/// a VAO exists for its vertex layout.
 		void BindPipelineState(Submission::PipelineSnapshot const& value) {
+			/** @brief Reuse unchanged pipeline state within this replay only.
+			 * @note Vertex/index commands apply their bindings immediately, and clear
+			 * operations restore write masks. A different pipeline still replaces all
+			 * raster, depth, stencil and vertex-layout state. EndRendering invalidates
+			 * the replay's VAO, so a subsequent graphics pass must bind it again.
+			 */
+			if (pipeline == &value && (value.compute || vao != 0u)) {
+				return;
+			}
 			glUseProgram(value.impl);
 			pipeline = &value;
 			// GL binding units are global state and two pipelines can assign the same unit to
@@ -1239,7 +1272,7 @@ namespace fyuu_rhi::opengl {
 				/** @brief Bound idle VAO retention by current graph demand and host pressure. */
 				auto limit = (std::max)(
 					std::size_t{1u},
-					fyuu_rhi::details::IdleRetentionLimit(submission.pipelines.size())
+					fyuu_rhi::details::WorkingSetRetentionLimit(submission.pipelines.size())
 				);
 				while (scheduler->vertex_arrays.size() >= limit) {
 					auto retired = scheduler->vertex_arrays.front().impl;
@@ -1343,6 +1376,18 @@ namespace fyuu_rhi::opengl {
 		}
 
 		void operator()(BeginRendering const& value) {
+			/// @brief Resolve texture defaults before native attachment load operations are selected.
+			if (UsesDefaultClear(value)) {
+				auto resolved = value;
+				ResolveAttachmentClears(
+					resolved,
+					[this](std::size_t index) -> fyuu_rhi::TextureClearValue const& {
+						return ResourceAt(index).default_clear_value;
+					}
+				);
+				(*this)(resolved);
+				return;
+			}
 			if (rendering) {
 				throw std::logic_error("OpenGL BeginRendering cannot be nested");
 			}
@@ -1589,15 +1634,17 @@ namespace fyuu_rhi::opengl {
 							"OpenGL dynamic buffer offset exceeds the bound buffer"
 						);
 					}
-					GLint alignment = 1;
-					glGetIntegerv(
-						target == GL_UNIFORM_BUFFER
-							? GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT
-							: GL_SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT,
-						&alignment
-					);
+					auto alignment_index = target == GL_UNIFORM_BUFFER ? 0u : 1u;
+					if (buffer_alignments[alignment_index] == 0) {
+						glGetIntegerv(
+							target == GL_UNIFORM_BUFFER ?
+								GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT :
+								GL_SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT,
+							&buffer_alignments[alignment_index]
+						);
+					}
 					auto final_offset = binding.buffer_offset + dynamic_offset;
-					if (final_offset % static_cast<std::size_t>(alignment) != 0u) {
+					if (final_offset % static_cast<std::size_t>(buffer_alignments[alignment_index]) != 0u) {
 						throw std::invalid_argument(
 							"OpenGL dynamic buffer offset does not satisfy alignment"
 						);
@@ -2086,6 +2133,25 @@ namespace fyuu_rhi::opengl {
 			// buffer content - flashing and broken output on resize. Disable it
 			// so the full window is refreshed.
 			glDisable(GL_SCISSOR_TEST);
+			/** @brief Filter sRGB sources in linear space only when the drawable can re-encode them.
+			 * @note Other format pairs preserve stored color values, matching native presentation copies.
+			 */
+			GLint source_encoding = GL_LINEAR;
+			GLint target_encoding = GL_LINEAR;
+			glGetFramebufferAttachmentParameteriv(
+				GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+				GL_FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING, &source_encoding
+			);
+			glGetFramebufferAttachmentParameteriv(
+				GL_DRAW_FRAMEBUFFER, GL_BACK_LEFT,
+				GL_FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING, &target_encoding
+			);
+			if (source_encoding == GL_SRGB && target_encoding == GL_SRGB) {
+				glEnable(GL_FRAMEBUFFER_SRGB);
+			}
+			else {
+				glDisable(GL_FRAMEBUFFER_SRGB);
+			}
 			glBlitFramebuffer(
 				0, 0,
 				static_cast<GLint>(source.width), static_cast<GLint>(source.height),
@@ -2128,21 +2194,6 @@ namespace fyuu_rhi::opengl {
 				local_condition.notify_one();
 			}
 		);
-#if defined(_MSC_VER)
-		char diagnostic_setting[2]{};
-		std::size_t required_size = 0u;
-		bool const diagnose_waits = getenv_s(
-			&required_size,
-			diagnostic_setting,
-			sizeof(diagnostic_setting),
-			"FYUU_RHI_GL_WAIT_DIAGNOSTICS"
-		) == 0 && diagnostic_setting[0] == '1';
-#else
-		auto const diagnostic_setting = std::getenv("FYUU_RHI_GL_WAIT_DIAGNOSTICS");
-		bool const diagnose_waits = diagnostic_setting && std::string_view{diagnostic_setting} == "1";
-#endif
-		std::size_t poll_count = 0u;
-		std::size_t idle_waits = 0u;
 		submission_mutex.store(&local_mutex, std::memory_order_relaxed);
 		submission_condition.store(&local_condition, std::memory_order_relaxed);
 		submissions.store(&local_submissions, std::memory_order_release);
@@ -2190,12 +2241,7 @@ namespace fyuu_rhi::opengl {
 						return !local_submissions.empty() || stop.stop_requested();
 					};
 					if (pending.empty()) {
-						if (diagnose_waits) {
-							++idle_waits;
-						}
 						local_condition.wait(lock, ready);
-					} else if (diagnose_waits) {
-						++poll_count;
 					}
 				}
 				if (stop.stop_requested()) {
@@ -2286,11 +2332,15 @@ namespace fyuu_rhi::opengl {
 			MakeCurrentScheduler(this, handles);
 			if (current.state) {
 				GLsync sync = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0u);
+				/** @brief Submit this fence before zero-timeout polling on offscreen work.
+				 * @note Unlike Present, offscreen submissions have no SwapBuffers flush.
+				 * This does not wait for completion or block on a GPU fence.
+				 */
+				glFlush();
 				pending.push_back(
 					{
 						sync,
-						std::move(current.state),
-						diagnose_waits ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{}
+						std::move(current.state)
 					}
 				);
 			}
@@ -2300,15 +2350,7 @@ namespace fyuu_rhi::opengl {
 		CollectRetiredObjects();
 		DestroySchedulerObjects(this);
 		DestroySchedulerContext(this, handles);
-		if (diagnose_waits) {
-			fyuu_rhi::log::Info(
-				std::format(
-					"GL scheduler waits: busy_polls={}, idle_waits={}",
-					poll_count,
-					idle_waits
-				)
-			);
-		}
+
 	}
 
 	CommandSchedulerContext::CommandSchedulerContext(CommandSchedulerContext&& other) noexcept
@@ -2460,7 +2502,7 @@ namespace fyuu_rhi::execution {
 				);
 				submission.resources.emplace_back(
 					opengl::Submission::ResourceSnapshot{
-						.impl = native->impl.get(),
+						.impl = native->impl->get(),
 						.creation_sync = native->creation_sync.get(),
 						.target = native->target,
 						.format = native->format,
@@ -2471,7 +2513,8 @@ namespace fyuu_rhi::execution {
 						.height = extent ? extent->height : 0u,
 						.type = extent
 							? opengl::Submission::ResourceSnapshot::Type::Texture
-							: opengl::Submission::ResourceSnapshot::Type::Buffer
+							: opengl::Submission::ResourceSnapshot::Type::Buffer,
+						.default_clear_value = native->default_clear_value
 					}
 				);
 			}
@@ -2486,7 +2529,7 @@ namespace fyuu_rhi::execution {
 				}
 				submission.views.emplace_back(
 					opengl::Submission::ViewSnapshot{
-						.impl = native->impl.get(),
+						.impl = native->impl->get(),
 						.target = native->target,
 						.format = native->format,
 						.texture = !static_cast<bool>(native->buffer_range)
@@ -2504,7 +2547,7 @@ namespace fyuu_rhi::execution {
 						"OpenGL execution received a foreign sampler"
 					);
 				}
-				submission.samplers.emplace_back(native->impl.get());
+				submission.samplers.emplace_back(native->impl->get());
 			}
 			std::size_t buffer_count = 0u, attribute_count = 0u, binding_count = 0u;
 			std::size_t unit_count = 0u, constant_count = 0u;
@@ -2588,15 +2631,15 @@ namespace fyuu_rhi::execution {
 						opengl::Submission::GroupBindingSnapshot{
 							.slot = binding.slot,
 							.array_element = binding.array_element,
-							.buffer = binding.buffer,
+							.buffer = binding.buffer ? binding.buffer->get() : 0u,
 							.buffer_offset = binding.buffer_offset,
 							.buffer_size = binding.buffer_size,
 							.buffer_capacity = binding.buffer_capacity,
 							.dynamic_buffer = binding.dynamic_buffer,
-							.view = binding.view,
+							.view = binding.view ? binding.view->get() : 0u,
 							.view_target = binding.view_target,
 							.view_format = binding.view_format,
-							.sampler = binding.sampler
+							.sampler = binding.sampler ? binding.sampler->get() : 0u
 						}
 					);
 				}
@@ -2631,3 +2674,4 @@ namespace fyuu_rhi::execution {
 
 } // namespace fyuu_rhi::execution
 #endif // !defined(__APPLE__)
+#endif // !defined(__EMSCRIPTEN__)

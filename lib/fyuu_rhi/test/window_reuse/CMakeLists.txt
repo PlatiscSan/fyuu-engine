@@ -1,0 +1,5 @@
+add_executable(FyuuRHIWindowReuse main.cpp)
+target_compile_features(FyuuRHIWindowReuse PRIVATE cxx_std_23)
+target_compile_definitions(FyuuRHIWindowReuse PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+target_link_libraries(FyuuRHIWindowReuse PRIVATE FyuuRHI user32 gdi32 dwmapi)
+disable_rtti(FyuuRHIWindowReuse)

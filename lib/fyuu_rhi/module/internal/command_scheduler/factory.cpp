@@ -11,13 +11,13 @@ module fyuu_rhi:command_scheduler_factory;
 import std;
 #endif // defined(__cpp_lib_modules)
 import :execution;
-#if defined(__APPLE__)
+#if defined(__APPLE__) && !defined(__EMSCRIPTEN__)
 import :metal_data;
 #endif // defined(__APPLE__)
-#if defined(_WIN32)
+#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
 import :d3d12_data;
 #endif // defined(_WIN32)
-#if !defined(__APPLE__)
+#if !defined(__APPLE__) && !defined(__EMSCRIPTEN__)
 import :opengl_data;
 import :vulkan_data;
 #endif // !defined(__APPLE__)
@@ -28,12 +28,12 @@ namespace fyuu_rhi::execution {
 	struct CommandSchedulerContext {
 		std::variant<
 			std::monostate,
-#if defined(_WIN32)
+#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
 			d3d12::CommandSchedulerContext,
 #endif // defined(_WIN32)
-#if defined(__APPLE__)
+#if defined(__APPLE__) && !defined(__EMSCRIPTEN__)
 			metal::CommandSchedulerContext,
-#else
+#elif !defined(__EMSCRIPTEN__)
 			vulkan::CommandSchedulerContext,
 			opengl::CommandSchedulerContext,
 #endif // !defined(__APPLE__)
